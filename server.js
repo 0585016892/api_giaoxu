@@ -202,6 +202,17 @@ app.use("/api/documents", documentsRoutes);
 app.use("/api/report", reportRoutes);
 app.use("/api/sacraments", sacramentRoutes);
 app.use("/api/sitemap", sitemap);
+app.get("/", (req, res) => {
+  res.json({
+    success: true,
+    message: "API public hoạt động!",
+    data: {
+      name: "Giaoxu API",
+      status: "online",
+      time: new Date(),
+    },
+  });
+});
 
 // ===============================
 // ERROR

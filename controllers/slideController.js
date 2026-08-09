@@ -1,0 +1,220 @@
+const db = require("../config/db");
+const fs = require("fs");
+const path = require("path");
+const { writeLog } = require("../utils/activityLogger");
+const { createNotification } = require("../services/notification.service");
+// ================= GET ALL =================
+exports.getSlides = async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      "SELECT * FROM slides ORDER BY sort_order ASC",
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error("Lỗi lấy slides:", error);
+    res.status(500).json({ message: "Lỗi server" });
+  }
+};
+
+// ================= GET ACTIVE =================
+exports.getActiveSlides = async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      "SELECT * FROM slides WHERE is_active = 1 ORDER BY sort_order ASC",
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ message: "Lỗi server" });
+  }
+};
+
+// ================= CREATE =================
+exports.createSlide = async (req, res) => {
+  try {
+    const { title, subtitle, link, sort_order } = req.body;
+
+    if (!req.file) {
+      return res.status(400).json({ message: "Vui lòng upload hình ảnh" });
+    }
+
+    const imagePath = `/uploads/slides/${req.file.filename}`;
+
+    const [result] = await db.query(
+      "INSERT INTO slides (title, subtitle, image, link, sort_order) VALUES (?, ?, ?, ?, ?)",
+      [title, subtitle, imagePath, link || null, sort_order || 0],
+    );
+
+    // ================= LOG =================
+    await writeLog({
+      admin_id: req.user?.id,
+      action: "CREATE_SLIDE",
+      target_type: "slides",
+      target_id: result.insertId,
+      description: `Tạo slide: ${title}`,
+      ip_address: req.ip,
+    });
+
+    // ================= NOTIFICATION =================
+    await createNotification({
+      type: "SLIDE_CREATE",
+      title: "Thêm slide mới",
+      content: `Slide "${title}" vừa được tạo`,
+      created_by: req.user?.id,
+      related_type: "slides",
+      related_id: result.insertId,
+    });
+
+    res.json({ message: "Thêm slide thành công" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Lỗi thêm slide" });
+  }
+};
+// ================= UPDATE =================
+exports.updateSlide = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, subtitle, link, sort_order, is_active } = req.body;
+
+    let sql =
+      "UPDATE slides SET title=?, subtitle=?, link=?, sort_order=?, is_active=?";
+    let params = [title, subtitle, link, sort_order, is_active];
+
+    let oldImage = null;
+
+    // lấy data cũ để log
+    const [old] = await db.query("SELECT * FROM slides WHERE id=?", [id]);
+    if (old.length === 0) {
+      return res.status(404).json({ message: "Không tìm thấy slide" });
+    }
+
+    oldImage = old[0].image;
+
+    if (req.file) {
+      const imagePath = `/uploads/slides/${req.file.filename}`;
+      sql += ", image=?";
+      params.push(imagePath);
+    }
+
+    sql += " WHERE id=?";
+    params.push(id);
+
+    await db.query(sql, params);
+
+    // ================= LOG =================
+    await writeLog({
+      admin_id: req.user?.id,
+      action: "UPDATE_SLIDE",
+      target_type: "slides",
+      target_id: id,
+      description: `Cập nhật slide: ${title}`,
+      ip_address: req.ip,
+    });
+
+    // ================= NOTIFICATION =================
+    await createNotification({
+      type: "SLIDE_UPDATE",
+      title: "Cập nhật slide",
+      content: `Slide "${title}" vừa được cập nhật`,
+      created_by: req.user?.id,
+      related_type: "slides",
+      related_id: id,
+    });
+
+    res.json({ message: "Cập nhật thành công" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Lỗi cập nhật slide" });
+  }
+};
+// ================= UPDATE STATUS =================
+exports.updateSlideStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { is_active } = req.body;
+
+    const [rows] = await db.query("SELECT * FROM slides WHERE id = ?", [id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Không tìm thấy slide" });
+    }
+
+    await db.query("UPDATE slides SET is_active = ? WHERE id = ?", [
+      is_active,
+      id,
+    ]);
+
+    const statusText = is_active == 1 ? "hiển thị" : "ẩn";
+
+    // ================= LOG =================
+    await writeLog({
+      admin_id: req.user?.id,
+      action: "TOGGLE_SLIDE",
+      target_type: "slides",
+      target_id: id,
+      description: `Đổi trạng thái slide: ${statusText}`,
+      ip_address: req.ip,
+    });
+
+    // ================= NOTIFICATION =================
+    await createNotification({
+      type: "SLIDE_STATUS",
+      title: "Cập nhật trạng thái slide",
+      content: `Slide vừa được ${statusText}`,
+      created_by: req.user?.id,
+      related_type: "slides",
+      related_id: id,
+    });
+
+    res.json({ message: "Cập nhật trạng thái thành công" });
+  } catch (error) {
+    console.error("Lỗi cập nhật status:", error);
+    res.status(500).json({ message: "Lỗi server" });
+  }
+};
+// ================= DELETE =================
+exports.deleteSlide = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await db.query("SELECT * FROM slides WHERE id=?", [id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Không tìm thấy slide" });
+    }
+
+    const imagePath = rows[0].image;
+    const fullPath = path.join(__dirname, "..", imagePath);
+
+    if (fs.existsSync(fullPath)) {
+      fs.unlinkSync(fullPath);
+    }
+
+    await db.query("DELETE FROM slides WHERE id=?", [id]);
+
+    // ================= LOG =================
+    await writeLog({
+      admin_id: req.user?.id,
+      action: "DELETE_SLIDE",
+      target_type: "slides",
+      target_id: id,
+      description: `Xóa slide: ${rows[0].title}`,
+      ip_address: req.ip,
+    });
+
+    // ================= NOTIFICATION =================
+    await createNotification({
+      type: "SLIDE_DELETE",
+      title: "Xóa slide",
+      content: `Slide "${rows[0].title}" vừa bị xóa`,
+      created_by: req.user?.id,
+      related_type: "slides",
+      related_id: id,
+    });
+
+    res.json({ message: "Xóa thành công" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Lỗi xóa slide" });
+  }
+};

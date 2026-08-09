@@ -1,2 +1,4 @@
-echo ".env" >> .gitignore
-echo ".env.*" >> .gitignore
+node_modules/
+.env
+.env.*
+!.env.example

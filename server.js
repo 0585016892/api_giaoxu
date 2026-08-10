@@ -85,8 +85,6 @@ startMassCron();
 const allowedOrigins = [
   "http://localhost:3000",
 
-  "http://127.0.0.1:3000",
-
   "http://localhost:3001",
 
   "http://localhost:3002",
@@ -94,6 +92,7 @@ const allowedOrigins = [
   "https://giaoxudongquan.site",
 
   "https://www.giaoxudongquan.site",
+
   "https://ffcf-118-70-186-232.ngrok-free.app",
 ];
 

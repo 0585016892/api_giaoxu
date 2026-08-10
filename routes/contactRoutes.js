@@ -4,6 +4,8 @@ const nodemailer = require("nodemailer");
 const router = express.Router();
 
 router.post("/", async (req, res) => {
+  console.log("CALL API EMAIL");
+
   try {
     const { name, email, subject, message } = req.body;
 

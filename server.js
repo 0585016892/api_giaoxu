@@ -94,7 +94,7 @@ const allowedOrigins = [
   "https://www.giaoxudongquan.site",
 
   "https://ffcf-118-70-186-232.ngrok-free.app",
-  "https://quantridongquan.vercel.app/",
+  "https://quantridongquan.vercel.app",
 ];
 
 const corsOptions = {

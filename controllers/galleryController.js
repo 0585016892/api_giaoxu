@@ -22,7 +22,7 @@ exports.getAllImages = async (req, res) => {
     const [eventImages] = await db.query(`
       SELECT
         id,
-        image AS image,
+        image,
         'image' AS type
       FROM event_images
       WHERE image IS NOT NULL
@@ -31,15 +31,15 @@ exports.getAllImages = async (req, res) => {
     images.push(...eventImages);
 
     // Groups
-    const [rows] = await db.query(`
+    const [groups] = await db.query(`
       SELECT
-          id,
-          name,
-          image,
-          'group' AS type
+        id,
+        name,
+        image,
+        'group' AS type
       FROM \`groups\`
       WHERE image IS NOT NULL
-  `);
+    `);
 
     images.push(...groups);
 

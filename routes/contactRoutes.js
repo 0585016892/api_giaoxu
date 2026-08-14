@@ -359,17 +359,66 @@ router.post("/", async (req, res) => {
       if (autoRows.length > 0 && autoRows[0].is_enabled === 1) {
         const autoConfig = autoRows[0];
 
-        // Replace placeholder variables
-        let autoMessage = autoConfig.template
+        // Replace đầy đủ các biến placeholder
+        let compiledMessage = autoConfig.template
           .replace(/{Name}/g, name)
           .replace(/{Subject}/g, subject || "Liên hệ")
-          .replace(/{Date}/g, new Date().toLocaleDateString("vi-VN"));
+          .replace(/{Date}/g, new Date().toLocaleDateString("vi-VN"))
+          .replace(/{Church_Name}/g, "Giáo Xứ Đồng Quan");
 
+        // Format lại biến Markdown **Text** thành <strong>Text</strong> nếu có trong DB
+        compiledMessage = compiledMessage.replace(
+          /\*\*(.*?)\*\*/g,
+          "<strong>$1</strong>",
+        );
+
+        // Bọc vào khung HTML Email chuyên nghiệp
+        const htmlAutoResponder = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0; padding:0; background-color:#f4f6f8; font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color:#333333;">
+  <table border="0" cellpadding="0" cellspacing="0" width="100%">
+    <tr>
+      <td align="center" style="padding:30px 15px;">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:600px; background:#ffffff; border-radius:8px; overflow:hidden; border:1px solid #e2e8f0; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+          <!-- HEADER -->
+          <tr>
+            <td align="center" style="background-color:#1a365d; padding:35px 20px; color:#ffffff;">
+              <div style="font-size:28px; color:#d69e2e; margin-bottom:8px; font-weight:bold;">┼</div>
+              <h1 style="margin:0; font-size:22px; font-weight:600; color:#f7fafc; letter-spacing:1px;">GIÁO XỨ ĐỒNG QUAN</h1>
+              <p style="margin:5px 0 0; font-size:13px; color:#cbd5e0; font-style:italic;">Xác Nhận Tiếp Nhận Thư Liên Hệ</p>
+            </td>
+          </tr>
+          <!-- GOLD ACCENT BAR -->
+          <tr><td style="height:4px; background-color:#d69e2e;"></td></tr>
+          <!-- BODY CONTENT -->
+          <tr>
+            <td style="padding:30px 25px;">
+              <div style="line-height:1.7; font-size:15px; color:#2d3748; white-space:pre-line;">${compiledMessage}</div>
+            </td>
+          </tr>
+          <!-- FOOTER -->
+          <tr>
+            <td align="center" style="background:#f8fafc; padding:20px; border-top:1px solid #edf2f7; color:#718096; font-size:12px;">
+              <p style="margin:0; font-style:italic;">"Ân sủng và bình an của Thiên Chúa ở cùng anh chị em."</p>
+              <p style="margin:5px 0 0 0;">Thư phản hồi tự động từ Hệ Thống Website Giáo Xứ Đồng Quan</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+        `;
+
+        // Gửi qua Nodemailer sử dụng param html
         await transporter.sendMail({
           from: `"Giáo Xứ Đồng Quan" <${process.env.EMAIL_USER}>`,
           to: email.trim(),
           subject: autoConfig.subject,
-          text: autoMessage,
+          html: htmlAutoResponder,
         });
 
         console.log("✅ Auto responder sent to:", email);

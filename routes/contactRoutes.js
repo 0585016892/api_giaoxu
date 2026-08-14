@@ -1,6 +1,7 @@
 const express = require("express");
-const router = express.Router();
+const nodemailer = require("nodemailer");
 
+const router = express.Router();
 const pool = require("../config/db");
 
 // =====================================================
@@ -11,21 +12,26 @@ router.get("/", async (req, res) => {
   try {
     const { page = 1, limit = 10, status, search } = req.query;
 
-    const pageNumber = Math.max(parseInt(page), 1);
-    const limitNumber = Math.min(Math.max(parseInt(limit), 1), 100);
+    const pageNumber = Math.max(parseInt(page) || 1, 1);
+    const limitNumber = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+
     const offset = (pageNumber - 1) * limitNumber;
 
     let where = [];
     let params = [];
 
-    // Lọc trạng thái
+    // =========================
+    // LỌC TRẠNG THÁI
+    // =========================
     if (status) {
       where.push("status = ?");
       params.push(status);
     }
 
-    // Tìm kiếm
-    if (search) {
+    // =========================
+    // TÌM KIẾM
+    // =========================
+    if (search && search.trim()) {
       where.push(`
         (
           name LIKE ?
@@ -35,14 +41,16 @@ router.get("/", async (req, res) => {
         )
       `);
 
-      const keyword = `%${search}%`;
+      const keyword = `%${search.trim()}%`;
 
       params.push(keyword, keyword, keyword, keyword);
     }
 
     const whereSQL = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
 
-    // Đếm tổng
+    // =========================
+    // ĐẾM TỔNG
+    // =========================
     const [countRows] = await pool.execute(
       `
       SELECT COUNT(*) AS total
@@ -54,7 +62,9 @@ router.get("/", async (req, res) => {
 
     const total = countRows[0].total;
 
-    // Lấy dữ liệu
+    // =========================
+    // LẤY DANH SÁCH
+    // =========================
     const [rows] = await pool.execute(
       `
       SELECT
@@ -79,7 +89,6 @@ router.get("/", async (req, res) => {
 
     return res.json({
       success: true,
-
       data: rows,
 
       pagination: {
@@ -102,17 +111,15 @@ router.get("/", async (req, res) => {
 
 // =====================================================
 // GET /api/contact/:id
-// Xem chi tiết một liên hệ
-// =====================================================
-// =====================================================
-// GET /api/contact/:id
-// Xem chi tiết + tự động chuyển new -> read
+// Xem chi tiết
+//
+// Nếu status = new
+// => tự động chuyển thành read
 // =====================================================
 router.get("/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 1. Lấy thông tin liên hệ
     const [rows] = await pool.execute(
       `
       SELECT
@@ -142,7 +149,9 @@ router.get("/:id", async (req, res) => {
 
     const contact = rows[0];
 
-    // 2. Nếu đang là new thì chuyển thành read
+    // =========================
+    // NEW -> READ
+    // =========================
     if (contact.status === "new") {
       await pool.execute(
         `
@@ -153,11 +162,9 @@ router.get("/:id", async (req, res) => {
         [id],
       );
 
-      // Cập nhật luôn dữ liệu trả về
       contact.status = "read";
     }
 
-    // 3. Trả dữ liệu
     return res.json({
       success: true,
       data: contact,
@@ -172,8 +179,22 @@ router.get("/:id", async (req, res) => {
     });
   }
 });
+
+// =====================================================
+// POST /api/contact
+// Gửi liên hệ
+//
+// 1. Validate
+// 2. Lưu DB
+// 3. Gửi email
+// 4. Update email_status
+// =====================================================
 router.post("/", async (req, res) => {
   console.log("CALL API EMAIL");
+
+  // QUAN TRỌNG:
+  // Khai báo bên ngoài try để catch có thể dùng
+  let contactId = null;
 
   try {
     const { name, email, subject, message } = req.body;
@@ -189,25 +210,25 @@ router.post("/", async (req, res) => {
     }
 
     // =========================
-    // 2. LƯU VÀO DATABASE
+    // 2. LƯU DATABASE
     // =========================
     const [result] = await pool.execute(
       `
-      INSERT INTO contact_messages
-      (
-        name,
-        email,
-        subject,
-        message,
-        status,
-        email_status
-      )
-      VALUES (?, ?, ?, ?, 'new', 'pending')
-      `,
+        INSERT INTO contact_messages
+        (
+          name,
+          email,
+          subject,
+          message,
+          status,
+          email_status
+        )
+        VALUES (?, ?, ?, ?, 'new', 'pending')
+        `,
       [name.trim(), email.trim(), subject?.trim() || null, message.trim()],
     );
 
-    const contactId = result.insertId;
+    contactId = result.insertId;
 
     console.log("✅ Đã lưu liên hệ:", contactId);
 
@@ -221,6 +242,7 @@ router.post("/", async (req, res) => {
 
       auth: {
         user: process.env.EMAIL_USER,
+
         pass: process.env.EMAIL_PASS,
       },
 
@@ -234,257 +256,359 @@ router.post("/", async (req, res) => {
     });
 
     console.log("EMAIL_USER =", process.env.EMAIL_USER);
+
     console.log("EMAIL_PASS =", process.env.EMAIL_PASS ? "CO" : "KHONG");
 
+    // =========================
+    // 4. TEST SMTP
+    // =========================
     await transporter.verify();
 
     console.log("✅ SMTP Gmail kết nối thành công");
 
     // =========================
-    // 4. GỬI EMAIL
+    // 5. GỬI EMAIL
     // =========================
     await transporter.sendMail({
       from: `"${name}" <${process.env.EMAIL_USER}>`,
+
       to: "giaoxudongquan@gmail.com",
+
       replyTo: email,
 
       subject: `[Website Giáo Xứ] ${subject || "Thư liên hệ mới"} - từ ${name}`,
 
       html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport"
-                content="width=device-width, initial-scale=1.0">
-        </head>
+<!DOCTYPE html>
 
-        <body style="
-          margin:0;
-          padding:0;
-          background-color:#f4f6f8;
-          font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;
-          color:#333;
-        ">
+<html>
 
-          <table width="100%" cellpadding="0" cellspacing="0">
-            <tr>
-              <td align="center" style="padding:30px 15px;">
+<head>
+  <meta charset="utf-8">
 
-                <table
-                  width="100%"
-                  cellpadding="0"
-                  cellspacing="0"
-                  style="
-                    max-width:600px;
-                    background:#fff;
-                    border-radius:8px;
-                    overflow:hidden;
-                    border:1px solid #e2e8f0;
-                  "
-                >
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
+</head>
 
-                  <tr>
-                    <td align="center"
-                      style="
-                        background:#1a365d;
-                        padding:35px 20px;
-                        color:#fff;
-                      "
-                    >
+<body
+  style="
+    margin:0;
+    padding:0;
+    background-color:#f4f6f8;
+    font-family:
+      'Segoe UI',
+      Tahoma,
+      Geneva,
+      Verdana,
+      sans-serif;
+    color:#333333;
+  "
+>
 
-                      <div style="
-                        font-size:28px;
-                        color:#d69e2e;
-                        margin-bottom:8px;
-                        font-weight:bold;
-                      ">
-                        ┼
-                      </div>
+<table
+  border="0"
+  cellpadding="0"
+  cellspacing="0"
+  width="100%"
+>
 
-                      <h1 style="
-                        margin:0;
-                        font-size:22px;
-                        color:#f7fafc;
-                      ">
-                        GIÁO XỨ ĐỒNG QUAN
-                      </h1>
+<tr>
 
-                      <p style="
-                        margin:5px 0 0;
-                        font-size:13px;
-                        color:#cbd5e0;
-                      ">
-                        Thông tin liên hệ từ Website
-                      </p>
+<td
+  align="center"
+  style="padding:30px 15px;"
+>
 
-                    </td>
-                  </tr>
+<table
+  border="0"
+  cellpadding="0"
+  cellspacing="0"
+  width="100%"
+  style="
+    max-width:600px;
+    background:#ffffff;
+    border-radius:8px;
+    overflow:hidden;
+    border:1px solid #e2e8f0;
+  "
+>
 
-                  <tr>
-                    <td style="
-                      height:4px;
-                      background:#d69e2e;
-                    "></td>
-                  </tr>
+<!-- HEADER -->
 
-                  <tr>
-                    <td style="padding:30px 25px;">
+<tr>
 
-                      <p>
-                        Kính gửi Ban Hành Giáo / Ban Quản Trị,
-                      </p>
+<td
+  align="center"
+  style="
+    background-color:#1a365d;
+    padding:35px 20px;
+    color:#ffffff;
+  "
+>
 
-                      <p>
-                        Hệ thống vừa nhận được một thông điệp
-                        liên hệ mới từ website.
-                      </p>
+<div
+  style="
+    font-size:28px;
+    color:#d69e2e;
+    margin-bottom:8px;
+    font-weight:bold;
+  "
+>
+  ┼
+</div>
 
-                      <table
-                        width="100%"
-                        cellpadding="0"
-                        cellspacing="0"
-                        style="
-                          background:#f8fafc;
-                          border:1px solid #edf2f7;
-                        "
-                      >
+<h1
+  style="
+    margin:0;
+    font-size:22px;
+    font-weight:600;
+    color:#f7fafc;
+  "
+>
+  GIÁO XỨ ĐỒNG QUAN
+</h1>
 
-                        <tr>
-                          <td style="
-                            padding:12px 15px;
-                            font-weight:bold;
-                          ">
-                            👤 Họ và tên:
-                          </td>
+<p
+  style="
+    margin:5px 0 0;
+    font-size:13px;
+    color:#cbd5e0;
+    font-style:italic;
+  "
+>
+  Thông tin liên hệ từ Website
+</p>
 
-                          <td style="padding:12px 15px;">
-                            ${name}
-                          </td>
-                        </tr>
+</td>
 
-                        <tr>
-                          <td style="
-                            padding:12px 15px;
-                            font-weight:bold;
-                          ">
-                            ✉️ Email:
-                          </td>
+</tr>
 
-                          <td style="padding:12px 15px;">
-                            <a href="mailto:${email}">
-                              ${email}
-                            </a>
-                          </td>
-                        </tr>
+<!-- GOLD LINE -->
 
-                        <tr>
-                          <td style="
-                            padding:12px 15px;
-                            font-weight:bold;
-                          ">
-                            📌 Chủ đề:
-                          </td>
+<tr>
 
-                          <td style="padding:12px 15px;">
-                            ${subject || "Không có chủ đề"}
-                          </td>
-                        </tr>
+<td
+  style="
+    height:4px;
+    background-color:#d69e2e;
+  "
+></td>
 
-                      </table>
+</tr>
 
-                      <div style="
-                        margin-top:25px;
-                        font-weight:bold;
-                      ">
-                        📝 Nội dung lời nhắn:
-                      </div>
+<!-- CONTENT -->
 
-                      <div style="
-                        margin-top:10px;
-                        padding:18px;
-                        background:#fff;
-                        border-left:4px solid #d69e2e;
-                        border-top:1px solid #edf2f7;
-                        border-right:1px solid #edf2f7;
-                        border-bottom:1px solid #edf2f7;
-                        line-height:1.6;
-                        white-space:pre-line;
-                      ">
-                        ${message}
-                      </div>
+<tr>
 
-                      <div style="
-                        margin-top:30px;
-                        text-align:center;
-                      ">
+<td style="padding:30px 25px;">
 
-                        <a
-                          href="mailto:${email}?subject=Re:%20${encodeURIComponent(
-                            subject || "Liên hệ từ Giáo Xứ Đồng Quan",
-                          )}"
-                          style="
-                            background:#1a365d;
-                            color:#fff;
-                            padding:10px 20px;
-                            text-decoration:none;
-                            border-radius:5px;
-                            font-weight:bold;
-                          "
-                        >
-                          Reply - Trả lời ngay
-                        </a>
+<p>
+  Kính gửi Ban Hành Giáo /
+  Ban Quản Trị,
+</p>
 
-                      </div>
+<p>
+  Hệ thống vừa nhận được một
+  thông điệp liên hệ mới từ website.
+</p>
 
-                    </td>
-                  </tr>
 
-                  <tr>
-                    <td align="center"
-                      style="
-                        background:#f8fafc;
-                        padding:20px;
-                        border-top:1px solid #edf2f7;
-                        color:#718096;
-                        font-size:12px;
-                      "
-                    >
+<!-- INFO -->
 
-                      <p>
-                        <i>
-                          "Đâu có hai hoặc ba người họp lại
-                          nhân danh Thầy, thì có Thầy ở đấy
-                          giữa họ." (Mt 18,20)
-                        </i>
-                      </p>
+<table
+  border="0"
+  cellpadding="0"
+  cellspacing="0"
+  width="100%"
+  style="
+    background-color:#f8fafc;
+    border:1px solid #edf2f7;
+  "
+>
 
-                      <p>
-                        Email tự động từ Website
-                        Giáo Xứ Đồng Quan
-                      </p>
+<tr>
 
-                    </td>
-                  </tr>
+<td
+  style="
+    padding:12px 15px;
+    font-weight:bold;
+    width:30%;
+  "
+>
+  👤 Họ và tên:
+</td>
 
-                </table>
+<td style="padding:12px 15px;">
+  ${name}
+</td>
 
-              </td>
-            </tr>
-          </table>
+</tr>
 
-        </body>
-        </html>
+
+<tr>
+
+<td
+  style="
+    padding:12px 15px;
+    font-weight:bold;
+  "
+>
+  ✉️ Email:
+</td>
+
+<td style="padding:12px 15px;">
+
+<a
+  href="mailto:${email}"
+>
+  ${email}
+</a>
+
+</td>
+
+</tr>
+
+
+<tr>
+
+<td
+  style="
+    padding:12px 15px;
+    font-weight:bold;
+  "
+>
+  📌 Chủ đề:
+</td>
+
+<td style="padding:12px 15px;">
+
+${subject || "Không có chủ đề"}
+
+</td>
+
+</tr>
+
+</table>
+
+
+<!-- MESSAGE -->
+
+<div
+  style="
+    margin-top:25px;
+    font-weight:bold;
+  "
+>
+  📝 Nội dung lời nhắn:
+</div>
+
+<div
+  style="
+    margin-top:10px;
+    padding:18px;
+    background:#ffffff;
+    border-left:4px solid #d69e2e;
+    border-top:1px solid #edf2f7;
+    border-right:1px solid #edf2f7;
+    border-bottom:1px solid #edf2f7;
+    line-height:1.6;
+    white-space:pre-line;
+  "
+>
+  ${message}
+</div>
+
+
+<!-- REPLY -->
+
+<div
+  style="
+    margin-top:30px;
+    text-align:center;
+  "
+>
+
+<a
+  href="mailto:${email}?subject=Re:%20${encodeURIComponent(
+    subject || "Liên hệ từ Giáo Xứ Đồng Quan",
+  )}"
+  style="
+    background:#1a365d;
+    color:#ffffff;
+    padding:10px 20px;
+    text-decoration:none;
+    border-radius:5px;
+    font-weight:bold;
+  "
+>
+  Reply - Trả lời ngay
+</a>
+
+</div>
+
+</td>
+
+</tr>
+
+
+<!-- FOOTER -->
+
+<tr>
+
+<td
+  align="center"
+  style="
+    background:#f8fafc;
+    padding:20px;
+    border-top:1px solid #edf2f7;
+    color:#718096;
+    font-size:12px;
+  "
+>
+
+<p>
+  <i>
+    "Đâu có hai hoặc ba người
+    họp lại nhân danh Thầy,
+    thì có Thầy ở đấy giữa họ."
+    (Mt 18,20)
+  </i>
+</p>
+
+<p>
+  Email tự động từ Website
+  Giáo Xứ Đồng Quan
+</p>
+
+</td>
+
+</tr>
+
+</table>
+
+</td>
+
+</tr>
+
+</table>
+
+</body>
+
+</html>
       `,
     });
 
     // =========================
-    // 5. UPDATE GỬI EMAIL THÀNH CÔNG
+    // 6. EMAIL GỬI THÀNH CÔNG
     // =========================
     await pool.execute(
       `
       UPDATE contact_messages
-      SET email_status = 'sent'
+      SET
+        email_status = 'sent',
+        email_error = NULL
       WHERE id = ?
       `,
       [contactId],
@@ -500,18 +624,24 @@ router.post("/", async (req, res) => {
   } catch (error) {
     console.error("❌ CONTACT ERROR:", error);
 
-    // Nếu đã tạo record thì cập nhật trạng thái lỗi
-    if (typeof contactId !== "undefined") {
-      await pool.execute(
-        `
-        UPDATE contact_messages
-        SET
-          email_status = 'failed',
-          email_error = ?
-        WHERE id = ?
-        `,
-        [error.message, contactId],
-      );
+    // =========================
+    // EMAIL LỖI
+    // =========================
+    if (contactId) {
+      try {
+        await pool.execute(
+          `
+          UPDATE contact_messages
+          SET
+            email_status = 'failed',
+            email_error = ?
+          WHERE id = ?
+          `,
+          [error.message, contactId],
+        );
+      } catch (dbError) {
+        console.error("❌ UPDATE CONTACT ERROR:", dbError);
+      }
     }
 
     return res.status(500).json({
@@ -521,6 +651,7 @@ router.post("/", async (req, res) => {
     });
   }
 });
+
 // =====================================================
 // PATCH /api/contact/:id/status
 // Đổi trạng thái
@@ -528,10 +659,14 @@ router.post("/", async (req, res) => {
 router.patch("/:id/status", async (req, res) => {
   try {
     const { id } = req.params;
+
     const { status } = req.body;
 
     const allowedStatus = ["new", "read", "replied", "archived"];
 
+    // =========================
+    // VALIDATE STATUS
+    // =========================
     if (!allowedStatus.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -540,13 +675,15 @@ router.patch("/:id/status", async (req, res) => {
       });
     }
 
-    // Kiểm tra tồn tại
+    // =========================
+    // CHECK EXISTS
+    // =========================
     const [existing] = await pool.execute(
       `
-      SELECT id
-      FROM contact_messages
-      WHERE id = ?
-      `,
+          SELECT id
+          FROM contact_messages
+          WHERE id = ?
+          `,
       [id],
     );
 
@@ -557,12 +694,15 @@ router.patch("/:id/status", async (req, res) => {
       });
     }
 
+    // =========================
+    // UPDATE
+    // =========================
     await pool.execute(
       `
-      UPDATE contact_messages
-      SET status = ?
-      WHERE id = ?
-      `,
+        UPDATE contact_messages
+        SET status = ?
+        WHERE id = ?
+        `,
       [status, id],
     );
 
@@ -591,9 +731,9 @@ router.delete("/:id", async (req, res) => {
 
     const [result] = await pool.execute(
       `
-      DELETE FROM contact_messages
-      WHERE id = ?
-      `,
+          DELETE FROM contact_messages
+          WHERE id = ?
+          `,
       [id],
     );
 

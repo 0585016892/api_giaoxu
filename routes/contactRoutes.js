@@ -758,5 +758,189 @@ router.delete("/:id", async (req, res) => {
     });
   }
 });
+// =====================================================
+// POST /api/contact/:id/reply
+// Phản hồi email trực tiếp cho người liên hệ
+// =====================================================
+router.post("/:id/reply", async (req, res) => {
+  const { id } = req.params;
+  const { to, subject, message } = req.body;
 
+  try {
+    // =========================
+    // 1. VALIDATE INPUT
+    // =========================
+    if (!to || !subject || !message) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Vui lòng nhập đầy đủ email người nhận, tiêu đề và nội dung trả lời",
+      });
+    }
+
+    // =========================
+    // 2. CHECK LIÊN HỆ CÓ TỒN TẠI KHÔNG
+    // =========================
+    const [rows] = await pool.execute(
+      `SELECT id, name FROM contact_messages WHERE id = ? LIMIT 1`,
+      [id],
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy liên hệ cần trả lời",
+      });
+    }
+
+    const contact = rows[0];
+
+    // =========================
+    // 3. KHỞI TẠO NODEMAILER TRANSPORTER
+    // =========================
+    const transporter = nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 587,
+      secure: false,
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+      tls: {
+        rejectUnauthorized: false,
+      },
+      connectionTimeout: 30000,
+      greetingTimeout: 30000,
+      socketTimeout: 30000,
+    });
+
+    // =========================
+    // 4. TEST KẾT NỐI SMTP
+    // =========================
+    await transporter.verify();
+
+    // =========================
+    // 5. GỬI EMAIL PHẢN HỒI
+    // =========================
+    await transporter.sendMail({
+      from: `"Giáo Xứ Đồng Quan" <${process.env.EMAIL_USER}>`,
+      to: to.trim(),
+      subject: subject.trim(),
+      html: `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0; padding:0; background-color:#f4f6f8; font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color:#333333;">
+  <table border="0" cellpadding="0" cellspacing="0" width="100%">
+    <tr>
+      <td align="center" style="padding:30px 15px;">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:600px; background:#ffffff; border-radius:8px; overflow:hidden; border:1px solid #e2e8f0;">
+          
+          <!-- HEADER -->
+          <tr>
+            <td align="center" style="background-color:#1a365d; padding:35px 20px; color:#ffffff;">
+              <div style="font-size:28px; color:#d69e2e; margin-bottom:8px; font-weight:bold;">┼</div>
+              <h1 style="margin:0; font-size:22px; font-weight:600; color:#f7fafc;">GIÁO XỨ ĐỒNG QUAN</h1>
+              <p style="margin:5px 0 0; font-size:13px; color:#cbd5e0; font-style:italic;">Thư Phản Hồi Từ Ban Hành Giáo</p>
+            </td>
+          </tr>
+
+          <!-- GOLD LINE -->
+          <tr>
+            <td style="height:4px; background-color:#d69e2e;"></td>
+          </tr>
+
+          <!-- CONTENT -->
+          <tr>
+            <td style="padding:30px 25px;">
+              <p style="font-size:15px; font-weight:bold;">Thân gửi ${contact.name || "quý giáo dân / độc giả"},</p>
+              
+              <p style="font-size:14px; line-height:1.6; color:#4a5568;">
+                Ban Hành Giáo - Giáo Xứ Đồng Quan đã nhận được thông điệp liên hệ của ông/bà. Dưới đây là nội dung phản hồi chính thức:
+              </p>
+
+              <!-- MESSAGE BOX -->
+              <div style="margin-top:20px; padding:20px; background:#f8fafc; border-left:4px solid #1a365d; border-radius:4px; line-height:1.7; font-size:14px; white-space:pre-line; color:#1a202c;">
+                ${message}
+              </div>
+
+              <div style="margin-top:30px; font-size:13px; color:#718096; line-height:1.5;">
+                <p style="margin:0;">Nếu cần thêm thông tin hỗ trợ, quý vị vui lòng phản hồi trực tiếp qua email này.</p>
+                <p style="margin:5px 0 0 0; font-weight:600;">Trân trọng,<br/>Ban Hành Giáo Giáo Xứ Đồng Quan</p>
+              </div>
+            </td>
+          </tr>
+
+          <!-- FOOTER -->
+          <tr>
+            <td align="center" style="background:#f8fafc; padding:20px; border-top:1px solid #edf2f7; color:#718096; font-size:12px;">
+              <p style="margin:0; font-style:italic;">
+                "Chúa là Nguồn Sáng và là Ơn Cứu Độ của tôi." (Thánh Vịnh 27)
+              </p>
+              <p style="margin:5px 0 0 0;">
+                Email tự động được gửi từ Hệ Thống Quản Lý Giáo Xứ Đồng Quan
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+      `,
+    });
+
+    // =========================
+    // 6. CẬP NHẬT TRẠNG THÁI DB (replied & sent)
+    // =========================
+    await pool.execute(
+      `
+      UPDATE contact_messages
+      SET
+        status = 'replied',
+        email_status = 'sent',
+        email_error = NULL,
+        updated_at = NOW()
+      WHERE id = ?
+      `,
+      [id],
+    );
+
+    console.log(`✅ Đã gửi phản hồi thành công cho contact ID: ${id}`);
+
+    return res.status(200).json({
+      success: true,
+      message: "Đã gửi email phản hồi thành công",
+    });
+  } catch (error) {
+    console.error("❌ REPLY CONTACT ERROR:", error);
+
+    // Cập nhật trạng thái gửi lỗi vào DB nếu có lỗi SMTP
+    try {
+      await pool.execute(
+        `
+        UPDATE contact_messages
+        SET
+          email_status = 'failed',
+          email_error = ?
+        WHERE id = ?
+        `,
+        [error.message, id],
+      );
+    } catch (dbError) {
+      console.error("❌ UPDATE ERROR STATUS FAILED:", dbError);
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể gửi email phản hồi",
+      error: error.message,
+    });
+  }
+});
 module.exports = router;

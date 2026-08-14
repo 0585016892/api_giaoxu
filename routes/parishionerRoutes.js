@@ -433,34 +433,128 @@ router.put("/:id", async (req, res) => {
 // 6. DELETE
 // ==========================================
 router.delete("/:id", async (req, res) => {
-  console.log("Deleting parishioner with ID:", req.params.id);
+  const parishionerId = req.params.id;
+
+  console.log("Deleting parishioner with ID:", parishionerId);
+
   try {
-    // Lưu ý: Có thể thêm logic kiểm tra nếu là chủ hộ có thành viên thì không cho xóa
-    await db.query("DELETE FROM parishioners WHERE id = ?", [req.params.id]);
-    // ================= LOG PARISHIONER =================
+    // =====================================================
+    // 1. LẤY THÔNG TIN GIÁO DÂN TRƯỚC KHI XÓA
+    // =====================================================
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        id,
+        full_name,
+        code,
+        is_head,
+        head_id
+      FROM parishioners
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [parishionerId],
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy giáo dân cần xóa",
+      });
+    }
+
+    const parishioner = rows[0];
+
+    const final_is_head = Number(parishioner.is_head) === 1 ? 1 : 0;
+
+    const full_name = parishioner.full_name || "Không rõ tên";
+
+    // =====================================================
+    // 2. KIỂM TRA CHỦ HỘ
+    // =====================================================
+
+    if (final_is_head === 1) {
+      const [members] = await db.query(
+        `
+        SELECT id, full_name
+        FROM parishioners
+        WHERE head_id = ?
+        `,
+        [parishionerId],
+      );
+
+      if (members.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Không thể xóa chủ hộ "${full_name}" vì hộ gia đình vẫn còn ${members.length} thành viên.`,
+        });
+      }
+    }
+
+    // =====================================================
+    // 3. XÓA GIÁO DÂN
+    // =====================================================
+
+    await db.query("DELETE FROM parishioners WHERE id = ?", [parishionerId]);
+
+    // =====================================================
+    // 4. GHI LOG
+    // =====================================================
+
     await writeLog({
       admin_id: req.user?.id,
       action: "DELETE_PARISHIONER",
       target_type: "parishioners",
-      target_id: req.params.id,
-      description: `Xóa giáo dân: ${full_name} (${code})`,
+      target_id: parishionerId,
+      description:
+        final_is_head === 1
+          ? `Xóa chủ hộ "${full_name}" thành công`
+          : `Xóa giáo dân "${full_name}" thành công`,
       ip_address: req.ip,
     });
 
-    // ================= NOTIFICATION PARISHIONER =================
+    // =====================================================
+    // 5. TẠO NOTIFICATION
+    // =====================================================
+
     await createNotification({
       type: "PARISHIONER_DELETE",
+
       title: final_is_head === 1 ? "Xóa hộ gia đình" : "Xóa thành viên",
-      content: `${final_is_head === 1 ? "Chủ hộ" : "Thành viên"} "${full_name}" đã được xóa khỏi hệ thống.`,
+
+      content:
+        final_is_head === 1
+          ? `Chủ hộ "${full_name}" đã được xóa khỏi hệ thống.`
+          : `Giáo dân "${full_name}" đã được xóa khỏi hệ thống.`,
+
       created_by: req.user?.id,
+
       related_type: "parishioners",
-      related_id: req.params.id,
+
+      related_id: parishionerId,
     });
 
-    res.json({ success: true, message: "Xóa thành công" });
+    // =====================================================
+    // 6. RESPONSE
+    // =====================================================
+
+    return res.json({
+      success: true,
+      message: "Xóa thành công",
+      data: {
+        id: parishionerId,
+        full_name,
+        is_head: final_is_head,
+      },
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error("❌ Lỗi xóa giáo dân:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 });
-
 module.exports = router;

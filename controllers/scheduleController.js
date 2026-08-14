@@ -67,65 +67,87 @@ exports.getWeekSchedule = async (req, res) => {
 
     const { week_start, church_id } = req.query;
 
-    if (!week_start || !church_id) {
+    // Chỉ bắt buộc week_start, bỏ điều kiện bắt buộc của church_id
+    if (!week_start) {
       return res.status(400).json({
-        message: "week_start và church_id là bắt buộc",
+        message: "week_start là bắt buộc",
       });
     }
 
-    let [schedule] = await db.query(
-      `SELECT * FROM liturgical_schedules
-       WHERE week_start = ? AND church_id = ?
-       LIMIT 1`,
-      [week_start, church_id],
-    );
+    let schedule;
+    let events = [];
 
-    log("SCHEDULE FOUND", schedule);
-
-    // AUTO CREATE
-    if (!schedule.length) {
-      const start = moment(week_start);
-      const end = start.clone().add(6, "days");
-
-      const [created] = await db.query(
-        `INSERT INTO liturgical_schedules
-        (church_id, week_start, week_end, title)
-        VALUES (?, ?, ?, ?)`,
-        [
-          church_id,
-          week_start,
-          end.format("YYYY-MM-DD"),
-          `Tuần ${start.format("DD/MM")}`,
-        ],
+    if (church_id) {
+      // Trường hợp có truyền church_id: Giữ nguyên logic cũ theo từng nhà thờ
+      [schedule] = await db.query(
+        `SELECT * FROM liturgical_schedules
+         WHERE week_start = ? AND church_id = ?
+         LIMIT 1`,
+        [week_start, church_id],
       );
 
-      schedule = [
-        {
-          id: created.insertId,
-          church_id,
-          week_start,
-          week_end: end.format("YYYY-MM-DD"),
-        },
-      ];
+      // AUTO CREATE khi có church_id
+      if (!schedule.length) {
+        const start = moment(week_start);
+        const end = start.clone().add(6, "days");
 
-      log("AUTO CREATED SCHEDULE", schedule);
+        const [created] = await db.query(
+          `INSERT INTO liturgical_schedules
+          (church_id, week_start, week_end, title)
+          VALUES (?, ?, ?, ?)`,
+          [
+            church_id,
+            week_start,
+            end.format("YYYY-MM-DD"),
+            `Tuần ${start.format("DD/MM")}`,
+          ],
+        );
+
+        schedule = [
+          {
+            id: created.insertId,
+            church_id,
+            week_start,
+            week_end: end.format("YYYY-MM-DD"),
+          },
+        ];
+
+        log("AUTO CREATED SCHEDULE", schedule);
+      }
+
+      const scheduleId = schedule[0].id;
+
+      [events] = await db.query(
+        `SELECT * FROM liturgical_events
+         WHERE schedule_id = ?
+         ORDER BY event_date ASC, event_time ASC`,
+        [scheduleId],
+      );
+
+      return res.json({
+        schedule: schedule[0],
+        events,
+      });
+    } else {
+      // Trường hợp KHÔNG có church_id: Lấy tất cả các sự kiện thuộc tuần đó của mọi nhà thờ
+      // (Thay c.church_name thành c.name hoặc tên cột thực tế trong bảng churches của bạn)
+      [events] = await db.query(
+        `SELECT e.*, s.church_id, c.name AS church_name, c.address, c.latitude, c.longitude 
+         FROM liturgical_events e
+         JOIN liturgical_schedules s ON e.schedule_id = s.id
+         LEFT JOIN churches c ON s.church_id = c.id
+         WHERE s.week_start = ?
+         ORDER BY e.event_date ASC, e.event_time ASC`,
+        [week_start],
+      );
+
+      log("ALL EVENTS LOADED (NO CHURCH ID)", { count: events.length });
+
+      return res.json({
+        schedule: { week_start },
+        events,
+      });
     }
-
-    const scheduleId = schedule[0].id;
-
-    const [events] = await db.query(
-      `SELECT * FROM liturgical_events
-       WHERE schedule_id = ?
-       ORDER BY event_date ASC, event_time ASC`,
-      [scheduleId],
-    );
-
-    log("EVENTS LOADED", { count: events.length });
-
-    return res.json({
-      schedule: schedule[0],
-      events,
-    });
   } catch (err) {
     errorLog("GET WEEK ERROR", err);
     return res.status(500).json({ message: "Lỗi server", error: err.message });

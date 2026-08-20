@@ -162,53 +162,71 @@ exports.trackVisitor = async (req, res) => {
 };
 exports.getStats = async (req, res) => {
   try {
+    // Tổng số người truy cập (mỗi IP chỉ tính 1)
     const [totalRows] = await db.query(`
-      SELECT COUNT(*) total
+      SELECT COUNT(DISTINCT ip_address) AS total
       FROM website_visitors
     `);
 
+    // Số người truy cập hôm nay (mỗi IP chỉ tính 1)
     const [todayRows] = await db.query(`
-      SELECT COUNT(*) total
+      SELECT COUNT(DISTINCT ip_address) AS total
       FROM website_visitors
       WHERE DATE(created_at) = CURDATE()
     `);
 
+    // Số người đang online (mỗi IP chỉ tính 1)
     const [onlineRows] = await db.query(`
-      SELECT COUNT(*) total
+      SELECT COUNT(DISTINCT ip_address) AS total
       FROM website_visitors
       WHERE last_seen >= NOW() - INTERVAL 5 MINUTE
     `);
 
+    // Top trang được truy cập
+    // Mỗi IP chỉ tính 1 lần / 1 trang
     const [pageRows] = await db.query(`
       SELECT
         page_url,
-        COUNT(*) total
+        COUNT(DISTINCT ip_address) AS total
       FROM website_visitors
       GROUP BY page_url
       ORDER BY total DESC
       LIMIT 10
     `);
 
+    // Trình duyệt
     const [browserRows] = await db.query(`
       SELECT
         browser,
-        COUNT(*) total
+        COUNT(DISTINCT ip_address) AS total
       FROM website_visitors
       GROUP BY browser
     `);
 
+    // Thiết bị
     const [deviceRows] = await db.query(`
       SELECT
         device_type,
-        COUNT(*) total
+        COUNT(DISTINCT ip_address) AS total
       FROM website_visitors
       GROUP BY device_type
     `);
 
+    // Danh sách người truy cập
+    // Lấy 1 record mới nhất của mỗi IP
     const [visitorRows] = await db.query(`
-      SELECT *
-      FROM website_visitors
-      ORDER BY updated_at DESC
+      SELECT w.*
+      FROM website_visitors w
+      INNER JOIN (
+        SELECT
+          ip_address,
+          MAX(updated_at) AS max_updated_at
+        FROM website_visitors
+        GROUP BY ip_address
+      ) latest
+        ON w.ip_address = latest.ip_address
+        AND w.updated_at = latest.max_updated_at
+      ORDER BY w.updated_at DESC
       LIMIT 100
     `);
 
@@ -237,32 +255,45 @@ exports.getVisitorChart = async (req, res) => {
   try {
     const [rows] = await db.query(`
       SELECT
-        DATE(created_at) date,
-        COUNT(*) total
+        DATE(created_at) AS date,
+        COUNT(DISTINCT ip_address) AS total
       FROM website_visitors
-      WHERE created_at >= CURDATE() - INTERVAL 6 DAY
+      WHERE DATE(created_at) >= CURDATE() - INTERVAL 6 DAY
       GROUP BY DATE(created_at)
       ORDER BY DATE(created_at)
     `);
 
-    const result = [];
+    const dataMap = {};
 
-    for (let i = 6; i >= 0; i--) {
-      const date = new Date();
+    rows.forEach((row) => {
+      dataMap[row.date] = Number(row.total);
+    });
 
-      date.setDate(date.getDate() - i);
+    const [dates] = await db.query(`
+      SELECT
+        DATE(CURDATE() - INTERVAL 6 DAY) AS d1,
+        DATE(CURDATE() - INTERVAL 5 DAY) AS d2,
+        DATE(CURDATE() - INTERVAL 4 DAY) AS d3,
+        DATE(CURDATE() - INTERVAL 3 DAY) AS d4,
+        DATE(CURDATE() - INTERVAL 2 DAY) AS d5,
+        DATE(CURDATE() - INTERVAL 1 DAY) AS d6,
+        CURDATE() AS d7
+    `);
 
-      const key = date.toISOString().slice(0, 10);
+    const dateList = [
+      dates[0].d1,
+      dates[0].d2,
+      dates[0].d3,
+      dates[0].d4,
+      dates[0].d5,
+      dates[0].d6,
+      dates[0].d7,
+    ];
 
-      const row = rows.find(
-        (item) => item.date.toISOString().slice(0, 10) === key,
-      );
-
-      result.push({
-        date: key,
-        total: row ? row.total : 0,
-      });
-    }
+    const result = dateList.map((date) => ({
+      date,
+      total: dataMap[date] || 0,
+    }));
 
     res.json({
       success: true,

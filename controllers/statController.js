@@ -162,20 +162,20 @@ exports.trackVisitor = async (req, res) => {
 };
 exports.getStats = async (req, res) => {
   try {
-    // Tổng số người truy cập (mỗi IP chỉ tính 1)
+    // Tổng số người truy cập
     const [totalRows] = await db.query(`
       SELECT COUNT(DISTINCT ip_address) AS total
       FROM website_visitors
     `);
 
-    // Số người truy cập hôm nay (mỗi IP chỉ tính 1)
+    // Số người truy cập hôm nay
     const [todayRows] = await db.query(`
       SELECT COUNT(DISTINCT ip_address) AS total
       FROM website_visitors
       WHERE DATE(created_at) = CURDATE()
     `);
 
-    // Số người đang online (mỗi IP chỉ tính 1)
+    // Số người đang online
     const [onlineRows] = await db.query(`
       SELECT COUNT(DISTINCT ip_address) AS total
       FROM website_visitors
@@ -183,7 +183,6 @@ exports.getStats = async (req, res) => {
     `);
 
     // Top trang được truy cập
-    // Mỗi IP chỉ tính 1 lần / 1 trang
     const [pageRows] = await db.query(`
       SELECT
         page_url,
@@ -212,20 +211,29 @@ exports.getStats = async (req, res) => {
       GROUP BY device_type
     `);
 
-    // Danh sách người truy cập
-    // Lấy 1 record mới nhất của mỗi IP
+    // ==========================================
+    // 100 NGƯỜI TRUY CẬP MỚI NHẤT
+    // MỖI IP CHỈ HIỆN 1 DÒNG
+    // LẤY LẦN TRUY CẬP MỚI NHẤT
+    // ==========================================
+
     const [visitorRows] = await db.query(`
-      SELECT w.*
+      SELECT
+        w.*,
+        stats.visit_count
       FROM website_visitors w
+
       INNER JOIN (
         SELECT
           ip_address,
-          MAX(updated_at) AS max_updated_at
+          MAX(updated_at) AS max_updated_at,
+          COUNT(*) AS visit_count
         FROM website_visitors
         GROUP BY ip_address
-      ) latest
-        ON w.ip_address = latest.ip_address
-        AND w.updated_at = latest.max_updated_at
+      ) stats
+        ON w.ip_address = stats.ip_address
+        AND w.updated_at = stats.max_updated_at
+
       ORDER BY w.updated_at DESC
       LIMIT 100
     `);
@@ -237,17 +245,48 @@ exports.getStats = async (req, res) => {
         totalVisitors: totalRows[0].total,
         todayVisitors: todayRows[0].total,
         onlineUsers: onlineRows[0].total,
+
         topPages: pageRows,
         browsers: browserRows,
         devices: deviceRows,
+
         visitors: visitorRows,
       },
     });
   } catch (err) {
-    console.log(err);
+    console.error("Lỗi getStats:", err);
 
     res.status(500).json({
       success: false,
+      message: "Không thể lấy thống kê",
+    });
+  }
+};
+// GET /api/visitors/history/:ip
+exports.getVisitorHistory = async (req, res) => {
+  try {
+    const { ip } = req.params;
+
+    const [rows] = await db.query(
+      `
+      SELECT *
+      FROM website_visitors
+      WHERE ip_address = ?
+      ORDER BY updated_at DESC
+    `,
+      [ip],
+    );
+
+    res.json({
+      success: true,
+      data: rows,
+    });
+  } catch (err) {
+    console.error("Lỗi lấy lịch sử visitor:", err);
+
+    res.status(500).json({
+      success: false,
+      message: "Không thể lấy lịch sử truy cập",
     });
   }
 };

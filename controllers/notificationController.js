@@ -195,6 +195,26 @@ exports.deleteNotification = async (req, res) => {
     });
   }
 };
+exports.deleteAllNotifications = async (req, res) => {
+  try {
+    await db.query(`
+      DELETE
+      FROM notifications
+    `);
+
+    res.json({
+      success: true,
+      message: "Đã xóa toàn bộ thông báo thành công!",
+    });
+  } catch (err) {
+    console.log(err);
+
+    res.status(500).json({
+      success: false,
+      message: "Lỗi hệ thống, không thể xóa toàn bộ thông báo!",
+    });
+  }
+};
 exports.getNotificationStats = async (req, res) => {
   try {
     const [total] = await db.query(`

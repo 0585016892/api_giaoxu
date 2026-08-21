@@ -16,6 +16,8 @@ router.get("/stats", notificationController.getNotificationStats);
 router.get("/:id", notificationController.getNotificationById);
 
 router.put("/:id/read", notificationController.markAsRead);
+// ĐẶT TRƯỚC: Route xóa tất cả
+router.delete("/delete-all", notificationController.deleteAllNotifications);
 
 router.delete("/:id", notificationController.deleteNotification);
 module.exports = router;

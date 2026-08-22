@@ -39,6 +39,7 @@ const reportRoutes = require("./routes/reportRoutes");
 const sacramentRoutes = require("./routes/sacramentRoutes");
 const sitemap = require("./routes/sitemap");
 const mediaRoutes = require("./routes/mediaRoutes");
+const studentRoutes = require("./routes/studentRoutes");
 // ===============================
 // SOCKET
 // ===============================
@@ -204,7 +205,7 @@ app.use("/api/report", reportRoutes);
 app.use("/api/sacraments", sacramentRoutes);
 app.use("/api/sitemap", sitemap);
 app.use("/api/media", mediaRoutes);
-
+app.use("/api/students", studentRoutes);
 app.get("/", (req, res) => {
   res.json({
     success: true,

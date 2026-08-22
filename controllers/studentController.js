@@ -175,7 +175,7 @@ exports.createStudent = async (req, res) => {
     }
 
     // Lấy học viên cuối cùng
-    const [rows] = await pool.query(`
+    const [rows] = await db.query(`
       SELECT student_code
       FROM students
       ORDER BY id DESC
@@ -194,7 +194,7 @@ exports.createStudent = async (req, res) => {
 
     const student_code = `HV${String(nextNumber).padStart(5, "0")}`;
 
-    const [result] = await pool.query(
+    const [result] = await db.query(
       `
       INSERT INTO students (
         student_code,

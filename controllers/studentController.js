@@ -151,7 +151,6 @@ exports.getStudentById = async (req, res) => {
 exports.createStudent = async (req, res) => {
   try {
     const {
-      student_code,
       full_name,
       saint_name,
       gender,
@@ -168,14 +167,34 @@ exports.createStudent = async (req, res) => {
       guardian_phone,
     } = req.body;
 
-    if (!student_code || !full_name) {
+    if (!full_name?.trim()) {
       return res.status(400).json({
         success: false,
-        message: "Mã học sinh và họ tên là bắt buộc",
+        message: "Vui lòng nhập họ tên học viên",
       });
     }
 
-    const [result] = await db.query(
+    // Lấy học viên cuối cùng
+    const [rows] = await pool.query(`
+      SELECT student_code
+      FROM students
+      ORDER BY id DESC
+      LIMIT 1
+    `);
+
+    let nextNumber = 1;
+
+    if (rows.length && rows[0].student_code) {
+      const match = rows[0].student_code.match(/\d+$/);
+
+      if (match) {
+        nextNumber = parseInt(match[0], 10) + 1;
+      }
+    }
+
+    const student_code = `HV${String(nextNumber).padStart(5, "0")}`;
+
+    const [result] = await pool.query(
       `
       INSERT INTO students (
         student_code,
@@ -198,7 +217,7 @@ exports.createStudent = async (req, res) => {
       `,
       [
         student_code,
-        full_name,
+        full_name.trim(),
         saint_name || null,
         gender || null,
         date_of_birth || null,
@@ -215,26 +234,20 @@ exports.createStudent = async (req, res) => {
       ],
     );
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: "Thêm học sinh thành công",
+      message: "Thêm học viên thành công",
       data: {
         id: result.insertId,
+        student_code,
       },
     });
   } catch (error) {
-    console.error("CREATE STUDENT ERROR:", error);
+    console.error("createStudent error:", error);
 
-    if (error.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({
-        success: false,
-        message: "Mã học sinh đã tồn tại",
-      });
-    }
-
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Lỗi thêm học sinh",
+      message: "Không thể tạo học viên",
     });
   }
 };

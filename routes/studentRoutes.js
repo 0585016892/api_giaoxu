@@ -24,15 +24,15 @@ const {
 // STUDENTS
 // =====================================================
 
-router.get("/students", getStudents);
+router.get("/", getStudents);
 
-router.get("/students/:id", getStudentById);
+router.get("/:id", getStudentById);
 
-router.post("/students", createStudent);
+router.post("/", createStudent);
 
-router.put("/students/:id", updateStudent);
+router.put("/:id", updateStudent);
 
-router.delete("/students/:id", deleteStudent);
+router.delete("/:id", deleteStudent);
 
 // =====================================================
 // STUDENT CLASSES

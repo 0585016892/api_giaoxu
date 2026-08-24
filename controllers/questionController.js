@@ -331,100 +331,172 @@ class QuestionController {
     try {
       const { batch, answers } = req.body;
 
-      if (![1, 2].includes(Number(batch))) {
+      // ==============================
+      // 1. KIỂM TRA BATCH
+      // ==============================
+
+      const batchNumber = Number(batch);
+
+      const batchRanges = {
+        1: {
+          from: 1,
+          to: 19,
+        },
+        2: {
+          from: 20,
+          to: 37,
+        },
+      };
+
+      if (!batchRanges[batchNumber]) {
         return res.status(400).json({
           success: false,
           message: "Đợt thi không hợp lệ",
         });
       }
 
-      if (!answers || !Array.isArray(answers) || answers.length === 0) {
+      // ==============================
+      // 2. KIỂM TRA ANSWERS
+      // ==============================
+
+      if (!Array.isArray(answers) || answers.length === 0) {
         return res.status(400).json({
           success: false,
           message: "Danh sách đáp án không hợp lệ",
         });
       }
 
-      const batchRanges = {
-        1: {
-          start: 1,
-          end: 19,
-        },
-        2: {
-          start: 20,
-          end: 37,
-        },
-      };
+      // ==============================
+      // 3. LẤY ID THEO ĐÚNG THỨ TỰ FE
+      // ==============================
 
-      const range = batchRanges[Number(batch)];
+      const questionIds = answers
+        .map((item) => Number(item.question_id))
+        .filter((id) => Number.isInteger(id) && id > 0);
 
-      const ids = answers.map((x) => x.question_id);
+      if (questionIds.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Không có question_id hợp lệ",
+        });
+      }
+
+      // ==============================
+      // 4. LẤY CÂU HỎI TỪ DATABASE
+      // ==============================
 
       const [questions] = await db.query(
         `
       SELECT
         id,
+        lesson_id,
         question,
         answer_a,
         answer_b,
         answer_c,
         answer_d,
-        correct_answer,
-        lesson_id
+        correct_answer
       FROM questions
       WHERE id IN (?)
         AND lesson_id BETWEEN ? AND ?
       `,
-        [ids, range.start, range.end],
+        [
+          questionIds,
+          batchRanges[batchNumber].from,
+          batchRanges[batchNumber].to,
+        ],
       );
 
-      if (questions.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Không tìm thấy câu hỏi hợp lệ trong đợt thi",
-        });
-      }
+      // ==============================
+      // 5. MAP DATABASE THEO ID
+      // ==============================
+
+      const questionMap = new Map(
+        questions.map((question) => [Number(question.id), question]),
+      );
+
+      // ==============================
+      // 6. CHẤM THEO ĐÚNG THỨ TỰ FE
+      // ==============================
 
       let correctCount = 0;
 
-      const results = questions.map((q) => {
-        const userAnswer = answers.find(
-          (a) => Number(a.question_id) === Number(q.id),
-        );
+      const results = answers.map((userAnswer) => {
+        const questionId = Number(userAnswer.question_id);
 
-        const selected = userAnswer?.selected || "";
+        const question = questionMap.get(questionId);
 
-        const isCorrect = selected === q.correct_answer;
+        // Nếu câu không tồn tại / không thuộc batch
+        if (!question) {
+          return {
+            question_id: questionId,
+            question: "",
+            answer_a: "",
+            answer_b: "",
+            answer_c: "",
+            answer_d: "",
+            selected: userAnswer.selected || "",
+            correct_answer: null,
+            isCorrect: false,
+            invalid: true,
+          };
+        }
+
+        const selected = userAnswer.selected || "";
+
+        const isCorrect = selected === question.correct_answer;
 
         if (isCorrect) {
           correctCount++;
         }
 
         return {
-          question_id: q.id,
-          question: q.question,
+          question_id: question.id,
+          lesson_id: question.lesson_id,
 
-          answer_a: q.answer_a,
-          answer_b: q.answer_b,
-          answer_c: q.answer_c,
-          answer_d: q.answer_d,
+          question: question.question,
+
+          answer_a: question.answer_a,
+          answer_b: question.answer_b,
+          answer_c: question.answer_c,
+          answer_d: question.answer_d,
 
           selected,
-          correct_answer: q.correct_answer,
+          correct_answer: question.correct_answer,
+
           isCorrect,
+          invalid: false,
         };
       });
 
-      const total = questions.length;
+      // ==============================
+      // 7. TÍNH ĐIỂM
+      // ==============================
+
+      const total = results.length;
 
       const score = total > 0 ? Math.round((correctCount / total) * 100) : 0;
 
+      // ==============================
+      // 8. RESPONSE
+      // ==============================
+
       return res.json({
         success: true,
-        batch: Number(batch),
+
+        batch: batchNumber,
+
+        lessonRange: {
+          from: batchRanges[batchNumber].from,
+          to: batchRanges[batchNumber].to,
+        },
+
         score,
+
         correctCount,
+
         total,
+
         results,
       });
     } catch (error) {

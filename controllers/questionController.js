@@ -267,27 +267,55 @@ class QuestionController {
   // ==========================
   async generateExam(req, res) {
     console.log("Generating exam questions...");
+
     try {
       const limit = Number(req.query.limit) || 20;
+      const batch = Number(req.query.batch);
+
+      let lessonStart;
+      let lessonEnd;
+
+      switch (batch) {
+        case 1:
+          lessonStart = 1;
+          lessonEnd = 19;
+          break;
+
+        case 2:
+          lessonStart = 20;
+          lessonEnd = 37;
+          break;
+
+        default:
+          return res.status(400).json({
+            success: false,
+            message: "Đợt thi không hợp lệ. Chỉ hỗ trợ đợt 1 hoặc đợt 2.",
+          });
+      }
 
       const [questions] = await db.query(
         `
-        SELECT
-          *
-        FROM questions
-        ORDER BY RAND()
-        LIMIT ?
-        `,
-        [limit],
+      SELECT *
+      FROM questions
+      WHERE lesson_id BETWEEN ? AND ?
+      ORDER BY RAND()
+      LIMIT ?
+      `,
+        [lessonStart, lessonEnd, limit],
       );
 
       res.json({
         success: true,
+        batch,
+        lessonRange: {
+          from: lessonStart,
+          to: lessonEnd,
+        },
         total: questions.length,
         questions,
       });
     } catch (error) {
-      console.error(error);
+      console.error("Generate exam error:", error);
 
       res.status(500).json({
         success: false,

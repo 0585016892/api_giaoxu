@@ -329,14 +329,34 @@ class QuestionController {
   // ==========================
   async submitExam(req, res) {
     try {
-      const { answers } = req.body;
+      const { batch, answers } = req.body;
 
-      if (!answers || !Array.isArray(answers)) {
+      if (![1, 2].includes(Number(batch))) {
+        return res.status(400).json({
+          success: false,
+          message: "Đợt thi không hợp lệ",
+        });
+      }
+
+      if (!answers || !Array.isArray(answers) || answers.length === 0) {
         return res.status(400).json({
           success: false,
           message: "Danh sách đáp án không hợp lệ",
         });
       }
+
+      const batchRanges = {
+        1: {
+          start: 1,
+          end: 19,
+        },
+        2: {
+          start: 20,
+          end: 37,
+        },
+      };
+
+      const range = batchRanges[Number(batch)];
 
       const ids = answers.map((x) => x.question_id);
 
@@ -349,19 +369,32 @@ class QuestionController {
         answer_b,
         answer_c,
         answer_d,
-        correct_answer
+        correct_answer,
+        lesson_id
       FROM questions
       WHERE id IN (?)
+        AND lesson_id BETWEEN ? AND ?
       `,
-        [ids],
+        [ids, range.start, range.end],
       );
+
+      if (questions.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Không tìm thấy câu hỏi hợp lệ trong đợt thi",
+        });
+      }
 
       let correctCount = 0;
 
       const results = questions.map((q) => {
-        const userAnswer = answers.find((a) => a.question_id === q.id);
+        const userAnswer = answers.find(
+          (a) => Number(a.question_id) === Number(q.id),
+        );
 
-        const isCorrect = userAnswer?.selected === q.correct_answer;
+        const selected = userAnswer?.selected || "";
+
+        const isCorrect = selected === q.correct_answer;
 
         if (isCorrect) {
           correctCount++;
@@ -376,25 +409,28 @@ class QuestionController {
           answer_c: q.answer_c,
           answer_d: q.answer_d,
 
-          selected: userAnswer?.selected || null,
+          selected,
           correct_answer: q.correct_answer,
           isCorrect,
         };
       });
 
-      const score = Math.round((correctCount / questions.length) * 100);
+      const total = questions.length;
 
-      res.json({
+      const score = total > 0 ? Math.round((correctCount / total) * 100) : 0;
+
+      return res.json({
         success: true,
+        batch: Number(batch),
         score,
         correctCount,
-        total: questions.length,
+        total,
         results,
       });
     } catch (error) {
-      console.error(error);
+      console.error("Submit exam error:", error);
 
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         message: error.message,
       });

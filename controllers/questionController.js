@@ -269,9 +269,8 @@ class QuestionController {
     console.log("Generating exam questions...");
 
     try {
-      const limit = Number(req.query.limit) || 20;
+      const limit = Number(req.query.limit) || 30;
       const batch = Number(req.query.batch);
-
       let lessonStart;
       let lessonEnd;
 

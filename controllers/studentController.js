@@ -1,99 +1,40 @@
 const db = require("../config/db");
 
 // =====================================================
-// STUDENTS
-// =====================================================
-
+// LẤY DANH SÁCH HỌC SINH
 // GET /api/students
+// =====================================================
 exports.getStudents = async (req, res) => {
   try {
-    const { search = "", page = 1, limit = 20 } = req.query;
-
-    const pageNumber = Math.max(parseInt(page) || 1, 1);
-    const limitNumber = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
-
-    const offset = (pageNumber - 1) * limitNumber;
-    const keyword = `%${search.trim()}%`;
-
-    const [countRows] = await db.query(
-      `
-      SELECT COUNT(*) AS total
+    const [rows] = await db.query(`
+      SELECT *
       FROM students
-      WHERE
-        full_name LIKE ?
-        OR student_code LIKE ?
-        OR saint_name LIKE ?
-        OR phone LIKE ?
-        OR email LIKE ?
-      `,
-      [keyword, keyword, keyword, keyword, keyword],
-    );
-
-    const total = countRows[0].total;
-
-    const [rows] = await db.query(
-      `
-      SELECT
-        s.*,
-
-        (
-          SELECT sc.class_name
-          FROM student_classes sc
-          WHERE sc.student_id = s.id
-          ORDER BY sc.school_year DESC, sc.id DESC
-          LIMIT 1
-        ) AS current_class,
-
-        (
-          SELECT sc.school_year
-          FROM student_classes sc
-          WHERE sc.student_id = s.id
-          ORDER BY sc.school_year DESC, sc.id DESC
-          LIMIT 1
-        ) AS current_school_year
-
-      FROM students s
-
-      WHERE
-        s.full_name LIKE ?
-        OR s.student_code LIKE ?
-        OR s.saint_name LIKE ?
-        OR s.phone LIKE ?
-        OR s.email LIKE ?
-
-      ORDER BY s.id DESC
-
-      LIMIT ? OFFSET ?
-      `,
-      [keyword, keyword, keyword, keyword, keyword, limitNumber, offset],
-    );
+      ORDER BY created_at DESC
+    `);
 
     res.json({
       success: true,
       data: rows,
-      pagination: {
-        page: pageNumber,
-        limit: limitNumber,
-        total,
-        totalPages: Math.ceil(total / limitNumber),
-      },
     });
   } catch (error) {
-    console.error("GET STUDENTS ERROR:", error);
+    console.error("getStudents error:", error);
 
     res.status(500).json({
       success: false,
-      message: "Lỗi lấy danh sách học sinh",
+      message: "Không thể lấy danh sách học sinh",
     });
   }
 };
 
+// =====================================================
+// CHI TIẾT HỌC SINH
 // GET /api/students/:id
+// =====================================================
 exports.getStudentById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [studentRows] = await db.query(
+    const [rows] = await db.query(
       `
       SELECT *
       FROM students
@@ -102,261 +43,604 @@ exports.getStudentById = async (req, res) => {
       [id],
     );
 
-    if (studentRows.length === 0) {
+    if (!rows.length) {
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy học sinh",
       });
     }
 
-    const [classes] = await db.query(
-      `
-      SELECT *
-      FROM student_classes
-      WHERE student_id = ?
-      ORDER BY school_year DESC, id DESC
-      `,
-      [id],
-    );
-
-    const [exams] = await db.query(
-      `
-      SELECT *
-      FROM student_exams
-      WHERE student_id = ?
-      ORDER BY exam_date DESC, id DESC
-      `,
-      [id],
-    );
-
     res.json({
       success: true,
-      data: {
-        ...studentRows[0],
-        classes,
-        exams,
-      },
+      data: rows[0],
     });
   } catch (error) {
-    console.error("GET STUDENT ERROR:", error);
+    console.error("getStudentById error:", error);
 
     res.status(500).json({
       success: false,
-      message: "Lỗi lấy thông tin học sinh",
+      message: "Không thể lấy thông tin học sinh",
     });
   }
 };
 
+// =====================================================
+// TẠO HỌC SINH
 // POST /api/students
+// =====================================================
 exports.createStudent = async (req, res) => {
   try {
+    // =====================================================
+    // LẤY DỮ LIỆU TỪ REQUEST
+    // =====================================================
     const {
-      full_name,
-      saint_name,
+      name,
       gender,
       date_of_birth,
-      place_of_birth,
+      birth_place,
+      nationality,
+
       phone,
       email,
       address,
+      parish,
+
       father_name,
       father_phone,
+
       mother_name,
       mother_phone,
+
       guardian_name,
       guardian_phone,
+      guardian_relationship,
+
+      baptism_name,
+      baptism_date,
+      baptism_place,
+      baptism_parish,
+      baptism_certificate_no,
+
+      saint_name,
+
+      first_communion_date,
+      first_communion_place,
+
+      confirmation_date,
+      confirmation_place,
+      confirmation_saint_name,
+
+      catechism_level,
+      catechism_status,
+      enrollment_date,
+
+      note,
+      avatar,
+      status,
     } = req.body;
 
-    if (!full_name?.trim()) {
+    console.log("========== CREATE STUDENT ==========");
+    console.log("BODY:", req.body);
+
+    // =====================================================
+    // VALIDATE HỌ TÊN
+    // =====================================================
+    if (!name || !String(name).trim()) {
       return res.status(400).json({
         success: false,
-        message: "Vui lòng nhập họ tên học viên",
+        message: "Họ tên học sinh là bắt buộc",
       });
     }
 
-    // Lấy học viên cuối cùng
-    const [rows] = await db.query(`
-      SELECT student_code
+    // =====================================================
+    // VALIDATE GIỚI TÍNH
+    // =====================================================
+    const allowedGender = ["Nam", "Nữ", "Khác"];
+
+    if (gender && !allowedGender.includes(gender)) {
+      return res.status(400).json({
+        success: false,
+        message: "Giới tính không hợp lệ",
+      });
+    }
+
+    // =====================================================
+    // VALIDATE TRẠNG THÁI HỌC GIÁO LÝ
+    // =====================================================
+    const allowedCatechismStatus = [
+      "new",
+      "studying",
+      "completed",
+      "graduated",
+      "dropped",
+    ];
+
+    if (
+      catechism_status &&
+      !allowedCatechismStatus.includes(catechism_status)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Trạng thái học giáo lý không hợp lệ",
+      });
+    }
+
+    // =====================================================
+    // VALIDATE TRẠNG THÁI HỌC SINH
+    // =====================================================
+    const allowedStatus = [
+      "active",
+      "inactive",
+      "graduated",
+      "transferred",
+      "dropped",
+    ];
+
+    if (status && !allowedStatus.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Trạng thái học sinh không hợp lệ",
+      });
+    }
+
+    // =====================================================
+    // TỰ ĐỘNG TẠO MÃ HỌC SINH
+    //
+    // HS000001
+    // HS000002
+    // HS000003
+    // =====================================================
+    const [lastStudent] = await db.query(`
+      SELECT id
       FROM students
       ORDER BY id DESC
       LIMIT 1
     `);
 
-    let nextNumber = 1;
+    const nextId = lastStudent.length ? Number(lastStudent[0].id) + 1 : 1;
 
-    if (rows.length && rows[0].student_code) {
-      const match = rows[0].student_code.match(/\d+$/);
+    const studentCode = `HS${String(nextId).padStart(6, "0")}`;
 
-      if (match) {
-        nextNumber = parseInt(match[0], 10) + 1;
-      }
-    }
+    console.log("Mã học sinh tự tạo:", studentCode);
 
-    const student_code = `HV${String(nextNumber).padStart(5, "0")}`;
-
+    // =====================================================
+    // INSERT HỌC SINH
+    // =====================================================
     const [result] = await db.query(
       `
       INSERT INTO students (
-        student_code,
-        full_name,
-        saint_name,
+        code,
+        name,
         gender,
         date_of_birth,
-        place_of_birth,
+        birth_place,
+        nationality,
+
         phone,
         email,
         address,
+        parish,
+
         father_name,
         father_phone,
+
         mother_name,
         mother_phone,
+
         guardian_name,
-        guardian_phone
+        guardian_phone,
+        guardian_relationship,
+
+        baptism_name,
+        baptism_date,
+        baptism_place,
+        baptism_parish,
+        baptism_certificate_no,
+
+        saint_name,
+
+        first_communion_date,
+        first_communion_place,
+
+        confirmation_date,
+        confirmation_place,
+        confirmation_saint_name,
+
+        catechism_level,
+        catechism_status,
+        enrollment_date,
+
+        note,
+        avatar,
+        status
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (
+        ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?,
+        ?, ?,
+        ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?,
+        ?, ?,
+        ?, ?, ?,
+        ?, ?, ?,
+        ?, ?, ?
+      )
       `,
       [
-        student_code,
-        full_name.trim(),
-        saint_name || null,
+        // Thông tin cơ bản
+        studentCode,
+        String(name).trim(),
         gender || null,
         date_of_birth || null,
-        place_of_birth || null,
+        birth_place || null,
+        nationality || "Việt Nam",
+
+        // Liên hệ
         phone || null,
         email || null,
         address || null,
+        parish || null,
+
+        // Cha
         father_name || null,
         father_phone || null,
+
+        // Mẹ
         mother_name || null,
         mother_phone || null,
+
+        // Người giám hộ
         guardian_name || null,
         guardian_phone || null,
+        guardian_relationship || null,
+
+        // Bí tích Rửa tội
+        baptism_name || null,
+        baptism_date || null,
+        baptism_place || null,
+        baptism_parish || null,
+        baptism_certificate_no || null,
+
+        // Thánh bổn mạng
+        saint_name || null,
+
+        // Rước lễ lần đầu
+        first_communion_date || null,
+        first_communion_place || null,
+
+        // Thêm sức
+        confirmation_date || null,
+        confirmation_place || null,
+        confirmation_saint_name || null,
+
+        // Thông tin giáo lý
+        catechism_level || null,
+        catechism_status || "new",
+        enrollment_date || null,
+
+        // Khác
+        note || null,
+        avatar || null,
+        status || "active",
       ],
     );
 
+    console.log("INSERT RESULT:", result);
+    console.log("====================================");
+
     return res.status(201).json({
       success: true,
-      message: "Thêm học viên thành công",
+      message: "Thêm học sinh thành công",
       data: {
         id: result.insertId,
-        student_code,
+        code: studentCode,
       },
     });
   } catch (error) {
-    console.error("createStudent error:", error);
+    console.error("========== CREATE STUDENT ERROR ==========");
+    console.error("Message:", error.message);
+    console.error("Code:", error.code);
+    console.error("SQL Message:", error.sqlMessage);
+    console.error("==========================================");
 
     return res.status(500).json({
       success: false,
-      message: "Không thể tạo học viên",
+      message: "Không thể thêm học sinh",
+      error: error.message,
     });
   }
 };
 
+// =====================================================
+// CẬP NHẬT HỌC SINH
 // PUT /api/students/:id
+// =====================================================
 exports.updateStudent = async (req, res) => {
   try {
     const { id } = req.params;
 
     const {
-      student_code,
-      full_name,
-      saint_name,
+      name,
       gender,
       date_of_birth,
-      place_of_birth,
+      birth_place,
+      nationality,
+
       phone,
       email,
       address,
+      parish,
+
       father_name,
       father_phone,
+
       mother_name,
       mother_phone,
+
       guardian_name,
       guardian_phone,
+      guardian_relationship,
+
+      baptism_name,
+      baptism_date,
+      baptism_place,
+      baptism_parish,
+      baptism_certificate_no,
+
+      saint_name,
+
+      first_communion_date,
+      first_communion_place,
+
+      confirmation_date,
+      confirmation_place,
+      confirmation_saint_name,
+
+      catechism_level,
+      catechism_status,
+      enrollment_date,
+
+      note,
+      avatar,
+      status,
     } = req.body;
 
-    if (!full_name) {
+    console.log("========== UPDATE STUDENT ==========");
+    console.log("Student ID:", id);
+    console.log("BODY:", req.body);
+
+    // ==========================================
+    // VALIDATE HỌ TÊN
+    // ==========================================
+    if (!name || !String(name).trim()) {
       return res.status(400).json({
         success: false,
-        message: "Họ tên là bắt buộc",
+        message: "Họ tên học sinh là bắt buộc",
       });
     }
 
+    // ==========================================
+    // VALIDATE GIỚI TÍNH
+    // ==========================================
+    const allowedGender = ["Nam", "Nữ", "Khác"];
+
+    if (gender && !allowedGender.includes(gender)) {
+      return res.status(400).json({
+        success: false,
+        message: "Giới tính không hợp lệ",
+      });
+    }
+
+    // ==========================================
+    // VALIDATE TRẠNG THÁI GIÁO LÝ
+    // ==========================================
+    const allowedCatechismStatus = [
+      "new",
+      "studying",
+      "completed",
+      "graduated",
+      "dropped",
+    ];
+
+    if (
+      catechism_status &&
+      !allowedCatechismStatus.includes(catechism_status)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Trạng thái học giáo lý không hợp lệ",
+      });
+    }
+
+    // ==========================================
+    // VALIDATE TRẠNG THÁI HỌC SINH
+    // ==========================================
+    const allowedStatus = [
+      "active",
+      "inactive",
+      "graduated",
+      "transferred",
+      "dropped",
+    ];
+
+    if (status && !allowedStatus.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Trạng thái học sinh không hợp lệ",
+      });
+    }
+
+    // ==========================================
+    // UPDATE
+    // KHÔNG UPDATE CODE
+    // ==========================================
     const [result] = await db.query(
       `
       UPDATE students
       SET
-        student_code = ?,
-        full_name = ?,
-        saint_name = ?,
+        name = ?,
         gender = ?,
         date_of_birth = ?,
-        place_of_birth = ?,
+        birth_place = ?,
+        nationality = ?,
+
         phone = ?,
         email = ?,
         address = ?,
+        parish = ?,
+
         father_name = ?,
         father_phone = ?,
+
         mother_name = ?,
         mother_phone = ?,
+
         guardian_name = ?,
-        guardian_phone = ?
+        guardian_phone = ?,
+        guardian_relationship = ?,
+
+        baptism_name = ?,
+        baptism_date = ?,
+        baptism_place = ?,
+        baptism_parish = ?,
+        baptism_certificate_no = ?,
+
+        saint_name = ?,
+
+        first_communion_date = ?,
+        first_communion_place = ?,
+
+        confirmation_date = ?,
+        confirmation_place = ?,
+        confirmation_saint_name = ?,
+
+        catechism_level = ?,
+        catechism_status = ?,
+        enrollment_date = ?,
+
+        note = ?,
+        avatar = ?,
+        status = ?,
+
+        updated_at = CURRENT_TIMESTAMP
+
       WHERE id = ?
       `,
       [
-        student_code,
-        full_name,
-        saint_name || null,
+        name.trim(),
         gender || null,
         date_of_birth || null,
-        place_of_birth || null,
+        birth_place || null,
+        nationality || "Việt Nam",
+
         phone || null,
         email || null,
         address || null,
+        parish || null,
+
         father_name || null,
         father_phone || null,
+
         mother_name || null,
         mother_phone || null,
+
         guardian_name || null,
         guardian_phone || null,
+        guardian_relationship || null,
+
+        baptism_name || null,
+        baptism_date || null,
+        baptism_place || null,
+        baptism_parish || null,
+        baptism_certificate_no || null,
+
+        saint_name || null,
+
+        first_communion_date || null,
+        first_communion_place || null,
+
+        confirmation_date || null,
+        confirmation_place || null,
+        confirmation_saint_name || null,
+
+        catechism_level || null,
+        catechism_status || "new",
+        enrollment_date || null,
+
+        note || null,
+        avatar || null,
+        status || "active",
+
         id,
       ],
     );
 
-    if (result.affectedRows === 0) {
+    console.log("MYSQL RESULT:", result);
+
+    if (!result.affectedRows) {
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy học sinh",
       });
     }
 
-    res.json({
+    console.log("✅ UPDATE STUDENT SUCCESS");
+
+    return res.json({
       success: true,
       message: "Cập nhật học sinh thành công",
     });
   } catch (error) {
-    console.error("UPDATE STUDENT ERROR:", error);
+    console.error("========== UPDATE STUDENT ERROR ==========");
+    console.error("Message:", error.message);
+    console.error("Code:", error.code);
+    console.error("SQL Message:", error.sqlMessage);
 
-    if (error.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({
-        success: false,
-        message: "Mã học sinh đã tồn tại",
-      });
-    }
-
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Lỗi cập nhật học sinh",
+      message: "Không thể cập nhật học sinh",
+      error: error.message,
     });
   }
 };
-
+// =====================================================
+// XÓA HỌC SINH
 // DELETE /api/students/:id
+// =====================================================
 exports.deleteStudent = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [result] = await db.query(
+    // Kiểm tra tồn tại
+    const [students] = await db.query(
+      `
+      SELECT id
+      FROM students
+      WHERE id = ?
+      `,
+      [id],
+    );
+
+    if (!students.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy học sinh",
+      });
+    }
+
+    // Xóa quan hệ lớp trước nếu có
+    await db.query(
+      `
+      DELETE FROM class_students
+      WHERE student_id = ?
+      `,
+      [id],
+    );
+
+    // Xóa học sinh
+    await db.query(
       `
       DELETE FROM students
       WHERE id = ?
@@ -364,340 +648,16 @@ exports.deleteStudent = async (req, res) => {
       [id],
     );
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy học sinh",
-      });
-    }
-
     res.json({
       success: true,
-      message: "Xóa học sinh thành công",
+      message: "Đã xóa học sinh thành công",
     });
   } catch (error) {
-    console.error("DELETE STUDENT ERROR:", error);
+    console.error("deleteStudent error:", error);
 
     res.status(500).json({
       success: false,
-      message: "Lỗi xóa học sinh",
-    });
-  }
-};
-
-// =====================================================
-// STUDENT CLASSES
-// =====================================================
-
-exports.getStudentClasses = async (req, res) => {
-  try {
-    const { studentId } = req.params;
-
-    const [rows] = await db.query(
-      `
-      SELECT *
-      FROM student_classes
-      WHERE student_id = ?
-      ORDER BY school_year DESC, id DESC
-      `,
-      [studentId],
-    );
-
-    res.json({
-      success: true,
-      data: rows,
-    });
-  } catch (error) {
-    console.error("GET STUDENT CLASSES ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Lỗi lấy lịch sử lớp",
-    });
-  }
-};
-
-exports.createStudentClass = async (req, res) => {
-  try {
-    const { student_id, class_name, school_year, status, note } = req.body;
-
-    if (!student_id || !class_name || !school_year) {
-      return res.status(400).json({
-        success: false,
-        message: "student_id, class_name và school_year là bắt buộc",
-      });
-    }
-
-    const [result] = await db.query(
-      `
-      INSERT INTO student_classes (
-        student_id,
-        class_name,
-        school_year,
-        status,
-        note
-      )
-      VALUES (?, ?, ?, ?, ?)
-      `,
-      [student_id, class_name, school_year, status || "studying", note || null],
-    );
-
-    res.status(201).json({
-      success: true,
-      message: "Thêm lớp học thành công",
-      data: {
-        id: result.insertId,
-      },
-    });
-  } catch (error) {
-    console.error("CREATE STUDENT CLASS ERROR:", error);
-
-    if (error.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({
-        success: false,
-        message: "Học sinh đã có lớp trong năm học này",
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      message: "Lỗi thêm lớp học",
-    });
-  }
-};
-
-exports.updateStudentClass = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const { class_name, school_year, status, note } = req.body;
-
-    const [result] = await db.query(
-      `
-      UPDATE student_classes
-      SET
-        class_name = ?,
-        school_year = ?,
-        status = ?,
-        note = ?
-      WHERE id = ?
-      `,
-      [class_name, school_year, status, note || null, id],
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy lớp học",
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Cập nhật lớp học thành công",
-    });
-  } catch (error) {
-    console.error("UPDATE STUDENT CLASS ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Lỗi cập nhật lớp học",
-    });
-  }
-};
-
-exports.deleteStudentClass = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const [result] = await db.query(
-      `
-      DELETE FROM student_classes
-      WHERE id = ?
-      `,
-      [id],
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy lớp học",
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Xóa lịch sử lớp thành công",
-    });
-  } catch (error) {
-    console.error("DELETE STUDENT CLASS ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Lỗi xóa lịch sử lớp",
-    });
-  }
-};
-
-// =====================================================
-// STUDENT EXAMS
-// =====================================================
-
-exports.getStudentExams = async (req, res) => {
-  try {
-    const { studentId } = req.params;
-
-    const [rows] = await db.query(
-      `
-      SELECT *
-      FROM student_exams
-      WHERE student_id = ?
-      ORDER BY exam_date DESC, id DESC
-      `,
-      [studentId],
-    );
-
-    res.json({
-      success: true,
-      data: rows,
-    });
-  } catch (error) {
-    console.error("GET STUDENT EXAMS ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Lỗi lấy kết quả kiểm tra",
-    });
-  }
-};
-
-exports.createStudentExam = async (req, res) => {
-  try {
-    const { student_id, exam_name, exam_date, score, result, note } = req.body;
-
-    if (!student_id || !exam_name) {
-      return res.status(400).json({
-        success: false,
-        message: "student_id và exam_name là bắt buộc",
-      });
-    }
-
-    const [resultDb] = await db.query(
-      `
-      INSERT INTO student_exams (
-        student_id,
-        exam_name,
-        exam_date,
-        score,
-        result,
-        note
-      )
-      VALUES (?, ?, ?, ?, ?, ?)
-      `,
-      [
-        student_id,
-        exam_name,
-        exam_date || null,
-        score ?? null,
-        result || "pending",
-        note || null,
-      ],
-    );
-
-    res.status(201).json({
-      success: true,
-      message: "Thêm kết quả kiểm tra thành công",
-      data: {
-        id: resultDb.insertId,
-      },
-    });
-  } catch (error) {
-    console.error("CREATE STUDENT EXAM ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Lỗi thêm kết quả kiểm tra",
-    });
-  }
-};
-
-exports.updateStudentExam = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const { exam_name, exam_date, score, result, note } = req.body;
-
-    const [resultDb] = await db.query(
-      `
-      UPDATE student_exams
-      SET
-        exam_name = ?,
-        exam_date = ?,
-        score = ?,
-        result = ?,
-        note = ?
-      WHERE id = ?
-      `,
-      [
-        exam_name,
-        exam_date || null,
-        score ?? null,
-        result || "pending",
-        note || null,
-        id,
-      ],
-    );
-
-    if (resultDb.affectedRows === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy kết quả kiểm tra",
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Cập nhật kết quả kiểm tra thành công",
-    });
-  } catch (error) {
-    console.error("UPDATE STUDENT EXAM ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Lỗi cập nhật kết quả kiểm tra",
-    });
-  }
-};
-
-exports.deleteStudentExam = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const [result] = await db.query(
-      `
-      DELETE FROM student_exams
-      WHERE id = ?
-      `,
-      [id],
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy kết quả kiểm tra",
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Xóa kết quả kiểm tra thành công",
-    });
-  } catch (error) {
-    console.error("DELETE STUDENT EXAM ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Lỗi xóa kết quả kiểm tra",
+      message: "Không thể xóa học sinh",
     });
   }
 };

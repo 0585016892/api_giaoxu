@@ -40,6 +40,13 @@ const sacramentRoutes = require("./routes/sacramentRoutes");
 const sitemap = require("./routes/sitemap");
 const mediaRoutes = require("./routes/mediaRoutes");
 const studentRoutes = require("./routes/studentRoutes");
+const classRoutes = require("./routes/classRoutes");
+const classStudentRoutes = require("./routes/classStudentRoutes");
+const catechistRoutes = require("./routes/catechistRoutes");
+const gameRoutes = require("./routes/gameRoutes");
+const resultRoutes = require("./routes/resultRoutes");
+const dailyVerseRoutes = require("./routes/dailyVerseRoutes");
+
 // ===============================
 // SOCKET
 // ===============================
@@ -206,6 +213,12 @@ app.use("/api/sacraments", sacramentRoutes);
 app.use("/api/sitemap", sitemap);
 app.use("/api/media", mediaRoutes);
 app.use("/api/students", studentRoutes);
+app.use("/api/classes", classRoutes);
+app.use("/api/class-students", classStudentRoutes);
+app.use("/api/catechist", catechistRoutes);
+app.use("/api/games", gameRoutes);
+app.use("/api/results", resultRoutes);
+app.use("/api/daily-verses", dailyVerseRoutes);
 app.get("/", (req, res) => {
   res.json({
     success: true,

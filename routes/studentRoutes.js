@@ -1,61 +1,16 @@
 const express = require("express");
-
 const router = express.Router();
 
-const {
-  getStudents,
-  getStudentById,
-  createStudent,
-  updateStudent,
-  deleteStudent,
+const studentController = require("../controllers/studentController");
 
-  getStudentClasses,
-  createStudentClass,
-  updateStudentClass,
-  deleteStudentClass,
+router.get("/", studentController.getStudents);
 
-  getStudentExams,
-  createStudentExam,
-  updateStudentExam,
-  deleteStudentExam,
-} = require("../controllers/studentController");
+router.get("/:id", studentController.getStudentById);
 
-// =====================================================
-// STUDENTS
-// =====================================================
+router.post("/", studentController.createStudent);
 
-router.get("/", getStudents);
+router.put("/:id", studentController.updateStudent);
 
-router.get("/:id", getStudentById);
-
-router.post("/", createStudent);
-
-router.put("/:id", updateStudent);
-
-router.delete("/:id", deleteStudent);
-
-// =====================================================
-// STUDENT CLASSES
-// =====================================================
-
-router.get("/student-classes/student/:studentId", getStudentClasses);
-
-router.post("/student-classes", createStudentClass);
-
-router.put("/student-classes/:id", updateStudentClass);
-
-router.delete("/student-classes/:id", deleteStudentClass);
-
-// =====================================================
-// STUDENT EXAMS
-// =====================================================
-
-router.get("/student-exams/student/:studentId", getStudentExams);
-
-router.post("/student-exams", createStudentExam);
-
-router.put("/student-exams/:id", updateStudentExam);
-
-router.delete("/student-exams/:id", deleteStudentExam);
+router.delete("/:id", studentController.deleteStudent);
 
 module.exports = router;

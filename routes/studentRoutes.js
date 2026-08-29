@@ -1,16 +1,22 @@
 const express = require("express");
+
 const router = express.Router();
 
 const studentController = require("../controllers/studentController");
+const { verifyToken } = require("../middleware/authMiddleware");
 
-router.get("/", studentController.getStudents);
+// =====================================================
+// TẤT CẢ API HỌC SINH ĐỀU PHẢI ĐĂNG NHẬP
+// =====================================================
 
-router.get("/:id", studentController.getStudentById);
+router.get("/", verifyToken, studentController.getStudents);
 
-router.post("/", studentController.createStudent);
+router.get("/:id", verifyToken, studentController.getStudentById);
 
-router.put("/:id", studentController.updateStudent);
+router.post("/", verifyToken, studentController.createStudent);
 
-router.delete("/:id", studentController.deleteStudent);
+router.put("/:id", verifyToken, studentController.updateStudent);
+
+router.delete("/:id", verifyToken, studentController.deleteStudent);
 
 module.exports = router;

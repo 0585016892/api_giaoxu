@@ -1,16 +1,43 @@
 const db = require("../config/db");
 
 // =========================================================
+// HELPER
+// =========================================================
+
+const getChurchId = (req) => {
+  return req.user?.church_id;
+};
+
+const validateChurch = (req, res) => {
+  const churchId = getChurchId(req);
+
+  if (!churchId) {
+    res.status(403).json({
+      success: false,
+      message: "Tài khoản chưa được gán giáo xứ",
+    });
+
+    return null;
+  }
+
+  return churchId;
+};
+
+// =========================================================
 // GET ALL RESULTS
 // GET /api/results
 //
-// Có thể lọc:
 // GET /api/results?class_id=1
 //
-// Trả về mỗi học viên 1 dòng, kèm thông tin lớp
+// Chỉ lấy dữ liệu của giáo xứ đang đăng nhập
 // =========================================================
+
 const getResults = async (req, res) => {
   try {
+    const churchId = validateChurch(req, res);
+
+    if (!churchId) return;
+
     const { class_id } = req.query;
 
     let sql = `
@@ -23,27 +50,39 @@ const getResults = async (req, res) => {
 
         COUNT(r.id) AS total_results,
 
-        ROUND(AVG(r.score), 2) AS average_score,
+        COALESCE(
+          ROUND(AVG(r.score), 2),
+          0
+        ) AS average_score,
 
-        MAX(r.score) AS highest_score,
+        COALESCE(
+          MAX(r.score),
+          0
+        ) AS highest_score,
 
-        MIN(r.score) AS lowest_score,
+        COALESCE(
+          MIN(r.score),
+          0
+        ) AS lowest_score,
 
         MAX(r.exam_date) AS latest_exam_date
 
       FROM results r
 
       INNER JOIN students s
-        ON r.student_id = s.id
+        ON s.id = r.student_id
 
       INNER JOIN class_students cs
         ON cs.student_id = s.id
 
       INNER JOIN classes c
         ON c.id = cs.class_id
+       AND c.church_id = r.church_id
+
+      WHERE r.church_id = ?
     `;
 
-    const params = [];
+    const params = [churchId];
 
     // =====================================================
     // FILTER CLASS
@@ -51,7 +90,7 @@ const getResults = async (req, res) => {
 
     if (class_id) {
       sql += `
-        WHERE c.id = ?
+        AND c.id = ?
       `;
 
       params.push(class_id);
@@ -91,14 +130,27 @@ const getResults = async (req, res) => {
 // GET RESULT BY ID
 // GET /api/results/:id
 // =========================================================
+
 const getResultById = async (req, res) => {
   try {
+    const churchId = validateChurch(req, res);
+
+    if (!churchId) return;
+
     const { id } = req.params;
 
     const [results] = await db.query(
       `
       SELECT
-        r.*,
+        r.id,
+        r.church_id,
+        r.student_id,
+        r.score,
+        r.exam_type,
+        r.exam_date,
+        r.note,
+        r.created_at,
+        r.updated_at,
 
         s.name AS student_name,
 
@@ -107,23 +159,25 @@ const getResultById = async (req, res) => {
 
       FROM results r
 
-      LEFT JOIN students s
-        ON r.student_id = s.id
+      INNER JOIN students s
+        ON s.id = r.student_id
 
       LEFT JOIN class_students cs
         ON cs.student_id = s.id
 
       LEFT JOIN classes c
         ON c.id = cs.class_id
+       AND c.church_id = r.church_id
 
       WHERE r.id = ?
+        AND r.church_id = ?
 
       LIMIT 1
       `,
-      [id],
+      [id, churchId],
     );
 
-    if (results.length === 0) {
+    if (!results.length) {
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy kết quả",
@@ -148,23 +202,28 @@ const getResultById = async (req, res) => {
 // =========================================================
 // GET RESULTS BY STUDENT
 // GET /api/results/student/:studentId
-//
-// Lấy toàn bộ điểm của 1 học viên
 // =========================================================
+
 const getResultsByStudent = async (req, res) => {
   try {
+    const churchId = validateChurch(req, res);
+
+    if (!churchId) return;
+
     const { studentId } = req.params;
 
     const [results] = await db.query(
       `
       SELECT
         r.id,
+        r.church_id,
         r.student_id,
         r.score,
         r.exam_type,
         r.exam_date,
         r.note,
         r.created_at,
+        r.updated_at,
 
         s.name AS student_name,
 
@@ -174,21 +233,23 @@ const getResultsByStudent = async (req, res) => {
       FROM results r
 
       INNER JOIN students s
-        ON r.student_id = s.id
+        ON s.id = r.student_id
 
       LEFT JOIN class_students cs
         ON cs.student_id = s.id
 
       LEFT JOIN classes c
         ON c.id = cs.class_id
+       AND c.church_id = r.church_id
 
       WHERE r.student_id = ?
+        AND r.church_id = ?
 
       ORDER BY
         r.exam_date DESC,
         r.created_at DESC
       `,
-      [studentId],
+      [studentId, churchId],
     );
 
     res.status(200).json({
@@ -209,34 +270,38 @@ const getResultsByStudent = async (req, res) => {
 // =========================================================
 // GET RESULTS BY CLASS
 // GET /api/results/class/:classId
-//
-// Bảng điểm của toàn bộ học viên trong lớp
-// Mỗi học viên 1 dòng
 // =========================================================
+
 const getResultsByClass = async (req, res) => {
   try {
+    const churchId = validateChurch(req, res);
+
+    if (!churchId) return;
+
     const { classId } = req.params;
 
     // =====================================================
-    // CHECK CLASS
+    // CHECK CLASS THUỘC GIÁO XỨ
     // =====================================================
 
     const [classes] = await db.query(
       `
       SELECT
         id,
-        name
+        name,
+        church_id
       FROM classes
       WHERE id = ?
+        AND church_id = ?
       LIMIT 1
       `,
-      [classId],
+      [classId, churchId],
     );
 
-    if (classes.length === 0) {
+    if (!classes.length) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy lớp",
+        message: "Không tìm thấy lớp trong giáo xứ",
       });
     }
 
@@ -275,15 +340,17 @@ const getResultsByClass = async (req, res) => {
       FROM class_students cs
 
       INNER JOIN students s
-        ON cs.student_id = s.id
+        ON s.id = cs.student_id
 
       INNER JOIN classes c
-        ON cs.class_id = c.id
+        ON c.id = cs.class_id
 
       LEFT JOIN results r
         ON r.student_id = s.id
+       AND r.church_id = ?
 
       WHERE cs.class_id = ?
+        AND c.church_id = ?
 
       GROUP BY
         s.id,
@@ -295,14 +362,12 @@ const getResultsByClass = async (req, res) => {
         average_score DESC,
         s.name ASC
       `,
-      [classId],
+      [churchId, classId, churchId],
     );
 
     res.status(200).json({
       success: true,
-
       class: classes[0],
-
       data: results,
     });
   } catch (error) {
@@ -320,8 +385,13 @@ const getResultsByClass = async (req, res) => {
 // CREATE RESULT
 // POST /api/results
 // =========================================================
+
 const createResult = async (req, res) => {
   try {
+    const churchId = validateChurch(req, res);
+
+    if (!churchId) return;
+
     const { student_id, score, exam_type, exam_date, note } = req.body;
 
     // =====================================================
@@ -363,7 +433,7 @@ const createResult = async (req, res) => {
     }
 
     // =====================================================
-    // VALIDATE EXAM TYPE
+    // EXAM TYPE
     // =====================================================
 
     const validExamType = exam_type || "online";
@@ -376,23 +446,35 @@ const createResult = async (req, res) => {
     }
 
     // =====================================================
-    // CHECK STUDENT
+    // CHECK STUDENT THUỘC GIÁO XỨ
+    //
+    // students -> class_students -> classes
     // =====================================================
 
     const [students] = await db.query(
       `
-      SELECT id
-      FROM students
-      WHERE id = ?
+      SELECT DISTINCT
+        s.id
+      FROM students s
+
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+
+      WHERE s.id = ?
+        AND c.church_id = ?
+
       LIMIT 1
       `,
-      [student_id],
+      [student_id, churchId],
     );
 
-    if (students.length === 0) {
+    if (!students.length) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy học viên",
+        message: "Học viên không thuộc giáo xứ này",
       });
     }
 
@@ -403,15 +485,17 @@ const createResult = async (req, res) => {
     const [result] = await db.query(
       `
       INSERT INTO results (
+        church_id,
         student_id,
         score,
         exam_type,
         exam_date,
         note
       )
-      VALUES (?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?)
       `,
       [
+        churchId,
         student_id,
         numericScore,
         validExamType,
@@ -436,20 +520,22 @@ const createResult = async (req, res) => {
 
       FROM results r
 
-      LEFT JOIN students s
-        ON r.student_id = s.id
+      INNER JOIN students s
+        ON s.id = r.student_id
 
       LEFT JOIN class_students cs
         ON cs.student_id = s.id
 
       LEFT JOIN classes c
         ON c.id = cs.class_id
+       AND c.church_id = r.church_id
 
       WHERE r.id = ?
+        AND r.church_id = ?
 
       LIMIT 1
       `,
-      [result.insertId],
+      [result.insertId, churchId],
     );
 
     res.status(201).json({
@@ -472,14 +558,19 @@ const createResult = async (req, res) => {
 // UPDATE RESULT
 // PUT /api/results/:id
 // =========================================================
+
 const updateResult = async (req, res) => {
   try {
+    const churchId = validateChurch(req, res);
+
+    if (!churchId) return;
+
     const { id } = req.params;
 
     const { student_id, score, exam_type, exam_date, note } = req.body;
 
     // =====================================================
-    // CHECK RESULT
+    // CHECK RESULT THUỘC GIÁO XỨ
     // =====================================================
 
     const [existingResults] = await db.query(
@@ -487,15 +578,16 @@ const updateResult = async (req, res) => {
       SELECT *
       FROM results
       WHERE id = ?
+        AND church_id = ?
       LIMIT 1
       `,
-      [id],
+      [id, churchId],
     );
 
-    if (existingResults.length === 0) {
+    if (!existingResults.length) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy kết quả",
+        message: "Không tìm thấy kết quả trong giáo xứ",
       });
     }
 
@@ -547,23 +639,33 @@ const updateResult = async (req, res) => {
     }
 
     // =====================================================
-    // CHECK STUDENT
+    // CHECK STUDENT THUỘC GIÁO XỨ
     // =====================================================
 
     const [students] = await db.query(
       `
-      SELECT id
-      FROM students
-      WHERE id = ?
+      SELECT DISTINCT
+        s.id
+      FROM students s
+
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+
+      WHERE s.id = ?
+        AND c.church_id = ?
+
       LIMIT 1
       `,
-      [finalStudentId],
+      [finalStudentId, churchId],
     );
 
-    if (students.length === 0) {
+    if (!students.length) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy học viên",
+        message: "Học viên không thuộc giáo xứ này",
       });
     }
 
@@ -579,20 +681,20 @@ const updateResult = async (req, res) => {
         score = ?,
         exam_type = ?,
         exam_date = ?,
-        note = ?
+        note = ?,
+        updated_at = CURRENT_TIMESTAMP
 
       WHERE id = ?
+        AND church_id = ?
       `,
       [
         finalStudentId,
         finalScore,
         finalExamType,
-
         exam_date !== undefined ? exam_date : existingResult.exam_date,
-
         note !== undefined ? note : existingResult.note,
-
         id,
+        churchId,
       ],
     );
 
@@ -602,30 +704,32 @@ const updateResult = async (req, res) => {
 
     const [updatedResults] = await db.query(
       `
-        SELECT
-          r.*,
+      SELECT
+        r.*,
 
-          s.name AS student_name,
+        s.name AS student_name,
 
-          c.id AS class_id,
-          c.name AS class_name
+        c.id AS class_id,
+        c.name AS class_name
 
-        FROM results r
+      FROM results r
 
-        LEFT JOIN students s
-          ON r.student_id = s.id
+      INNER JOIN students s
+        ON s.id = r.student_id
 
-        LEFT JOIN class_students cs
-          ON cs.student_id = s.id
+      LEFT JOIN class_students cs
+        ON cs.student_id = s.id
 
-        LEFT JOIN classes c
-          ON c.id = cs.class_id
+      LEFT JOIN classes c
+        ON c.id = cs.class_id
+       AND c.church_id = r.church_id
 
-        WHERE r.id = ?
+      WHERE r.id = ?
+        AND r.church_id = ?
 
-        LIMIT 1
-        `,
-      [id],
+      LIMIT 1
+      `,
+      [id, churchId],
     );
 
     res.status(200).json({
@@ -648,41 +752,40 @@ const updateResult = async (req, res) => {
 // DELETE RESULT
 // DELETE /api/results/:id
 // =========================================================
+
 const deleteResult = async (req, res) => {
   try {
-    const { id } = req.params;
+    const churchId = validateChurch(req, res);
 
-    // =====================================================
-    // CHECK
-    // =====================================================
+    if (!churchId) return;
+
+    const { id } = req.params;
 
     const [results] = await db.query(
       `
       SELECT id
       FROM results
       WHERE id = ?
+        AND church_id = ?
       LIMIT 1
       `,
-      [id],
+      [id, churchId],
     );
 
-    if (results.length === 0) {
+    if (!results.length) {
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy kết quả",
       });
     }
 
-    // =====================================================
-    // DELETE
-    // =====================================================
-
     await db.query(
       `
       DELETE FROM results
       WHERE id = ?
+        AND church_id = ?
       `,
-      [id],
+      [id, churchId],
     );
 
     res.status(200).json({
@@ -704,9 +807,15 @@ const deleteResult = async (req, res) => {
 // GET STATISTICS
 // GET /api/results/statistics
 // =========================================================
+
 const getResultStatistics = async (req, res) => {
   try {
-    const [statistics] = await db.query(`
+    const churchId = validateChurch(req, res);
+
+    if (!churchId) return;
+
+    const [statistics] = await db.query(
+      `
       SELECT
         COUNT(*) AS total_results,
 
@@ -714,49 +823,55 @@ const getResultStatistics = async (req, res) => {
           DISTINCT student_id
         ) AS total_students,
 
-        ROUND(
-          AVG(score),
-          2
+        COALESCE(
+          ROUND(AVG(score), 2),
+          0
         ) AS average_score,
 
-        MAX(score) AS highest_score,
+        COALESCE(
+          MAX(score),
+          0
+        ) AS highest_score,
 
-        MIN(score) AS lowest_score,
+        COALESCE(
+          MIN(score),
+          0
+        ) AS lowest_score,
 
         SUM(
           CASE
-            WHEN score >= 5
-            THEN 1
+            WHEN score >= 5 THEN 1
             ELSE 0
           END
         ) AS passed,
 
         SUM(
           CASE
-            WHEN score < 5
-            THEN 1
+            WHEN score < 5 THEN 1
             ELSE 0
           END
         ) AS failed,
 
         SUM(
           CASE
-            WHEN exam_type = 'online'
-            THEN 1
+            WHEN exam_type = 'online' THEN 1
             ELSE 0
           END
         ) AS online_results,
 
         SUM(
           CASE
-            WHEN exam_type = 'paper'
-            THEN 1
+            WHEN exam_type = 'paper' THEN 1
             ELSE 0
           END
         ) AS paper_results
 
       FROM results
-    `);
+
+      WHERE church_id = ?
+      `,
+      [churchId],
+    );
 
     res.status(200).json({
       success: true,
@@ -777,36 +892,35 @@ const getResultStatistics = async (req, res) => {
 // GET CLASS STATISTICS
 // GET /api/results/class/:classId/statistics
 // =========================================================
+
 const getClassStatistics = async (req, res) => {
   try {
-    const { classId } = req.params;
+    const churchId = validateChurch(req, res);
 
-    // =====================================================
-    // CHECK CLASS
-    // =====================================================
+    if (!churchId) return;
+
+    const { classId } = req.params;
 
     const [classes] = await db.query(
       `
       SELECT
         id,
-        name
+        name,
+        church_id
       FROM classes
       WHERE id = ?
+        AND church_id = ?
       LIMIT 1
       `,
-      [classId],
+      [classId, churchId],
     );
 
-    if (classes.length === 0) {
+    if (!classes.length) {
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy lớp",
       });
     }
-
-    // =====================================================
-    // STATISTICS
-    // =====================================================
 
     const [statistics] = await db.query(
       `
@@ -818,9 +932,9 @@ const getClassStatistics = async (req, res) => {
         COUNT(r.id)
           AS total_results,
 
-        ROUND(
-          AVG(r.score),
-          2
+        COALESCE(
+          ROUND(AVG(r.score), 2),
+          0
         ) AS average_score,
 
         COALESCE(
@@ -849,19 +963,22 @@ const getClassStatistics = async (req, res) => {
 
       FROM class_students cs
 
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+       AND c.church_id = ?
+
       LEFT JOIN results r
         ON r.student_id = cs.student_id
+       AND r.church_id = ?
 
       WHERE cs.class_id = ?
       `,
-      [classId],
+      [churchId, churchId, classId],
     );
 
     res.status(200).json({
       success: true,
-
       class: classes[0],
-
       data: statistics[0],
     });
   } catch (error) {
@@ -879,8 +996,13 @@ const getClassStatistics = async (req, res) => {
 // GET STUDENT STATISTICS
 // GET /api/results/student/:studentId/statistics
 // =========================================================
+
 const getStudentStatistics = async (req, res) => {
   try {
+    const churchId = validateChurch(req, res);
+
+    if (!churchId) return;
+
     const { studentId } = req.params;
 
     const [statistics] = await db.query(
@@ -906,16 +1028,14 @@ const getStudentStatistics = async (req, res) => {
 
         SUM(
           CASE
-            WHEN score >= 5
-            THEN 1
+            WHEN score >= 5 THEN 1
             ELSE 0
           END
         ) AS passed,
 
         SUM(
           CASE
-            WHEN score < 5
-            THEN 1
+            WHEN score < 5 THEN 1
             ELSE 0
           END
         ) AS failed
@@ -923,8 +1043,9 @@ const getStudentStatistics = async (req, res) => {
       FROM results
 
       WHERE student_id = ?
+        AND church_id = ?
       `,
-      [studentId],
+      [studentId, churchId],
     );
 
     res.status(200).json({
@@ -946,9 +1067,15 @@ const getStudentStatistics = async (req, res) => {
 // GET TOP 3 ALL STUDENTS
 // GET /api/results/leaderboard
 // =========================================================
+
 const getLeaderboard = async (req, res) => {
   try {
-    const [results] = await db.query(`
+    const churchId = validateChurch(req, res);
+
+    if (!churchId) return;
+
+    const [results] = await db.query(
+      `
       SELECT
 
         s.id AS student_id,
@@ -971,13 +1098,16 @@ const getLeaderboard = async (req, res) => {
       FROM results r
 
       INNER JOIN students s
-        ON r.student_id = s.id
+        ON s.id = r.student_id
 
       INNER JOIN class_students cs
         ON cs.student_id = s.id
 
       INNER JOIN classes c
         ON c.id = cs.class_id
+       AND c.church_id = r.church_id
+
+      WHERE r.church_id = ?
 
       GROUP BY
         s.id,
@@ -990,23 +1120,18 @@ const getLeaderboard = async (req, res) => {
         highest_score DESC
 
       LIMIT 3
-    `);
+      `,
+      [churchId],
+    );
 
     const leaderboard = results.map((item, index) => ({
       rank: index + 1,
-
       student_id: item.student_id,
-
       student_name: item.student_name,
-
       class_id: item.class_id,
-
       class_name: item.class_name,
-
       average_score: Number(item.average_score),
-
       highest_score: Number(item.highest_score),
-
       total_results: Number(item.total_results),
     }));
 
@@ -1029,8 +1154,13 @@ const getLeaderboard = async (req, res) => {
 // GET TOP 3 BY CLASS
 // GET /api/results/class/:classId/leaderboard
 // =========================================================
+
 const getClassLeaderboard = async (req, res) => {
   try {
+    const churchId = validateChurch(req, res);
+
+    if (!churchId) return;
+
     const { classId } = req.params;
 
     // =====================================================
@@ -1041,15 +1171,17 @@ const getClassLeaderboard = async (req, res) => {
       `
       SELECT
         id,
-        name
+        name,
+        church_id
       FROM classes
       WHERE id = ?
+        AND church_id = ?
       LIMIT 1
       `,
-      [classId],
+      [classId, churchId],
     );
 
-    if (classes.length === 0) {
+    if (!classes.length) {
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy lớp",
@@ -1084,15 +1216,17 @@ const getClassLeaderboard = async (req, res) => {
       FROM class_students cs
 
       INNER JOIN students s
-        ON cs.student_id = s.id
+        ON s.id = cs.student_id
 
       INNER JOIN classes c
-        ON cs.class_id = c.id
+        ON c.id = cs.class_id
 
       INNER JOIN results r
         ON r.student_id = s.id
+       AND r.church_id = ?
 
       WHERE cs.class_id = ?
+        AND c.church_id = ?
 
       GROUP BY
         s.id,
@@ -1106,32 +1240,23 @@ const getClassLeaderboard = async (req, res) => {
 
       LIMIT 3
       `,
-      [classId],
+      [churchId, classId, churchId],
     );
 
     const leaderboard = results.map((item, index) => ({
       rank: index + 1,
-
       student_id: item.student_id,
-
       student_name: item.student_name,
-
       class_id: item.class_id,
-
       class_name: item.class_name,
-
       average_score: Number(item.average_score),
-
       highest_score: Number(item.highest_score),
-
       total_results: Number(item.total_results),
     }));
 
     res.status(200).json({
       success: true,
-
       class: classes[0],
-
       data: leaderboard,
     });
   } catch (error) {

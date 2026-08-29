@@ -7,9 +7,27 @@ exports.getClasses = async (req, res) => {
   console.log("CALL API CLASS");
 
   try {
+    // =========================================================
+    // LẤY GIÁO XỨ TỪ TÀI KHOẢN ĐĂNG NHẬP
+    // =========================================================
+
+    const church_id = req.user?.church_id;
+
+    if (!church_id) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được liên kết với giáo xứ",
+      });
+    }
+
+    // =========================================================
+    // GET CLASSES THEO CHURCH
+    // =========================================================
+
     const sql = `
       SELECT
         c.id,
+        c.church_id,
         c.name,
         c.code,
         c.category,
@@ -32,12 +50,13 @@ exports.getClasses = async (req, res) => {
           SELECT COUNT(*)
           FROM class_students cs
           WHERE cs.class_id = c.id
-          AND cs.status = 'studying'
+            AND cs.status = 'studying'
         ) AS studentsCount,
 
         /* =====================
            GIÁO LÝ VIÊN
         ===================== */
+
         GROUP_CONCAT(
           DISTINCT ct.id
           ORDER BY ct.full_name
@@ -55,7 +74,7 @@ exports.getClasses = async (req, res) => {
             IFNULL(ct.holy_name, ''),
             CASE
               WHEN ct.holy_name IS NOT NULL
-              AND ct.holy_name != ''
+                AND ct.holy_name != ''
               THEN ' '
               ELSE ''
             END,
@@ -68,6 +87,7 @@ exports.getClasses = async (req, res) => {
         /* =====================
            THÔNG TIN PHÂN CÔNG
         ===================== */
+
         GROUP_CONCAT(
           DISTINCT cc.role
           ORDER BY ct.full_name
@@ -88,14 +108,22 @@ exports.getClasses = async (req, res) => {
       /* =====================
          GIÁO LÝ VIÊN PHÂN CÔNG
       ===================== */
+
       LEFT JOIN catechist_classes cc
         ON cc.class_id = c.id
 
       LEFT JOIN catechists ct
         ON ct.id = cc.catechist_id
 
+      /* =====================
+         CHỈ LẤY LỚP CỦA GIÁO XỨ
+      ===================== */
+
+      WHERE c.church_id = ?
+
       GROUP BY
         c.id,
+        c.church_id,
         c.name,
         c.code,
         c.category,
@@ -114,10 +142,16 @@ exports.getClasses = async (req, res) => {
       ORDER BY c.created_at DESC
     `;
 
-    const [rows] = await db.query(sql);
+    const [rows] = await db.query(sql, [church_id]);
+
+    // =========================================================
+    // FORMAT DATA
+    // =========================================================
 
     const formattedRows = rows.map((item) => ({
       ...item,
+
+      studentsCount: Number(item.studentsCount || 0),
 
       catechists: item.catechist_ids
         ? item.catechist_ids.split(",").map((id, index) => ({
@@ -134,14 +168,19 @@ exports.getClasses = async (req, res) => {
         : [],
     }));
 
-    res.status(200).json({
+    // =========================================================
+    // RESPONSE
+    // =========================================================
+
+    return res.status(200).json({
       success: true,
+      church_id,
       data: formattedRows,
     });
   } catch (error) {
-    console.error("getClasses error:", error);
+    console.error("❌ getClasses error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Không thể lấy danh sách lớp học",
       error: error.message,
@@ -271,12 +310,33 @@ exports.createClass = async (req, res) => {
       status,
     } = req.body;
 
+    // ==========================================
+    // LẤY GIÁO XỨ TỪ TÀI KHOẢN ĐĂNG NHẬP
+    // ==========================================
+
+    const church_id = req.user?.church_id;
+
+    if (!church_id) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được liên kết với giáo xứ",
+      });
+    }
+
+    // ==========================================
+    // VALIDATE
+    // ==========================================
+
     if (!name?.trim()) {
       return res.status(400).json({
         success: false,
         message: "Tên lớp là bắt buộc",
       });
     }
+
+    // ==========================================
+    // PREFIX CODE
+    // ==========================================
 
     let prefix = "GL";
 
@@ -305,15 +365,20 @@ exports.createClass = async (req, res) => {
         prefix = "GL";
     }
 
+    // ==========================================
+    // SINH CODE TRONG PHẠM VI GIÁO XỨ
+    // ==========================================
+
     const [rows] = await db.query(
       `
       SELECT code
       FROM classes
-      WHERE code LIKE ?
+      WHERE church_id = ?
+        AND code LIKE ?
       ORDER BY id DESC
       LIMIT 1
       `,
-      [`${prefix}%`],
+      [church_id, `${prefix}%`],
     );
 
     let nextNumber = 1;
@@ -328,9 +393,14 @@ exports.createClass = async (req, res) => {
 
     const code = `${prefix}${String(nextNumber).padStart(3, "0")}`;
 
+    // ==========================================
+    // INSERT
+    // ==========================================
+
     const [result] = await db.query(
       `
       INSERT INTO classes (
+        church_id,
         name,
         code,
         category,
@@ -344,9 +414,10 @@ exports.createClass = async (req, res) => {
         end_date,
         status
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
+        church_id,
         name.trim(),
         code,
         category || "Giáo lý Thiếu Nhi",
@@ -368,6 +439,7 @@ exports.createClass = async (req, res) => {
       data: {
         id: result.insertId,
         code,
+        church_id,
       },
     });
   } catch (error) {
@@ -380,9 +452,6 @@ exports.createClass = async (req, res) => {
     });
   }
 };
-// =========================
-// CẬP NHẬT LỚP
-// =========================
 exports.updateClass = async (req, res) => {
   try {
     const { id } = req.params;
@@ -402,6 +471,34 @@ exports.updateClass = async (req, res) => {
       status,
     } = req.body;
 
+    // ==========================================
+    // LẤY GIÁO XỨ TỪ TOKEN
+    // ==========================================
+
+    const church_id = req.user?.church_id;
+
+    if (!church_id) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được liên kết với giáo xứ",
+      });
+    }
+
+    // ==========================================
+    // VALIDATE
+    // ==========================================
+
+    if (!name?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Tên lớp là bắt buộc",
+      });
+    }
+
+    // ==========================================
+    // UPDATE
+    // ==========================================
+
     const [result] = await db.query(
       `
       UPDATE classes
@@ -419,14 +516,15 @@ exports.updateClass = async (req, res) => {
         end_date = ?,
         status = ?
       WHERE id = ?
+        AND church_id = ?
       `,
       [
-        name,
+        name.trim(),
         code || null,
         category || "Giáo lý Thiếu Nhi",
         catechist_id || null,
-        description || null,
-        room || null,
+        description?.trim() || null,
+        room?.trim() || null,
         day_of_week || null,
         start_time || null,
         end_time || null,
@@ -434,30 +532,31 @@ exports.updateClass = async (req, res) => {
         end_date || null,
         status || "active",
         id,
+        church_id,
       ],
     );
 
     if (!result.affectedRows) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy lớp học",
+        message: "Không tìm thấy lớp học trong giáo xứ của bạn",
       });
     }
 
-    res.json({
+    return res.json({
       success: true,
       message: "Cập nhật lớp học thành công",
     });
   } catch (error) {
-    console.error("updateClass error:", error);
+    console.error("❌ updateClass error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Không thể cập nhật lớp học",
+      error: error.message,
     });
   }
 };
-
 // =========================
 // XÓA LỚP
 // =========================

@@ -14,6 +14,9 @@ exports.createAdmin = async (req, res) => {
       username,
       password,
       role = "admin",
+      account_type = "member",
+      church_id,
+
       full_name,
       saint_name,
       email,
@@ -21,83 +24,269 @@ exports.createAdmin = async (req, res) => {
       birthday,
       hometown,
       address,
+
       ordination_date,
       position,
       motto,
       bio,
     } = req.body;
 
-    if (!username || !password || !email || !full_name) {
-      return res.status(400).json({ success: false, message: "Thiếu dữ liệu" });
+    // ============================================================
+    // 1. VALIDATE DỮ LIỆU BẮT BUỘC
+    // ============================================================
+
+    if (!username || !password || !email || !full_name || !church_id) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Vui lòng nhập đầy đủ Username, Mật khẩu, Email, Họ tên và Giáo xứ",
+      });
     }
 
+    // ============================================================
+    // 2. VALIDATE ACCOUNT TYPE
+    //
+    // DB:
+    // ENUM('member', 'vip')
+    // ============================================================
+
+    const allowedAccountTypes = ["member", "vip"];
+
+    if (!allowedAccountTypes.includes(account_type)) {
+      return res.status(400).json({
+        success: false,
+        message: "Loại tài khoản không hợp lệ. Chỉ được chọn member hoặc vip",
+      });
+    }
+
+    // ============================================================
+    // 3. VALIDATE ROLE
+    // ============================================================
+
+    const allowedRoles = [
+      "admin",
+      "priest",
+      "liturgy_manager",
+      "media_manager",
+      "catechist",
+    ];
+
+    if (!allowedRoles.includes(role)) {
+      return res.status(400).json({
+        success: false,
+        message: "Vai trò tài khoản không hợp lệ",
+      });
+    }
+
+    // ============================================================
+    // 4. KIỂM TRA GIÁO XỨ
+    // ============================================================
+
+    const [churchRows] = await db.query(
+      `
+      SELECT id
+      FROM churches
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [church_id],
+    );
+
+    if (churchRows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Giáo xứ không tồn tại",
+      });
+    }
+
+    // ============================================================
+    // 5. CHUẨN HÓA USERNAME / EMAIL
+    // ============================================================
+
+    const finalUsername = String(username).trim().toLowerCase();
+    const finalEmail = String(email).trim().toLowerCase();
+
+    // ============================================================
+    // 6. KIỂM TRA USERNAME / EMAIL TRÙNG
+    //
+    // Username và Email là duy nhất toàn hệ thống.
+    // ============================================================
+
     const [exist] = await db.query(
-      "SELECT id FROM admins WHERE username=? OR email=?",
-      [username, email],
+      `
+      SELECT id, username, email
+      FROM admins
+      WHERE username = ?
+         OR email = ?
+      LIMIT 1
+      `,
+      [finalUsername, finalEmail],
     );
 
     if (exist.length > 0) {
+      if (
+        exist[0].username &&
+        exist[0].username.toLowerCase() === finalUsername
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Username đã tồn tại",
+        });
+      }
+
+      if (exist[0].email && exist[0].email.toLowerCase() === finalEmail) {
+        return res.status(400).json({
+          success: false,
+          message: "Email đã tồn tại",
+        });
+      }
+
       return res.status(400).json({
         success: false,
         message: "Username hoặc Email đã tồn tại",
       });
     }
 
+    // ============================================================
+    // 7. HASH PASSWORD
+    // ============================================================
+
     const hash = await bcrypt.hash(password, 10);
+
+    // ============================================================
+    // 8. AVATAR
+    // ============================================================
+
     const avatar = req.file ? `/uploads/avatars/${req.file.filename}` : null;
 
+    // ============================================================
+    // 9. INSERT ACCOUNT
+    // ============================================================
+
     const [result] = await db.query(
-      `INSERT INTO admins (
-        username, password, role,
-        full_name, saint_name, email, phone, avatar,
-        birthday, hometown, address,
-        ordination_date, position, motto, bio
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+      `
+      INSERT INTO admins (
+        church_id,
+        account_type,
         username,
+        password,
+        role,
+
+        full_name,
+        saint_name,
+        email,
+        phone,
+        avatar,
+
+        birthday,
+        hometown,
+        address,
+
+        ordination_date,
+        position,
+        motto,
+        bio
+      )
+      VALUES (
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?, ?,
+        ?, ?, ?, ?
+      )
+      `,
+      [
+        Number(church_id),
+        account_type,
+        finalUsername,
         hash,
         role,
-        full_name,
-        saint_name || null,
-        email,
-        phone || null,
+
+        full_name.trim(),
+        saint_name?.trim() || null,
+        finalEmail,
+        phone?.trim() || null,
         avatar,
+
         birthday || null,
-        hometown || null,
-        address || null,
+        hometown?.trim() || null,
+        address?.trim() || null,
+
         ordination_date || null,
-        position || null,
-        motto || null,
-        bio || null,
+        position?.trim() || null,
+        motto?.trim() || null,
+        bio?.trim() || null,
       ],
     );
 
+    // ============================================================
+    // 10. AUDIT LOG
+    // ============================================================
+
     await writeLog({
-      admin_id: req.user?.id,
+      admin_id: req.user?.id || null,
       action: "CREATE_ADMIN",
       target_type: "admins",
       target_id: result.insertId,
-      description: `Tạo tài khoản ${full_name}`,
+      description: `Tạo tài khoản ${full_name} (@${finalUsername}), loại ${account_type}, thuộc giáo xứ #${church_id}`,
       ip_address: req.ip,
     });
+
+    // ============================================================
+    // 11. NOTIFICATION
+    // ============================================================
 
     await createNotification({
       type: "CREATE_ADMIN",
       title: "Tạo tài khoản mới",
-      content: `${full_name} vừa được tạo`,
-      created_by: req.user?.id,
+      content: `${full_name} vừa được tạo tài khoản ${account_type}`,
+      created_by: req.user?.id || null,
       related_type: "admins",
       related_id: result.insertId,
     });
 
-    return res.json({
+    // ============================================================
+    // 12. RESPONSE
+    // ============================================================
+
+    return res.status(201).json({
       success: true,
-      message: "Tạo thành công",
-      id: result.insertId,
+      message: "Tạo tài khoản thành công",
+
+      data: {
+        id: result.insertId,
+        church_id: Number(church_id),
+        account_type,
+        username: finalUsername,
+        role,
+        full_name,
+        email: finalEmail,
+      },
     });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ success: false, message: err.message });
+    console.error("❌ createAdmin error:", err);
+
+    // ============================================================
+    // MYSQL ENUM / UNIQUE ERROR
+    // ============================================================
+
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({
+        success: false,
+        message: "Username hoặc Email đã tồn tại",
+      });
+    }
+
+    if (err.code === "WARN_DATA_TRUNCATED") {
+      return res.status(400).json({
+        success: false,
+        message: "account_type hoặc role không hợp lệ",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: err.message || "Không thể tạo tài khoản",
+    });
   }
 };
 exports.changePassword = async (req, res) => {
@@ -182,6 +371,8 @@ exports.updateAdmin = async (req, res) => {
   try {
     const {
       role,
+      account_type,
+
       full_name,
       saint_name,
       email,
@@ -195,102 +386,304 @@ exports.updateAdmin = async (req, res) => {
       bio,
     } = req.body;
 
-    // 1. Lấy dữ liệu tài khoản cũ từ DB
-    const [old] = await db.query("SELECT * FROM admins WHERE id=?", [
-      req.params.id,
-    ]);
+    const adminId = req.params.id;
+
+    // ============================================================
+    // 1. LẤY TÀI KHOẢN HIỆN TẠI
+    // ============================================================
+
+    const [old] = await db.query(
+      `
+      SELECT *
+      FROM admins
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [adminId],
+    );
 
     if (!old.length) {
-      return res.status(404).json({ message: "Không tìm thấy tài khoản" });
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy tài khoản",
+      });
     }
 
     const currentAdmin = old[0];
 
-    // 2. TỰ ĐỘNG TẠO USERNAME TỪ EMAIL (Lấy phần trước @)
-    let finalUsername = currentAdmin.username; // Mặc định giữ username cũ
+    // ============================================================
+    // 2. GIỮ NGUYÊN CHURCH_ID
+    // ============================================================
 
-    if (email && email.includes("@")) {
-      // Cắt lấy phần trước dấu @, chuyển về chữ thường và lọc ký tự đặc biệt
-      finalUsername = email
+    const churchId = currentAdmin.church_id;
+
+    // ============================================================
+    // 3. KIỂM TRA ACCOUNT_TYPE
+    //
+    // DB:
+    // ENUM('member', 'vip')
+    // ============================================================
+
+    const finalAccountType =
+      account_type !== undefined && account_type !== null && account_type !== ""
+        ? String(account_type).toLowerCase()
+        : currentAdmin.account_type || "member";
+
+    if (!["member", "vip"].includes(finalAccountType)) {
+      return res.status(400).json({
+        success: false,
+        message: "Loại tài khoản không hợp lệ. Chỉ được member hoặc vip.",
+      });
+    }
+
+    // ============================================================
+    // 4. KIỂM TRA EMAIL TRÙNG
+    // ============================================================
+
+    const finalEmail =
+      email !== undefined && email !== null && email !== ""
+        ? email.trim()
+        : currentAdmin.email;
+
+    if (finalEmail && finalEmail !== currentAdmin.email) {
+      const [existEmail] = await db.query(
+        `
+        SELECT id
+        FROM admins
+        WHERE email = ?
+          AND id != ?
+        LIMIT 1
+        `,
+        [finalEmail, adminId],
+      );
+
+      if (existEmail.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Email đã được sử dụng bởi tài khoản khác",
+        });
+      }
+    }
+
+    // ============================================================
+    // 5. TỰ ĐỘNG TẠO USERNAME TỪ EMAIL
+    // ============================================================
+
+    let finalUsername = currentAdmin.username;
+
+    if (finalEmail && finalEmail.includes("@")) {
+      const emailUsername = finalEmail
         .split("@")[0]
         .toLowerCase()
         .replace(/[^a-z0-9_]/g, "");
+
+      // Chỉ cập nhật username nếu tạo ra username hợp lệ
+      if (emailUsername) {
+        finalUsername = emailUsername;
+      }
     }
 
-    // 3. Xử lý Avatar (Giữ ảnh cũ nếu không upload ảnh mới)
+    // ============================================================
+    // 6. KIỂM TRA USERNAME TRÙNG
+    // ============================================================
+
+    if (finalUsername !== currentAdmin.username) {
+      const [existUsername] = await db.query(
+        `
+        SELECT id
+        FROM admins
+        WHERE username = ?
+          AND id != ?
+        LIMIT 1
+        `,
+        [finalUsername, adminId],
+      );
+
+      if (existUsername.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Username được tạo từ Email đã tồn tại",
+        });
+      }
+    }
+
+    // ============================================================
+    // 7. AVATAR
+    // ============================================================
+
     let avatar = currentAdmin.avatar;
+
     if (req.file) {
       avatar = `/uploads/avatars/${req.file.filename}`;
     }
 
-    // 4. Cập nhật dữ liệu vào DB (Sử dụng '??' để fallback về giá trị cũ nếu trường gửi lên bị trống)
+    // ============================================================
+    // 8. GIÁ TRỊ MỚI
+    // ============================================================
+
+    const finalRole =
+      role !== undefined && role !== null && role !== ""
+        ? role
+        : currentAdmin.role;
+
+    const finalFullName =
+      full_name !== undefined && full_name !== null
+        ? full_name.trim()
+        : currentAdmin.full_name;
+
+    const finalSaintName =
+      saint_name !== undefined && saint_name !== null
+        ? saint_name.trim()
+        : currentAdmin.saint_name;
+
+    const finalPhone =
+      phone !== undefined && phone !== null ? phone.trim() : currentAdmin.phone;
+
+    const finalBirthday =
+      birthday !== undefined ? birthday || null : currentAdmin.birthday;
+
+    const finalHometown =
+      hometown !== undefined && hometown !== null
+        ? hometown.trim()
+        : currentAdmin.hometown;
+
+    const finalAddress =
+      address !== undefined && address !== null
+        ? address.trim()
+        : currentAdmin.address;
+
+    const finalOrdinationDate =
+      ordination_date !== undefined
+        ? ordination_date || null
+        : currentAdmin.ordination_date;
+
+    const finalPosition =
+      position !== undefined && position !== null
+        ? position.trim()
+        : currentAdmin.position;
+
+    const finalMotto =
+      motto !== undefined && motto !== null ? motto.trim() : currentAdmin.motto;
+
+    const finalBio =
+      bio !== undefined && bio !== null ? bio.trim() : currentAdmin.bio;
+
+    // ============================================================
+    // 9. UPDATE DATABASE
+    //
+    // LƯU Ý:
+    // church_id KHÔNG update ở đây
+    // ============================================================
+
     await db.query(
-      `UPDATE admins SET
-        username=?, 
-        role=?,
-        full_name=?, 
-        saint_name=?, 
-        email=?, 
-        phone=?, 
-        avatar=?,
-        birthday=?, 
-        hometown=?, 
-        address=?,
-        ordination_date=?, 
-        position=?, 
-        motto=?, 
-        bio=?
-      WHERE id=?`,
+      `
+      UPDATE admins
+      SET
+        account_type = ?,
+        username = ?,
+        role = ?,
+
+        full_name = ?,
+        saint_name = ?,
+        email = ?,
+        phone = ?,
+        avatar = ?,
+
+        birthday = ?,
+        hometown = ?,
+        address = ?,
+
+        ordination_date = ?,
+        position = ?,
+        motto = ?,
+        bio = ?
+
+      WHERE id = ?
+      `,
       [
+        finalAccountType,
         finalUsername,
-        role ?? currentAdmin.role,
-        full_name ?? currentAdmin.full_name,
-        saint_name ?? currentAdmin.saint_name,
-        email ?? currentAdmin.email,
-        phone ?? currentAdmin.phone,
+        finalRole,
+
+        finalFullName,
+        finalSaintName,
+        finalEmail,
+        finalPhone,
         avatar,
-        birthday || null,
-        hometown ?? currentAdmin.hometown,
-        address ?? currentAdmin.address,
-        ordination_date || null,
-        position ?? currentAdmin.position,
-        motto ?? currentAdmin.motto,
-        bio ?? currentAdmin.bio,
-        req.params.id,
+
+        finalBirthday,
+        finalHometown,
+        finalAddress,
+
+        finalOrdinationDate,
+        finalPosition,
+        finalMotto,
+        finalBio,
+
+        adminId,
       ],
     );
 
-    // 5. Ghi nhật ký (Audit Log)
-    const updatedName = full_name || currentAdmin.full_name;
+    // ============================================================
+    // 10. AUDIT LOG
+    // ============================================================
+
     await writeLog({
       admin_id: req.user?.id,
       action: "UPDATE_ADMIN",
       target_type: "admins",
-      target_id: req.params.id,
-      description: `Cập nhật thông tin tài khoản ${updatedName} (@${finalUsername})`,
+      target_id: adminId,
+      description:
+        `Cập nhật tài khoản ${finalFullName} ` +
+        `(@${finalUsername}) - loại tài khoản: ${finalAccountType}`,
       ip_address: req.ip,
     });
 
-    // 6. Gửi thông báo
+    // ============================================================
+    // 11. NOTIFICATION
+    // ============================================================
+
     await createNotification({
       type: "UPDATE_ADMIN",
       title: "Cập nhật tài khoản",
-      content: `Tài khoản ${updatedName} vừa được cập nhật thông tin mới`,
+      content:
+        `Tài khoản ${finalFullName} vừa được cập nhật ` +
+        `(${finalAccountType === "vip" ? "VIP" : "Member"})`,
       created_by: req.user?.id,
       related_type: "admins",
-      related_id: req.params.id,
+      related_id: adminId,
     });
+
+    // ============================================================
+    // 12. RESPONSE
+    // ============================================================
 
     return res.json({
       success: true,
       message: "Cập nhật tài khoản thành công!",
       data: {
+        id: Number(adminId),
+
+        // Giáo xứ vẫn giữ nguyên
+        church_id: churchId,
+
+        // Loại tài khoản
+        account_type: finalAccountType,
+
         username: finalUsername,
+        role: finalRole,
+
+        full_name: finalFullName,
       },
     });
   } catch (err) {
-    console.error("Lỗi updateAdmin:", err);
-    return res.status(500).json({ message: err.message });
+    console.error("❌ Lỗi updateAdmin:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi server khi cập nhật tài khoản",
+      error: err.message,
+    });
   }
 };
 

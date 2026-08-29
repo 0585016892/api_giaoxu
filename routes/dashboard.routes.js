@@ -5,6 +5,10 @@ const dashboardController = require("../controllers/dashboard.controller");
 const { verifyToken } = require("../middleware/authMiddleware");
 
 router.get("/", dashboardController.getDashboard);
-router.get("/dashboard-cate", dashboardController.getDashboardCate);
+router.get(
+  "/dashboard-cate",
+  verifyToken,
+  dashboardController.getDashboardCate,
+);
 
 module.exports = router;

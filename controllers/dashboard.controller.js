@@ -3,8 +3,9 @@ const db = require("../config/db");
 exports.getDashboard = async (req, res) => {
   try {
     // =============================
-    // 1️⃣ COUNT TỔNG QUAN
+    // 1. COUNT TỔNG QUAN
     // =============================
+
     const [
       [adminsCount],
       [churchesCount],
@@ -16,57 +17,68 @@ exports.getDashboard = async (req, res) => {
       [visitorsCount],
       [totalVisitsCount],
     ] = await Promise.all([
-      db.query(`SELECT COUNT(*) as total FROM admins`),
-      db.query(`SELECT COUNT(*) as total FROM churches`),
-      db.query(`SELECT COUNT(*) as total FROM events`),
-      db.query(`SELECT COUNT(*) as total FROM \`groups\``),
-      db.query(`SELECT COUNT(*) as total FROM prayers`),
-      db.query(`SELECT COUNT(*) as total FROM slides`),
-      db.query(`SELECT COUNT(*) as total FROM liturgical_schedules`),
+      db.query(`SELECT COUNT(*) AS total FROM admins`),
 
-      // 👇 SỐ NGƯỜI TRUY CẬP DUY NHẤT
+      db.query(`SELECT COUNT(*) AS total FROM churches`),
+
+      db.query(`SELECT COUNT(*) AS total FROM events`),
+
+      db.query(`SELECT COUNT(*) AS total FROM \`groups\``),
+
+      db.query(`SELECT COUNT(*) AS total FROM prayers`),
+
+      db.query(`SELECT COUNT(*) AS total FROM slides`),
+
+      db.query(`SELECT COUNT(*) AS total FROM liturgical_schedules`),
+
       db.query(`
-        SELECT COUNT(DISTINCT ip_address) as total
+        SELECT COUNT(DISTINCT ip_address) AS total
         FROM activity_logs
       `),
 
-      // 👇 TỔNG LƯỢT TRUY CẬP
       db.query(`
-        SELECT COUNT(*) as total
+        SELECT COUNT(*) AS total
         FROM activity_logs
       `),
     ]);
 
     // =============================
-    // 2️⃣ THỐNG KÊ THEO TRẠNG THÁI
+    // 2. THỐNG KÊ THEO TRẠNG THÁI
     // =============================
+
     const [[activeAdmins]] = await db.query(`
-      SELECT COUNT(*) as total 
-      FROM admins 
+      SELECT COUNT(*) AS total
+      FROM admins
       WHERE is_active = 1
     `);
 
     const [[publishedSchedules]] = await db.query(`
-      SELECT COUNT(*) as total
+      SELECT COUNT(*) AS total
       FROM liturgical_schedules
       WHERE status = 'PUBLISHED'
     `);
 
     // =============================
-    // 3️⃣ 5 SỰ KIỆN MỚI NHẤT
+    // 3. 5 SỰ KIỆN MỚI NHẤT
     // =============================
+
     const [recentEvents] = await db.query(`
-      SELECT id, title, event_date, created_at
+      SELECT
+        id,
+        title,
+        event_date,
+        created_at
       FROM events
       ORDER BY created_at DESC
       LIMIT 5
     `);
 
     // =============================
-    // 4️⃣ 5 SỰ KIỆN SẮP DIỄN RA
+    // 4. 5 SỰ KIỆN SẮP DIỄN RA
     // =============================
+
     const [upcomingEvents] = await db.query(`
-      SELECT 
+      SELECT
         id,
         title,
         event_date,
@@ -77,7 +89,7 @@ exports.getDashboard = async (req, res) => {
         is_priority
       FROM liturgical_events
       WHERE event_date >= CURDATE()
-      ORDER BY 
+      ORDER BY
         is_priority DESC,
         event_date ASC,
         event_time ASC
@@ -85,30 +97,46 @@ exports.getDashboard = async (req, res) => {
     `);
 
     // =============================
-    // 5️⃣ 5 NHÓM MỚI NHẤT
+    // 5. 5 NHÓM MỚI NHẤT
     // =============================
+
     const [recentGroups] = await db.query(`
-      SELECT id, name, created_at
+      SELECT
+        id,
+        name,
+        created_at
       FROM \`groups\`
       ORDER BY created_at DESC
       LIMIT 5
     `);
 
     // =============================
-    // 6️⃣ LỊCH PHỤNG VỤ TUẦN NÀY
+    // 6. LỊCH PHỤNG VỤ TUẦN NÀY
     // =============================
+
     const [currentWeekSchedule] = await db.query(`
-      SELECT id, title, week_start, week_end, status
+      SELECT
+        id,
+        title,
+        week_start,
+        week_end,
+        status
       FROM liturgical_schedules
       WHERE CURDATE() BETWEEN week_start AND week_end
       LIMIT 1
     `);
 
     // =============================
-    // 7️⃣ 5 LỊCH PHỤNG VỤ SẮP TỚI
+    // 7. 5 LỊCH PHỤNG VỤ SẮP TỚI
     // =============================
+
     const [upcomingSchedules] = await db.query(`
-      SELECT id, title, week_start, week_end, status
+      SELECT
+        id,
+        title,
+        week_start,
+        week_end,
+        status
       FROM liturgical_schedules
       WHERE week_start >= CURDATE()
       ORDER BY week_start ASC
@@ -116,12 +144,13 @@ exports.getDashboard = async (req, res) => {
     `);
 
     // =============================
-    // 8️⃣ THỐNG KÊ EVENTS THEO THÁNG
+    // 8. EVENTS THEO THÁNG
     // =============================
+
     const [monthlyEvents] = await db.query(`
-      SELECT 
-        MONTH(event_date) as month,
-        COUNT(*) as total
+      SELECT
+        MONTH(event_date) AS month,
+        COUNT(*) AS total
       FROM events
       WHERE YEAR(event_date) = YEAR(CURDATE())
       GROUP BY MONTH(event_date)
@@ -129,39 +158,54 @@ exports.getDashboard = async (req, res) => {
     `);
 
     // =============================
-    // RESPONSE
+    // RESPONSE DASHBOARD ADMIN
     // =============================
+
     res.json({
       success: true,
-      stats: {
-        totalAdmins: adminsCount[0].total,
-        activeAdmins: activeAdmins.total,
-        totalChurches: churchesCount[0].total,
-        totalEvents: eventsCount[0].total,
-        totalGroups: groupsCount[0].total,
-        totalPrayers: prayersCount[0].total,
-        totalSlides: slidesCount[0].total,
-        totalLiturgicalSchedules: liturgicalCount[0].total,
-        publishedSchedules: publishedSchedules.total,
 
-        // 👇 VISITOR STATS
-        totalVisitors: visitorsCount[0].total,
-        totalVisits: totalVisitsCount[0].total,
+      stats: {
+        totalAdmins: Number(adminsCount[0]?.total || 0),
+        activeAdmins: Number(activeAdmins?.total || 0),
+
+        totalChurches: Number(churchesCount[0]?.total || 0),
+
+        totalEvents: Number(eventsCount[0]?.total || 0),
+
+        totalGroups: Number(groupsCount[0]?.total || 0),
+
+        totalPrayers: Number(prayersCount[0]?.total || 0),
+
+        totalSlides: Number(slidesCount[0]?.total || 0),
+
+        totalLiturgicalSchedules: Number(liturgicalCount[0]?.total || 0),
+
+        publishedSchedules: Number(publishedSchedules?.total || 0),
+
+        totalVisitors: Number(visitorsCount[0]?.total || 0),
+
+        totalVisits: Number(totalVisitsCount[0]?.total || 0),
       },
 
       recentEvents,
+
       upcomingEvents,
+
       recentGroups,
+
       currentWeekSchedule: currentWeekSchedule[0] || null,
+
       upcomingSchedules,
+
       monthlyEvents,
     });
-  } catch (err) {
-    console.error("Dashboard error:", err);
-    res.status(500).json({
+  } catch (error) {
+    console.error("❌ Dashboard error:", error);
+
+    return res.status(500).json({
       success: false,
       message: "Lỗi server",
-      error: err.message,
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
@@ -170,47 +214,130 @@ exports.getDashboard = async (req, res) => {
 // DASHBOARD GIÁO LÝ VIÊN
 // GET /api/dashboard/cate
 // ============================================================
+
 exports.getDashboardCate = async (req, res) => {
   try {
     // ========================================================
-    // 1. TỔNG HỌC VIÊN
+    // 0. LẤY CHURCH ID TỪ TOKEN
     // ========================================================
 
-    const [[studentStats]] = await db.query(`
-      SELECT COUNT(*) AS total_students
-      FROM students
-    `);
+    const churchId = Number(req.user?.church_id);
+
+    console.log("==========================================");
+    console.log("📊 DASHBOARD GIÁO LÝ VIÊN");
+    console.log("👤 USER:", req.user);
+    console.log("⛪ CHURCH ID:", churchId);
+    console.log("==========================================");
+
+    if (!churchId) {
+      return res.status(403).json({
+        status: "error",
+        message: "Tài khoản chưa được gán giáo xứ",
+      });
+    }
+
+    // ========================================================
+    // 1. TỔNG HỌC VIÊN CỦA GIÁO XỨ
+    // ========================================================
+    //
+    // students
+    //    ↓
+    // class_students
+    //    ↓
+    // classes
+    //    ↓
+    // church_id
+    //
+    // Không dùng s.class_id
+    // ========================================================
+
+    const [[studentStats]] = await db.query(
+      `
+      SELECT
+        COUNT(DISTINCT s.id) AS total_students
+
+      FROM students s
+
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+
+      WHERE c.church_id = ?
+      `,
+      [churchId],
+    );
 
     // ========================================================
     // 2. HỌC VIÊN THÁNG NÀY
     // ========================================================
 
-    const [[currentMonthStudents]] = await db.query(`
-      SELECT COUNT(*) AS total
-      FROM students
-      WHERE created_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
-        AND created_at < DATE_ADD(
-          DATE_FORMAT(CURDATE(), '%Y-%m-01'),
+    const [[currentMonthStudents]] = await db.query(
+      `
+      SELECT
+        COUNT(DISTINCT s.id) AS total
+
+      FROM students s
+
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+
+      WHERE c.church_id = ?
+
+        AND s.created_at >= DATE_FORMAT(
+          CURDATE(),
+          '%Y-%m-01'
+        )
+
+        AND s.created_at < DATE_ADD(
+          DATE_FORMAT(
+            CURDATE(),
+            '%Y-%m-01'
+          ),
           INTERVAL 1 MONTH
         )
-    `);
+      `,
+      [churchId],
+    );
 
     // ========================================================
     // 3. HỌC VIÊN THÁNG TRƯỚC
     // ========================================================
 
-    const [[lastMonthStudents]] = await db.query(`
-      SELECT COUNT(*) AS total
-      FROM students
-      WHERE created_at >= DATE_FORMAT(
-        DATE_SUB(CURDATE(), INTERVAL 1 MONTH),
-        '%Y-%m-01'
-      )
-      AND created_at < DATE_FORMAT(
-        CURDATE(),
-        '%Y-%m-01'
-      )
-    `);
+    const [[lastMonthStudents]] = await db.query(
+      `
+      SELECT
+        COUNT(DISTINCT s.id) AS total
+
+      FROM students s
+
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+
+      WHERE c.church_id = ?
+
+        AND s.created_at >= DATE_FORMAT(
+          DATE_SUB(
+            CURDATE(),
+            INTERVAL 1 MONTH
+          ),
+          '%Y-%m-01'
+        )
+
+        AND s.created_at < DATE_FORMAT(
+          CURDATE(),
+          '%Y-%m-01'
+        )
+      `,
+      [churchId],
+    );
 
     const currentStudents = Number(currentMonthStudents?.total || 0);
 
@@ -227,51 +354,94 @@ exports.getDashboardCate = async (req, res) => {
     }
 
     // ========================================================
-    // 4. THỐNG KÊ LỚP
+    // 4. THỐNG KÊ LỚP CỦA GIÁO XỨ
     // ========================================================
 
-    const [[classStats]] = await db.query(`
+    const [[classStats]] = await db.query(
+      `
       SELECT
         COUNT(*) AS total,
-        SUM(
-          CASE
-            WHEN status = 'active' THEN 1
-            ELSE 0
-          END
+
+        COALESCE(
+          SUM(
+            CASE
+              WHEN status = 'active'
+              THEN 1
+              ELSE 0
+            END
+          ),
+          0
         ) AS active
+
       FROM classes
-    `);
+
+      WHERE church_id = ?
+      `,
+      [churchId],
+    );
 
     // ========================================================
     // 5. TỔNG BÀI HỌC
     // ========================================================
     //
-    // Không dùng created_at vì lessons của bạn chưa có cột này.
+    // Hiện tại lessons chưa có church_id.
+    //
+    // Vì vậy lessons đang được coi là
+    // dữ liệu dùng chung toàn hệ thống.
     //
     // ========================================================
 
     const [[lessonStats]] = await db.query(`
-      SELECT COUNT(*) AS total
+      SELECT
+        COUNT(*) AS total
       FROM lessons
     `);
 
     // ========================================================
-    // 6. TỔNG RESULTS
+    // 6. TỔNG RESULTS CỦA GIÁO XỨ
+    // ========================================================
+    //
+    // results
+    //    ↓
+    // students
+    //    ↓
+    // class_students
+    //    ↓
+    // classes
+    //    ↓
+    // church_id
+    //
+    // DISTINCT r.id để tránh trường hợp
+    // một học sinh có nhiều bản ghi class_students.
     // ========================================================
 
-    const [[resultStats]] = await db.query(`
+    const [[resultStats]] = await db.query(
+      `
       SELECT
-        COUNT(*) AS total_results,
+        COUNT(DISTINCT r.id) AS total_results,
 
-        SUM(
-          CASE
-            WHEN score IS NOT NULL THEN 1
-            ELSE 0
+        COUNT(
+          DISTINCT CASE
+            WHEN r.score IS NOT NULL
+            THEN r.id
           END
         ) AS completed_results
 
-      FROM results
-    `);
+      FROM results r
+
+      INNER JOIN students s
+        ON s.id = r.student_id
+
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+
+      WHERE c.church_id = ?
+      `,
+      [churchId],
+    );
 
     const totalResults = Number(resultStats?.total_results || 0);
 
@@ -290,32 +460,46 @@ exports.getDashboardCate = async (req, res) => {
     // 8. RESULTS THÁNG NÀY
     // ========================================================
 
-    const [[currentMonthResults]] = await db.query(`
+    const [[currentMonthResults]] = await db.query(
+      `
       SELECT
-        COUNT(*) AS total,
+        COUNT(DISTINCT r.id) AS total,
 
-        SUM(
-          CASE
-            WHEN score IS NOT NULL THEN 1
-            ELSE 0
+        COUNT(
+          DISTINCT CASE
+            WHEN r.score IS NOT NULL
+            THEN r.id
           END
         ) AS completed
 
-      FROM results
+      FROM results r
 
-      WHERE created_at >= DATE_FORMAT(
-        CURDATE(),
-        '%Y-%m-01'
-      )
+      INNER JOIN students s
+        ON s.id = r.student_id
 
-      AND created_at < DATE_ADD(
-        DATE_FORMAT(
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+
+      WHERE c.church_id = ?
+
+        AND r.created_at >= DATE_FORMAT(
           CURDATE(),
           '%Y-%m-01'
-        ),
-        INTERVAL 1 MONTH
-      )
-    `);
+        )
+
+        AND r.created_at < DATE_ADD(
+          DATE_FORMAT(
+            CURDATE(),
+            '%Y-%m-01'
+          ),
+          INTERVAL 1 MONTH
+        )
+      `,
+      [churchId],
+    );
 
     const currentMonthTotal = Number(currentMonthResults?.total || 0);
 
@@ -330,32 +514,46 @@ exports.getDashboardCate = async (req, res) => {
     // 9. RESULTS THÁNG TRƯỚC
     // ========================================================
 
-    const [[lastMonthResults]] = await db.query(`
+    const [[lastMonthResults]] = await db.query(
+      `
       SELECT
-        COUNT(*) AS total,
+        COUNT(DISTINCT r.id) AS total,
 
-        SUM(
-          CASE
-            WHEN score IS NOT NULL THEN 1
-            ELSE 0
+        COUNT(
+          DISTINCT CASE
+            WHEN r.score IS NOT NULL
+            THEN r.id
           END
         ) AS completed
 
-      FROM results
+      FROM results r
 
-      WHERE created_at >= DATE_FORMAT(
-        DATE_SUB(
+      INNER JOIN students s
+        ON s.id = r.student_id
+
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+
+      WHERE c.church_id = ?
+
+        AND r.created_at >= DATE_FORMAT(
+          DATE_SUB(
+            CURDATE(),
+            INTERVAL 1 MONTH
+          ),
+          '%Y-%m-01'
+        )
+
+        AND r.created_at < DATE_FORMAT(
           CURDATE(),
-          INTERVAL 1 MONTH
-        ),
-        '%Y-%m-01'
-      )
-
-      AND created_at < DATE_FORMAT(
-        CURDATE(),
-        '%Y-%m-01'
-      )
-    `);
+          '%Y-%m-01'
+        )
+      `,
+      [churchId],
+    );
 
     const lastMonthTotal = Number(lastMonthResults?.total || 0);
 
@@ -385,51 +583,54 @@ exports.getDashboardCate = async (req, res) => {
     // 11. WEEKLY PROGRESS
     // ========================================================
     //
-    // Dùng results.created_at
-    //
-    // Tuần:
-    //
     // Thứ 2 -> Chủ Nhật
     //
-    // MySQL DAYOFWEEK:
-    //
-    // 1 = CN
-    // 2 = Thứ 2
-    // 3 = Thứ 3
-    // 4 = Thứ 4
-    // 5 = Thứ 5
-    // 6 = Thứ 6
-    // 7 = Thứ 7
+    // Chỉ lấy results thuộc giáo xứ hiện tại.
     //
     // ========================================================
 
-    const [weeklyRows] = await db.query(`
+    const [weeklyRows] = await db.query(
+      `
       SELECT
-        DAYOFWEEK(created_at) AS mysql_day,
-        COUNT(*) AS total
+        DAYOFWEEK(r.created_at) AS mysql_day,
 
-      FROM results
+        COUNT(DISTINCT r.id) AS total
 
-      WHERE created_at >= DATE_SUB(
-        CURDATE(),
-        INTERVAL WEEKDAY(CURDATE()) DAY
-      )
+      FROM results r
 
-      AND created_at < DATE_ADD(
-        DATE_SUB(
+      INNER JOIN students s
+        ON s.id = r.student_id
+
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+
+      WHERE c.church_id = ?
+
+        AND r.created_at >= DATE_SUB(
           CURDATE(),
           INTERVAL WEEKDAY(CURDATE()) DAY
-        ),
-        INTERVAL 7 DAY
-      )
+        )
 
-      GROUP BY DAYOFWEEK(created_at)
+        AND r.created_at < DATE_ADD(
+          DATE_SUB(
+            CURDATE(),
+            INTERVAL WEEKDAY(CURDATE()) DAY
+          ),
+          INTERVAL 7 DAY
+        )
 
-      ORDER BY DAYOFWEEK(created_at)
-    `);
+      GROUP BY DAYOFWEEK(r.created_at)
+
+      ORDER BY DAYOFWEEK(r.created_at)
+      `,
+      [churchId],
+    );
 
     // ========================================================
-    // 12. DEFAULT 7 NGÀY
+    // 12. MAP 7 NGÀY
     // ========================================================
 
     const weeklyMap = {
@@ -447,7 +648,12 @@ exports.getDashboardCate = async (req, res) => {
 
       let dayIndex;
 
-      // Chủ Nhật
+      // MySQL:
+      // 1 = CN
+      // 2 = Thứ 2
+      // ...
+      // 7 = Thứ 7
+
       if (mysqlDay === 1) {
         dayIndex = 7;
       } else {
@@ -496,47 +702,56 @@ exports.getDashboardCate = async (req, res) => {
     // 14. QUIZ METRICS
     // ========================================================
     //
-    // Với bảng results hiện tại:
-    //
-    // score >= 50  -> Đúng / Đạt
-    // score < 50   -> Sai / Không đạt
-    // score NULL   -> Chưa hoàn thành
+    // score >= 50 : Đạt
+    // score < 50  : Không đạt
+    // score NULL  : Chưa hoàn thành
     //
     // ========================================================
 
-    const [[quizStats]] = await db.query(`
+    const [[quizStats]] = await db.query(
+      `
       SELECT
 
-        COUNT(*) AS total,
+        COUNT(DISTINCT r.id) AS total,
 
-        SUM(
-          CASE
-            WHEN score IS NOT NULL
-              AND score >= 50
-            THEN 1
-            ELSE 0
+        COUNT(
+          DISTINCT CASE
+            WHEN r.score IS NOT NULL
+              AND r.score >= 50
+            THEN r.id
           END
         ) AS correct_count,
 
-        SUM(
-          CASE
-            WHEN score IS NOT NULL
-              AND score < 50
-            THEN 1
-            ELSE 0
+        COUNT(
+          DISTINCT CASE
+            WHEN r.score IS NOT NULL
+              AND r.score < 50
+            THEN r.id
           END
         ) AS wrong_count,
 
-        SUM(
-          CASE
-            WHEN score IS NULL
-            THEN 1
-            ELSE 0
+        COUNT(
+          DISTINCT CASE
+            WHEN r.score IS NULL
+            THEN r.id
           END
         ) AS uncompleted_count
 
-      FROM results
-    `);
+      FROM results r
+
+      INNER JOIN students s
+        ON s.id = r.student_id
+
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+
+      WHERE c.church_id = ?
+      `,
+      [churchId],
+    );
 
     const quizTotal = Number(quizStats?.total || 0);
 
@@ -547,7 +762,7 @@ exports.getDashboardCate = async (req, res) => {
     const uncompletedCount = Number(quizStats?.uncompleted_count || 0);
 
     // ========================================================
-    // 15. TÍNH %
+    // 15. QUIZ %
     // ========================================================
 
     const quizMetrics = {
@@ -568,9 +783,7 @@ exports.getDashboardCate = async (req, res) => {
       status: "success",
 
       data: {
-        // ====================================================
-        // TOP METRICS
-        // ====================================================
+        church_id: churchId,
 
         top_metrics: {
           total_students: {
@@ -588,7 +801,7 @@ exports.getDashboardCate = async (req, res) => {
           lessons: {
             total: Number(lessonStats?.total || 0),
 
-            // lessons chưa có created_at
+            // lessons chưa có church_id
             new_this_month: 0,
           },
 
@@ -599,25 +812,21 @@ exports.getDashboardCate = async (req, res) => {
           },
         },
 
-        // ====================================================
-        // WEEKLY PROGRESS
-        // ====================================================
-
         weekly_progress: {
           view_type: "week",
 
           chart_data: weeklyProgress,
         },
 
-        // ====================================================
-        // QUIZ METRICS
-        // ====================================================
-
         quiz_metrics: quizMetrics,
       },
     });
   } catch (error) {
     console.error("❌ getDashboardCate error:", error);
+
+    console.error("❌ SQL error:", error.sqlMessage);
+
+    console.error("❌ Error code:", error.code);
 
     return res.status(500).json({
       status: "error",

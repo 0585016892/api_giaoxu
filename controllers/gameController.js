@@ -1218,16 +1218,6 @@ const getGameById = async (req, res) => {
 
     const game = rows[0];
 
-    const isAdmin = user.role === "admin";
-
-    if (!isAdmin && Number(game.teacher_id) !== Number(user.id)) {
-      return res.status(403).json({
-        success: false,
-
-        message: "Bạn không có quyền xem game này",
-      });
-    }
-
     return res.json({
       success: true,
 
@@ -1304,16 +1294,6 @@ const updateGame = async (req, res) => {
     }
 
     const oldGame = rows[0];
-
-    const isAdmin = user.role === "admin";
-
-    if (!isAdmin && Number(oldGame.teacher_id) !== Number(user.id)) {
-      return res.status(403).json({
-        success: false,
-
-        message: "Bạn không có quyền cập nhật game này",
-      });
-    }
 
     const oldData = parseGameData(oldGame.data);
 
@@ -1442,14 +1422,29 @@ const deleteGame = async (req, res) => {
   try {
     const user = getAuthUser(req);
 
+    // =========================================================
+    // VALIDATE ID
+    // =========================================================
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({
         success: false,
-
         message: "ID game không hợp lệ",
       });
     }
 
+    // =========================================================
+    // CHỈ TEACHER_ID = 12 ĐƯỢC XÓA
+    // =========================================================
+    if (Number(user.id) !== 12) {
+      return res.status(403).json({
+        success: false,
+        message: "Bạn không có quyền xóa game",
+      });
+    }
+
+    // =========================================================
+    // KIỂM TRA GAME
+    // =========================================================
     const [rows] = await pool.execute(
       `
         SELECT
@@ -1458,51 +1453,44 @@ const deleteGame = async (req, res) => {
         FROM games
         WHERE id = ?
         LIMIT 1
-        `,
+      `,
       [id],
     );
 
     if (!rows.length) {
       return res.status(404).json({
         success: false,
-
         message: "Không tìm thấy game",
       });
     }
 
     const game = rows[0];
 
-    const isAdmin = user.role === "admin";
-
-    if (!isAdmin && Number(game.teacher_id) !== Number(user.id)) {
-      return res.status(403).json({
-        success: false,
-
-        message: "Bạn không có quyền xóa game này",
-      });
-    }
-
+    // =========================================================
+    // XÓA GAME
+    // =========================================================
     await pool.execute(
       `
-      DELETE FROM games
-      WHERE id = ?
+        DELETE FROM games
+        WHERE id = ?
       `,
       [id],
     );
 
+    // Xóa thư mục/file liên quan đến game
     deleteGameDirectory(id);
 
+    // =========================================================
+    // LOG
+    // =========================================================
     logInfo("DELETE_SUCCESS", {
       game_id: id,
-
       user_id: user.id,
-
       teacher_id: game.teacher_id,
     });
 
     return res.json({
       success: true,
-
       message: "Xóa game thành công",
     });
   } catch (error) {
@@ -1512,12 +1500,10 @@ const deleteGame = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-
       message: "Không thể xóa game",
     });
   }
 };
-
 /**
  * =========================================================
  * EXPORT

@@ -17,7 +17,7 @@ exports.login = async (req, res) => {
 
     // 1️⃣ Query admin
     const [rows] = await db.query(
-      `SELECT id, email, password, role, is_active, full_name, username, avatar 
+      `SELECT *
        FROM admins 
        WHERE email = ? 
        LIMIT 1`,
@@ -31,6 +31,7 @@ exports.login = async (req, res) => {
     }
 
     const admin = rows[0];
+    console.log(admin);
 
     // 2️⃣ Check active
     if (admin.is_active === 0) {
@@ -62,6 +63,8 @@ exports.login = async (req, res) => {
         username: admin.username,
         avatar: admin.avatar,
         role: admin.role,
+        church_id: admin.church_id,
+        account_type: admin.account_type,
       },
       process.env.JWT_SECRET,
       {
@@ -85,8 +88,10 @@ exports.login = async (req, res) => {
         id: admin.id,
         email: admin.email,
         role: admin.role,
+        church_id: admin.church_id,
         full_name: admin.full_name,
         username: admin.username,
+        account_type: admin.account_type,
         avatar: admin.avatar,
         last_login: new Date(),
       },

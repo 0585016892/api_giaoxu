@@ -651,6 +651,8 @@ exports.updateCatechist = async (req, res) => {
  * ================================
  */
 exports.deleteCatechist = async (req, res) => {
+  const connection = await db.getConnection();
+
   try {
     const { id } = req.params;
     const churchId = getChurchId(req);
@@ -666,12 +668,22 @@ exports.deleteCatechist = async (req, res) => {
       });
     }
 
+    await connection.beginTransaction();
+
     /**
-     * Kiểm tra tồn tại
+     * =====================================================
+     * 1. Lấy thông tin GLV
+     * =====================================================
+     *
+     * catechist_code chính là username trong admins
      */
-    const [existing] = await db.query(
+    const [existing] = await connection.query(
       `
-      SELECT id
+      SELECT
+        id,
+        catechist_code,
+        full_name,
+        email
       FROM catechists
       WHERE id = ?
         AND church_id = ?
@@ -681,19 +693,26 @@ exports.deleteCatechist = async (req, res) => {
     );
 
     if (existing.length === 0) {
+      await connection.rollback();
+
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy Giáo lý viên trong giáo xứ này",
       });
     }
 
+    const catechist = existing[0];
+
+    console.log("👤 GLV:", catechist.full_name);
+    console.log("🔑 Catechist code:", catechist.catechist_code);
+    console.log("📧 Email:", catechist.email);
+
     /**
-     * Xóa phân lớp trước
-     *
-     * Nếu catechist_classes không có ON DELETE CASCADE
-     * thì tránh lỗi FK.
+     * =====================================================
+     * 2. Xóa phân công lớp
+     * =====================================================
      */
-    await db.query(
+    await connection.query(
       `
       DELETE FROM catechist_classes
       WHERE catechist_id = ?
@@ -702,9 +721,34 @@ exports.deleteCatechist = async (req, res) => {
     );
 
     /**
-     * Xóa GLV
+     * =====================================================
+     * 3. Xóa tài khoản admins
+     *
+     * catechists.catechist_code = admins.username
+     *
+     * Đồng thời kiểm tra church_id để tránh xóa nhầm
+     * tài khoản của giáo xứ khác.
+     * =====================================================
      */
-    await db.query(
+    if (catechist.catechist_code) {
+      const [adminResult] = await connection.query(
+        `
+        DELETE FROM admins
+        WHERE username = ?
+          AND church_id = ?
+        `,
+        [catechist.catechist_code, churchId],
+      );
+
+      console.log("🗑️ Xóa tài khoản admins:", adminResult.affectedRows);
+    }
+
+    /**
+     * =====================================================
+     * 4. Xóa Giáo lý viên
+     * =====================================================
+     */
+    const [catechistResult] = await connection.query(
       `
       DELETE FROM catechists
       WHERE id = ?
@@ -713,21 +757,40 @@ exports.deleteCatechist = async (req, res) => {
       [id, churchId],
     );
 
-    res.status(200).json({
+    /**
+     * Kiểm tra thực sự đã xóa
+     */
+    if (catechistResult.affectedRows === 0) {
+      throw new Error("Không thể xóa Giáo lý viên");
+    }
+
+    /**
+     * =====================================================
+     * 5. Commit
+     * =====================================================
+     */
+    await connection.commit();
+
+    console.log("✅ Đã xóa GLV + tài khoản đăng nhập thành công");
+
+    return res.status(200).json({
       success: true,
-      message: "Xóa Giáo lý viên thành công",
+      message: "Xóa Giáo lý viên và tài khoản đăng nhập thành công",
     });
   } catch (error) {
+    await connection.rollback();
+
     console.error("❌ DELETE CATECHIST ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message,
       errorCode: error.code,
     });
+  } finally {
+    connection.release();
   }
 };
-
 /**
  * ================================
  * PHÂN LỚP CHO GIÁO LÝ VIÊN

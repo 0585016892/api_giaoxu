@@ -414,6 +414,7 @@ exports.createStudent = async (req, res) => {
     const [result] = await connection.query(
       `
       INSERT INTO students (
+      church_id,
         code,
         name,
         gender,
@@ -475,6 +476,7 @@ exports.createStudent = async (req, res) => {
       )
       `,
       [
+        churchId,
         studentCode,
         String(name).trim(),
         gender || null,

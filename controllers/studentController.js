@@ -942,6 +942,10 @@ exports.importStudentsExcel = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
+    // =====================================================
+    // CHURCH
+    // =====================================================
+
     const churchId = getChurchId(req);
 
     if (!churchId) {
@@ -962,7 +966,7 @@ exports.importStudentsExcel = async (req, res) => {
       });
     }
 
-    const fileName = req.file.originalname.toLowerCase();
+    const fileName = String(req.file.originalname || "").toLowerCase();
 
     if (!fileName.endsWith(".xlsx") && !fileName.endsWith(".xls")) {
       return res.status(400).json({
@@ -1003,21 +1007,60 @@ exports.importStudentsExcel = async (req, res) => {
       });
     }
 
-    console.log("========== IMPORT STUDENTS EXCEL ==========");
-    console.log("Church ID:", churchId);
-    console.log("File:", req.file.originalname);
-    console.log("Total:", rows.length);
-
-    // =====================================================
-    // GIỚI HẠN
-    // =====================================================
-
     if (rows.length > 1000) {
       return res.status(400).json({
         success: false,
         message: "Mỗi lần chỉ được import tối đa 1000 học sinh",
       });
     }
+
+    console.log("========================================");
+    console.log("IMPORT STUDENTS EXCEL");
+    console.log("CHURCH ID:", churchId);
+    console.log("FILE:", req.file.originalname);
+    console.log("TOTAL:", rows.length);
+    console.log("========================================");
+
+    // =====================================================
+    // HÀM CHUYỂN NGÀY
+    // =====================================================
+
+    const parseDate = (value) => {
+      if (!value) return null;
+
+      // Date object
+      if (value instanceof Date && !isNaN(value.getTime())) {
+        const year = value.getFullYear();
+        const month = String(value.getMonth() + 1).padStart(2, "0");
+        const day = String(value.getDate()).padStart(2, "0");
+
+        return `${year}-${month}-${day}`;
+      }
+
+      const str = String(value).trim();
+
+      if (!str) return null;
+
+      // YYYY-MM-DD
+      if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(str)) {
+        const [year, month, day] = str.split("-");
+
+        return `${year}-${String(month).padStart(2, "0")}-${String(
+          day,
+        ).padStart(2, "0")}`;
+      }
+
+      // DD/MM/YYYY
+      if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(str)) {
+        const [day, month, year] = str.split("/");
+
+        return `${year}-${String(month).padStart(2, "0")}-${String(
+          day,
+        ).padStart(2, "0")}`;
+      }
+
+      return null;
+    };
 
     // =====================================================
     // TRANSACTION
@@ -1029,16 +1072,37 @@ exports.importStudentsExcel = async (req, res) => {
     const errorRows = [];
 
     // =====================================================
-    // IMPORT TỪNG DÒNG
+    // LẤY ID CUỐI
+    // =====================================================
+
+    const [lastStudentRows] = await connection.query(
+      `
+      SELECT id
+      FROM students
+      ORDER BY id DESC
+      LIMIT 1
+      FOR UPDATE
+      `,
+    );
+
+    let nextStudentId = lastStudentRows.length
+      ? Number(lastStudentRows[0].id) + 1
+      : 1;
+
+    // =====================================================
+    // IMPORT
     // =====================================================
 
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index];
 
-      // Excel bắt đầu từ dòng 2
       const excelRow = index + 2;
 
       try {
+        console.log("----------------------------------------");
+        console.log("EXCEL ROW:", excelRow);
+        console.log("DATA:", row);
+
         // =================================================
         // NAME
         // =================================================
@@ -1047,6 +1111,39 @@ exports.importStudentsExcel = async (req, res) => {
 
         if (!name) {
           throw new Error("Thiếu họ tên học sinh");
+        }
+
+        // =================================================
+        // CLASS ID
+        // =================================================
+
+        const classId = row.class_id
+          ? Number(String(row.class_id).trim())
+          : null;
+
+        if (!classId || !Number.isInteger(classId) || classId <= 0) {
+          throw new Error("class_id không hợp lệ");
+        }
+
+        // =================================================
+        // CHECK CLASS THUỘC CHURCH
+        // =================================================
+
+        const [classRows] = await connection.query(
+          `
+          SELECT id, name
+          FROM classes
+          WHERE id = ?
+            AND church_id = ?
+          LIMIT 1
+          `,
+          [classId, churchId],
+        );
+
+        if (!classRows.length) {
+          throw new Error(
+            `Lớp ID ${classId} không tồn tại hoặc không thuộc giáo xứ`,
+          );
         }
 
         // =================================================
@@ -1099,17 +1196,72 @@ exports.importStudentsExcel = async (req, res) => {
 
         // =================================================
         // CODE
-        //
-        // Nếu Excel có code thì dùng code.
-        // Nếu không có thì để NULL.
-        //
-        // Nếu muốn API tự sinh code thì có thể sửa sau.
         // =================================================
 
-        const code = row.code ? String(row.code).trim() : null;
+        let code = row.code ? String(row.code).trim() : null;
+
+        // Nếu Excel không có code → tự sinh
+        if (!code) {
+          code = `HS${String(nextStudentId).padStart(6, "0")}`;
+        }
 
         // =================================================
-        // INSERT
+        // CHECK CODE TRÙNG
+        // =================================================
+
+        const [existingCode] = await connection.query(
+          `
+          SELECT id
+          FROM students
+          WHERE code = ?
+          LIMIT 1
+          `,
+          [code],
+        );
+
+        if (existingCode.length) {
+          throw new Error(`Mã học sinh "${code}" đã tồn tại`);
+        }
+
+        // =================================================
+        // DATE
+        // =================================================
+
+        const dateOfBirth = parseDate(row.date_of_birth);
+        const baptismDate = parseDate(row.baptism_date);
+        const firstCommunionDate = parseDate(row.first_communion_date);
+        const confirmationDate = parseDate(row.confirmation_date);
+        const enrollmentDate = parseDate(row.enrollment_date);
+
+        // Nếu Excel có giá trị ngày nhưng không parse được
+        if (row.date_of_birth && !dateOfBirth) {
+          throw new Error(`date_of_birth không hợp lệ: ${row.date_of_birth}`);
+        }
+
+        if (row.baptism_date && !baptismDate) {
+          throw new Error(`baptism_date không hợp lệ: ${row.baptism_date}`);
+        }
+
+        if (row.first_communion_date && !firstCommunionDate) {
+          throw new Error(
+            `first_communion_date không hợp lệ: ${row.first_communion_date}`,
+          );
+        }
+
+        if (row.confirmation_date && !confirmationDate) {
+          throw new Error(
+            `confirmation_date không hợp lệ: ${row.confirmation_date}`,
+          );
+        }
+
+        if (row.enrollment_date && !enrollmentDate) {
+          throw new Error(
+            `enrollment_date không hợp lệ: ${row.enrollment_date}`,
+          );
+        }
+
+        // =================================================
+        // INSERT STUDENT
         // =================================================
 
         const [result] = await connection.query(
@@ -1181,7 +1333,7 @@ exports.importStudentsExcel = async (req, res) => {
             name,
             gender,
 
-            row.date_of_birth || null,
+            dateOfBirth,
             row.birth_place || null,
             row.nationality || "Việt Nam",
 
@@ -1201,23 +1353,23 @@ exports.importStudentsExcel = async (req, res) => {
             row.guardian_relationship || null,
 
             row.baptism_name || null,
-            row.baptism_date || null,
+            baptismDate,
             row.baptism_place || null,
             row.baptism_parish || null,
             row.baptism_certificate_no || null,
 
             row.saint_name || null,
 
-            row.first_communion_date || null,
+            firstCommunionDate,
             row.first_communion_place || null,
 
-            row.confirmation_date || null,
+            confirmationDate,
             row.confirmation_place || null,
             row.confirmation_saint_name || null,
 
             row.catechism_level || null,
             catechismStatus,
-            row.enrollment_date || null,
+            enrollmentDate,
 
             row.note || null,
             row.avatar || null,
@@ -1225,18 +1377,52 @@ exports.importStudentsExcel = async (req, res) => {
           ],
         );
 
+        const studentId = result.insertId;
+
+        // =================================================
+        // GÁN HỌC SINH VÀO LỚP
+        // =================================================
+
+        await connection.query(
+          `
+          INSERT INTO class_students (
+            class_id,
+            student_id
+          )
+          VALUES (?, ?)
+          `,
+          [classId, studentId],
+        );
+
+        // =================================================
+        // SUCCESS
+        // =================================================
+
         successRows.push({
           row: excelRow,
-          id: result.insertId,
+          id: studentId,
           code,
           name,
+          class_id: classId,
+        });
+
+        nextStudentId++;
+
+        console.log("✅ SUCCESS:", {
+          row: excelRow,
+          studentId,
+          code,
+          name,
+          classId,
         });
       } catch (error) {
-        console.error(`❌ Excel row ${excelRow}:`, error.message);
+        console.error(`❌ ERROR EXCEL ROW ${excelRow}:`, error.message);
 
         errorRows.push({
           row: excelRow,
           name: row.name || null,
+          code: row.code || null,
+          class_id: row.class_id || null,
           error: error.message,
         });
       }
@@ -1248,6 +1434,12 @@ exports.importStudentsExcel = async (req, res) => {
 
     if (errorRows.length > 0) {
       await connection.rollback();
+
+      console.error("========================================");
+      console.error("IMPORT FAILED");
+      console.error("ROLLBACK ALL DATA");
+      console.error("ERRORS:", errorRows);
+      console.error("========================================");
 
       return res.status(400).json({
         success: false,
@@ -1265,7 +1457,9 @@ exports.importStudentsExcel = async (req, res) => {
 
     await connection.commit();
 
-    console.log(`✅ IMPORT SUCCESS: ${successRows.length} students`);
+    console.log("========================================");
+    console.log(`✅ IMPORT SUCCESS: ${successRows.length} STUDENTS`);
+    console.log("========================================");
 
     return res.status(201).json({
       success: true,
@@ -1276,12 +1470,18 @@ exports.importStudentsExcel = async (req, res) => {
       data: successRows,
     });
   } catch (error) {
-    await connection.rollback();
+    try {
+      await connection.rollback();
+    } catch (rollbackError) {
+      console.error("ROLLBACK ERROR:", rollbackError.message);
+    }
 
     console.error("========== IMPORT STUDENTS EXCEL ERROR ==========");
+
     console.error("Message:", error.message);
     console.error("Code:", error.code);
-    console.error("SQL:", error.sqlMessage);
+    console.error("SQL Message:", error.sqlMessage);
+    console.error("Stack:", error.stack);
 
     return res.status(500).json({
       success: false,

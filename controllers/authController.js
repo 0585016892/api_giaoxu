@@ -75,7 +75,7 @@ exports.login = async (req, res) => {
     await writeLog({
       admin_id: admin.id,
       action: "LOGIN",
-      target_type: "admins",
+      target_type: admin.role,
       target_id: admin.id,
       description: `${admin.full_name} đăng nhập hệ thống`,
       ip_address: req.ip,

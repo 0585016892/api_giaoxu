@@ -198,9 +198,18 @@ exports.getClassById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    /* =========================
-       1. THÔNG TIN LỚP
-    ========================= */
+    const church_id = req.user?.church_id;
+
+    if (!church_id) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được liên kết với giáo xứ",
+      });
+    }
+
+    // ==========================================
+    // 1. THÔNG TIN LỚP
+    // ==========================================
 
     const classSql = `
       SELECT
@@ -210,28 +219,29 @@ exports.getClassById = async (req, res) => {
           SELECT COUNT(*)
           FROM class_students cs
           WHERE cs.class_id = c.id
-          AND cs.status = 'studying'
+            AND cs.status = 'studying'
         ) AS studentsCount
 
       FROM classes c
 
       WHERE c.id = ?
+        AND c.church_id = ?
     `;
 
-    const [classRows] = await db.query(classSql, [id]);
+    const [classRows] = await db.query(classSql, [id, church_id]);
 
     if (!classRows.length) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy lớp học",
+        message: "Không tìm thấy lớp học trong giáo xứ của bạn",
       });
     }
 
     const classData = classRows[0];
 
-    /* =========================
-       2. DANH SÁCH GIÁO LÝ VIÊN
-    ========================= */
+    // ==========================================
+    // 2. DANH SÁCH GIÁO LÝ VIÊN
+    // ==========================================
 
     const catechistSql = `
       SELECT
@@ -259,38 +269,40 @@ exports.getClassById = async (req, res) => {
         ON ct.id = cc.catechist_id
 
       WHERE cc.class_id = ?
+        AND ct.church_id = ?
 
       ORDER BY
         cc.role ASC,
         ct.full_name ASC
     `;
 
-    const [catechists] = await db.query(catechistSql, [id]);
+    const [catechists] = await db.query(catechistSql, [id, church_id]);
 
-    /* =========================
-       3. RESPONSE
-    ========================= */
+    // ==========================================
+    // 3. RESPONSE
+    // ==========================================
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
 
       data: {
         ...classData,
 
+        studentsCount: Number(classData.studentsCount || 0),
+
         catechists,
       },
     });
   } catch (error) {
-    console.error("getClassById error:", error);
+    console.error("❌ getClassById error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Không thể lấy thông tin lớp học",
       error: error.message,
     });
   }
 };
-
 // =========================
 // TẠO LỚP
 // =========================
@@ -335,7 +347,7 @@ exports.createClass = async (req, res) => {
     }
 
     // ==========================================
-    // PREFIX CODE
+    // XÁC ĐỊNH PREFIX
     // ==========================================
 
     let prefix = "GL";
@@ -366,7 +378,7 @@ exports.createClass = async (req, res) => {
     }
 
     // ==========================================
-    // SINH CODE TRONG PHẠM VI GIÁO XỨ
+    // TÌM CODE LỚN NHẤT TRONG GIÁO XỨ
     // ==========================================
 
     const [rows] = await db.query(
@@ -376,22 +388,63 @@ exports.createClass = async (req, res) => {
       WHERE church_id = ?
         AND code LIKE ?
       ORDER BY id DESC
-      LIMIT 1
       `,
       [church_id, `${prefix}%`],
     );
 
+    // ==========================================
+    // TÌM SỐ TIẾP THEO
+    // ==========================================
+
     let nextNumber = 1;
 
-    if (rows.length > 0 && rows[0].code) {
-      const lastNumber = parseInt(rows[0].code.replace(prefix, ""), 10);
+    for (const row of rows) {
+      if (!row.code) continue;
 
-      if (!Number.isNaN(lastNumber)) {
-        nextNumber = lastNumber + 1;
+      const numberPart = row.code.replace(prefix, "");
+      const number = parseInt(numberPart, 10);
+
+      if (!Number.isNaN(number) && number >= nextNumber) {
+        nextNumber = number + 1;
       }
     }
 
-    const code = `${prefix}${String(nextNumber).padStart(3, "0")}`;
+    // ==========================================
+    // KIỂM TRA TRÙNG CODE
+    // ==========================================
+
+    let code;
+    let attempts = 0;
+
+    while (attempts < 100) {
+      code = `${prefix}${String(nextNumber).padStart(3, "0")}`;
+
+      const [existing] = await db.query(
+        `
+        SELECT id
+        FROM classes
+        WHERE church_id = ?
+          AND code = ?
+        LIMIT 1
+        `,
+        [church_id, code],
+      );
+
+      if (existing.length === 0) {
+        break;
+      }
+
+      nextNumber++;
+      attempts++;
+    }
+
+    // Không tìm được code
+    if (!code || attempts >= 100) {
+      return res.status(500).json({
+        success: false,
+        message: "Không thể tạo mã lớp học mới",
+      });
+    }
 
     // ==========================================
     // INSERT
@@ -433,6 +486,10 @@ exports.createClass = async (req, res) => {
       ],
     );
 
+    // ==========================================
+    // RESPONSE
+    // ==========================================
+
     return res.status(201).json({
       success: true,
       message: "Tạo lớp học thành công",
@@ -444,6 +501,17 @@ exports.createClass = async (req, res) => {
     });
   } catch (error) {
     console.error("❌ createClass error:", error);
+
+    // ==========================================
+    // XỬ LÝ DUPLICATE CODE
+    // ==========================================
+
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        success: false,
+        message: "Mã lớp đã tồn tại, vui lòng thử lại",
+      });
+    }
 
     return res.status(500).json({
       success: false,
@@ -458,7 +526,6 @@ exports.updateClass = async (req, res) => {
 
     const {
       name,
-      code,
       category,
       catechist_id,
       description,
@@ -471,10 +538,6 @@ exports.updateClass = async (req, res) => {
       status,
     } = req.body;
 
-    // ==========================================
-    // LẤY GIÁO XỨ TỪ TOKEN
-    // ==========================================
-
     const church_id = req.user?.church_id;
 
     if (!church_id) {
@@ -484,14 +547,32 @@ exports.updateClass = async (req, res) => {
       });
     }
 
-    // ==========================================
-    // VALIDATE
-    // ==========================================
-
     if (!name?.trim()) {
       return res.status(400).json({
         success: false,
         message: "Tên lớp là bắt buộc",
+      });
+    }
+
+    // ==========================================
+    // KIỂM TRA LỚP CÓ THUỘC GIÁO XỨ KHÔNG
+    // ==========================================
+
+    const [classRows] = await db.query(
+      `
+      SELECT id, code
+      FROM classes
+      WHERE id = ?
+        AND church_id = ?
+      LIMIT 1
+      `,
+      [id, church_id],
+    );
+
+    if (!classRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy lớp học trong giáo xứ của bạn",
       });
     }
 
@@ -504,7 +585,6 @@ exports.updateClass = async (req, res) => {
       UPDATE classes
       SET
         name = ?,
-        code = ?,
         category = ?,
         catechist_id = ?,
         description = ?,
@@ -520,7 +600,6 @@ exports.updateClass = async (req, res) => {
       `,
       [
         name.trim(),
-        code || null,
         category || "Giáo lý Thiếu Nhi",
         catechist_id || null,
         description?.trim() || null,
@@ -536,16 +615,13 @@ exports.updateClass = async (req, res) => {
       ],
     );
 
-    if (!result.affectedRows) {
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy lớp học trong giáo xứ của bạn",
-      });
-    }
-
-    return res.json({
+    return res.status(200).json({
       success: true,
       message: "Cập nhật lớp học thành công",
+      data: {
+        id: Number(id),
+        code: classRows[0].code,
+      },
     });
   } catch (error) {
     console.error("❌ updateClass error:", error);
@@ -564,25 +640,46 @@ exports.deleteClass = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [result] = await db.query(`DELETE FROM classes WHERE id = ?`, [id]);
+    const church_id = req.user?.church_id;
+
+    if (!church_id) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được liên kết với giáo xứ",
+      });
+    }
+
+    // ==========================================
+    // XÓA CHỈ TRONG GIÁO XỨ
+    // ==========================================
+
+    const [result] = await db.query(
+      `
+      DELETE FROM classes
+      WHERE id = ?
+        AND church_id = ?
+      `,
+      [id, church_id],
+    );
 
     if (!result.affectedRows) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy lớp học",
+        message: "Không tìm thấy lớp học trong giáo xứ của bạn",
       });
     }
 
-    res.json({
+    return res.status(200).json({
       success: true,
       message: "Đã xóa lớp học",
     });
   } catch (error) {
-    console.error("deleteClass error:", error);
+    console.error("❌ deleteClass error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Không thể xóa lớp học",
+      error: error.message,
     });
   }
 };

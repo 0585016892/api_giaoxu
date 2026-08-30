@@ -1,6 +1,7 @@
 const db = require("../config/db");
 const bcrypt = require("bcrypt");
 const { generateCatechistCode } = require("../utils/generateCode");
+const { writeLog } = require("../utils/activityLogger");
 
 /**
  * Lấy church_id từ tài khoản đăng nhập
@@ -439,6 +440,14 @@ exports.createCatechist = async (req, res) => {
     await connection.commit();
 
     console.log("🎉 CREATE CATECHIST + ACCOUNT SUCCESS");
+    await writeLog({
+      admin_id: req.user?.id || null,
+      action: "CREATE",
+      target_type: "catechist",
+      target_id: catechistId,
+      description: `Thêm Giáo lý viên "${String(full_name).trim()}" - mã ${catechistCode}, tạo tài khoản đăng nhập ${cleanEmail}`,
+      ip_address: req.ip,
+    });
 
     // =====================================================
     // RESPONSE
@@ -623,6 +632,14 @@ exports.updateCatechist = async (req, res) => {
 
     console.log("📊 Update result:", result);
 
+    await writeLog({
+      admin_id: req.user?.id || null,
+      action: "UPDATE",
+      target_type: "catechist",
+      target_id: id,
+      description: `Cập nhật Giáo lý viên "${oldCatechist.full_name}" (${oldCatechist.catechist_code})`,
+      ip_address: req.ip,
+    });
     return res.status(200).json({
       success: true,
       message: "Cập nhật Giáo lý viên thành công",
@@ -772,6 +789,17 @@ exports.deleteCatechist = async (req, res) => {
     await connection.commit();
 
     console.log("✅ Đã xóa GLV + tài khoản đăng nhập thành công");
+    await writeLog({
+      admin_id: req.user?.id || null,
+      action: "DELETE",
+      target_type: "catechist",
+      target_id: id,
+      description:
+        `Xóa Giáo lý viên "${catechist.full_name}" ` +
+        `(mã ${catechist.catechist_code}, email ${catechist.email || "không có"}) ` +
+        `và tài khoản đăng nhập tương ứng`,
+      ip_address: req.ip,
+    });
 
     return res.status(200).json({
       success: true,

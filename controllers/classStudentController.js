@@ -21,7 +21,7 @@ const getClassById = async (classId) => {
       start_date,
       end_date,
       status,
-      parish_id
+      church_id
     FROM classes
     WHERE id = ?
     LIMIT 1
@@ -177,7 +177,7 @@ exports.getClassesByStudent = async (req, res) => {
         c.start_date,
         c.end_date,
         c.status AS class_status,
-        c.parish_id
+        c.church_id
 
       FROM class_students cs
 
@@ -254,7 +254,7 @@ exports.addStudentToClass = async (req, res) => {
       SELECT
         id,
         name,
-        parish_id,
+        church_id,
         status
       FROM classes
       WHERE id = ?
@@ -628,7 +628,7 @@ exports.changeClassStudent = async (req, res) => {
       SELECT
         id,
         name,
-        parish_id
+        church_id
       FROM classes
       WHERE id = ?
       LIMIT 1
@@ -654,7 +654,7 @@ exports.changeClassStudent = async (req, res) => {
       SELECT
         id,
         name,
-        parish_id,
+        church_id,
         status
       FROM classes
       WHERE id = ?

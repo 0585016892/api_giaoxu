@@ -378,46 +378,21 @@ exports.createClass = async (req, res) => {
     }
 
     // ==========================================
-    // TÌM CODE LỚN NHẤT TRONG GIÁO XỨ
+    // SINH CODE RANDOM
     // ==========================================
 
-    const [rows] = await db.query(
-      `
-      SELECT code
-      FROM classes
-      WHERE church_id = ?
-        AND code LIKE ?
-      ORDER BY id DESC
-      `,
-      [church_id, `${prefix}%`],
-    );
-
-    // ==========================================
-    // TÌM SỐ TIẾP THEO
-    // ==========================================
-
-    let nextNumber = 1;
-
-    for (const row of rows) {
-      if (!row.code) continue;
-
-      const numberPart = row.code.replace(prefix, "");
-      const number = parseInt(numberPart, 10);
-
-      if (!Number.isNaN(number) && number >= nextNumber) {
-        nextNumber = number + 1;
-      }
-    }
-
-    // ==========================================
-    // KIỂM TRA TRÙNG CODE
-    // ==========================================
-
-    let code;
+    let code = null;
     let attempts = 0;
 
     while (attempts < 100) {
-      code = `${prefix}${String(nextNumber).padStart(3, "0")}`;
+      // Random từ 000 -> 999
+      const randomNumber = Math.floor(Math.random() * 1000);
+
+      const randomCode = `${prefix}${String(randomNumber).padStart(3, "0")}`;
+
+      // ==========================================
+      // KIỂM TRA CODE ĐÃ TỒN TẠI CHƯA
+      // ==========================================
 
       const [existing] = await db.query(
         `
@@ -427,22 +402,25 @@ exports.createClass = async (req, res) => {
           AND code = ?
         LIMIT 1
         `,
-        [church_id, code],
+        [church_id, randomCode],
       );
 
       if (existing.length === 0) {
+        code = randomCode;
         break;
       }
 
-      nextNumber++;
       attempts++;
     }
 
-    // Không tìm được code
-    if (!code || attempts >= 100) {
+    // ==========================================
+    // KHÔNG TẠO ĐƯỢC CODE
+    // ==========================================
+
+    if (!code) {
       return res.status(500).json({
         success: false,
-        message: "Không thể tạo mã lớp học mới",
+        message: "Không thể tạo mã lớp học ngẫu nhiên",
       });
     }
 
@@ -503,13 +481,13 @@ exports.createClass = async (req, res) => {
     console.error("❌ createClass error:", error);
 
     // ==========================================
-    // XỬ LÝ DUPLICATE CODE
+    // DUPLICATE CODE
     // ==========================================
 
     if (error.code === "ER_DUP_ENTRY") {
       return res.status(409).json({
         success: false,
-        message: "Mã lớp đã tồn tại, vui lòng thử lại",
+        message: "Mã lớp đã tồn tại, vui lòng tạo lại",
       });
     }
 

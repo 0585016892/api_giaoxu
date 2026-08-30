@@ -409,7 +409,7 @@ exports.createCatechist = async (req, res) => {
       churchId,
 
       // Đăng nhập bằng email
-      cleanEmail,
+      catechistCode,
 
       hashedPassword,
 
@@ -515,7 +515,6 @@ exports.createCatechist = async (req, res) => {
  * CẬP NHẬT GIÁO LÝ VIÊN
  * ================================
  */
-const bcrypt = require("bcryptjs");
 
 exports.updateCatechist = async (req, res) => {
   try {

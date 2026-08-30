@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const bcrypt = require("bcrypt");
 const { generateCatechistCode } = require("../utils/generateCode");
 
 /**
@@ -156,7 +157,11 @@ exports.getCatechistById = async (req, res) => {
  * TẠO GIÁO LÝ VIÊN
  * ================================
  */
+const bcrypt = require("bcrypt");
+
 exports.createCatechist = async (req, res) => {
+  let connection;
+
   try {
     console.log("========== CREATE CATECHIST ==========");
     console.log("📥 req.body:", req.body);
@@ -173,13 +178,6 @@ exports.createCatechist = async (req, res) => {
       });
     }
 
-    /**
-     * Sinh mã GLV tự động
-     */
-    const catechistCode = await generateCatechistCode();
-
-    console.log("🔢 Generated catechist code:", catechistCode);
-
     const {
       holy_name,
       full_name,
@@ -189,8 +187,6 @@ exports.createCatechist = async (req, res) => {
       email,
       address,
 
-      // parish và diocese vẫn giữ lại
-      // nếu project cũ đang sử dụng
       parish,
       diocese,
 
@@ -209,19 +205,101 @@ exports.createCatechist = async (req, res) => {
       level,
       status,
       notes,
+
+      // Mật khẩu có thể truyền từ frontend
+      password,
     } = req.body;
 
-    /**
-     * Validate tên
-     */
-    if (!full_name || !full_name.trim()) {
+    // =====================================================
+    // VALIDATE HỌ TÊN
+    // =====================================================
+
+    if (!full_name || !String(full_name).trim()) {
       return res.status(400).json({
         success: false,
         message: "Vui lòng nhập họ và tên Giáo lý viên",
       });
     }
 
-    const sql = `
+    // =====================================================
+    // EMAIL BẮT BUỘC
+    // =====================================================
+
+    if (!email || !String(email).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng nhập email để tạo tài khoản đăng nhập",
+      });
+    }
+
+    const cleanEmail = String(email).trim().toLowerCase();
+
+    // =====================================================
+    // PASSWORD
+    //
+    // Không truyền password
+    // => mặc định 123456
+    // =====================================================
+
+    const accountPassword =
+      password && String(password).trim() ? String(password).trim() : "123456";
+
+    // =====================================================
+    // SINH MÃ GIÁO LÝ VIÊN
+    // =====================================================
+
+    const catechistCode = await generateCatechistCode();
+
+    console.log("🔢 Generated catechist code:", catechistCode);
+    console.log("📧 Account email:", cleanEmail);
+
+    // =====================================================
+    // HASH PASSWORD
+    // =====================================================
+
+    const hashedPassword = await bcrypt.hash(accountPassword, 10);
+
+    // =====================================================
+    // CONNECTION
+    // =====================================================
+
+    connection = await db.getConnection();
+
+    await connection.beginTransaction();
+
+    // =====================================================
+    // KIỂM TRA EMAIL ĐÃ TỒN TẠI
+    // =====================================================
+
+    const [existingAccount] = await connection.query(
+      `
+      SELECT
+        id,
+        username,
+        email,
+        church_id,
+        role
+      FROM admins
+      WHERE email = ?
+      LIMIT 1
+      `,
+      [cleanEmail],
+    );
+
+    if (existingAccount.length > 0) {
+      await connection.rollback();
+
+      return res.status(409).json({
+        success: false,
+        message: `Email "${cleanEmail}" đã được sử dụng cho tài khoản khác`,
+      });
+    }
+
+    // =====================================================
+    // INSERT CATECHIST
+    // =====================================================
+
+    const catechistSql = `
       INSERT INTO catechists (
         church_id,
         catechist_code,
@@ -252,19 +330,19 @@ exports.createCatechist = async (req, res) => {
       )
     `;
 
-    const values = [
+    const catechistValues = [
       churchId,
       catechistCode,
 
       holy_name || null,
-      full_name.trim(),
+      String(full_name).trim(),
 
       gender || "Nam",
 
       date_of_birth || null,
 
       phone || null,
-      email || null,
+      cleanEmail,
       address || null,
 
       parish || null,
@@ -289,35 +367,147 @@ exports.createCatechist = async (req, res) => {
       notes || null,
     ];
 
-    console.log("📝 SQL:", sql);
-    console.log("📦 VALUES:", values);
+    const [catechistResult] = await connection.query(
+      catechistSql,
+      catechistValues,
+    );
 
-    const [result] = await db.query(sql, values);
+    const catechistId = catechistResult.insertId;
 
-    console.log("✅ Insert thành công");
-    console.log("🆔 Insert ID:", result.insertId);
+    console.log("✅ Catechist created:", catechistId);
 
-    res.status(201).json({
+    // =====================================================
+    // TẠO TÀI KHOẢN
+    //
+    // username = email
+    // role = catechist
+    // church_id = giáo xứ hiện tại
+    //
+    // KHÔNG CÓ catechist_id
+    // =====================================================
+
+    const adminSql = `
+      INSERT INTO admins (
+        church_id,
+        username,
+        password,
+        role,
+        account_type,
+        is_active,
+        full_name,
+        saint_name,
+        birthday,
+        address,
+        email,
+        phone
+      )
+      VALUES (
+        ?, ?, ?, 'catechist', 'member', 1, ?, ?, ?, ?, ?, ?
+      )
+    `;
+
+    const adminValues = [
+      churchId,
+
+      // Đăng nhập bằng email
+      cleanEmail,
+
+      hashedPassword,
+
+      String(full_name).trim(),
+
+      holy_name || null,
+
+      date_of_birth || null,
+
+      address || null,
+
+      cleanEmail,
+
+      phone || null,
+    ];
+
+    const [adminResult] = await connection.query(adminSql, adminValues);
+
+    const adminId = adminResult.insertId;
+
+    console.log("✅ Account created:", adminId);
+
+    // =====================================================
+    // COMMIT
+    // =====================================================
+
+    await connection.commit();
+
+    console.log("🎉 CREATE CATECHIST + ACCOUNT SUCCESS");
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
+
+    return res.status(201).json({
       success: true,
-      message: "Thêm Giáo lý viên thành công",
+      message: "Thêm Giáo lý viên và tài khoản đăng nhập thành công",
+
       data: {
-        id: result.insertId,
-        church_id: churchId,
-        catechist_code: catechistCode,
+        catechist: {
+          id: catechistId,
+          church_id: churchId,
+          catechist_code: catechistCode,
+          full_name: String(full_name).trim(),
+        },
+
+        account: {
+          id: adminId,
+          church_id: churchId,
+          username: cleanEmail,
+          email: cleanEmail,
+          role: "catechist",
+        },
+
+        // Cho frontend biết mật khẩu ban đầu
+        // để hiển thị cho admin.
+        initial_password: accountPassword,
       },
     });
   } catch (error) {
+    // =====================================================
+    // ROLLBACK
+    // =====================================================
+
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (_) {}
+    }
+
     console.error("❌ CREATE CATECHIST ERROR");
     console.error("Message:", error.message);
     console.error("Code:", error.code);
     console.error("SQL Message:", error.sqlMessage);
     console.error("Stack:", error.stack);
 
-    res.status(500).json({
+    // =====================================================
+    // DUPLICATE
+    // =====================================================
+
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        success: false,
+        message: "Email hoặc mã Giáo lý viên đã tồn tại",
+        errorCode: error.code,
+      });
+    }
+
+    return res.status(500).json({
       success: false,
-      message: error.message,
+      message: "Không thể tạo Giáo lý viên và tài khoản",
       errorCode: error.code,
     });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
   }
 };
 

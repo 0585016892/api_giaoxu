@@ -315,7 +315,7 @@ exports.getStudentsByTeacher = async (req, res) => {
 
       ORDER BY
         c.name ASC,
-        s.full_name ASC
+        s.name ASC
       `,
       [catechistId, churchId],
     );

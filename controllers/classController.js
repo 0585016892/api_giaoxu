@@ -306,16 +306,16 @@ exports.getClassById = async (req, res) => {
 exports.getClassesByTeacherId = async (req, res) => {
   try {
     // ==========================================
-    // 1. LẤY THÔNG TIN TEACHER TỪ JWT
+    // 1. LẤY THÔNG TIN TÀI KHOẢN ĐĂNG NHẬP
     // ==========================================
 
-    const teacherId = req.user?.id;
+    const username = req.user?.teacher_id;
     const church_id = req.user?.church_id;
 
-    if (!teacherId) {
+    if (!username) {
       return res.status(403).json({
         success: false,
-        message: "Không xác định được giáo viên",
+        message: "Không xác định được mã giáo lý viên",
       });
     }
 
@@ -327,10 +327,40 @@ exports.getClassesByTeacherId = async (req, res) => {
     }
 
     // ==========================================
-    // 2. LẤY CÁC LỚP DO TEACHER QUẢN LÝ
+    // 2. TÌM CATECHIST ID
+    // username của tài khoản
+    // = catechist_code của giáo lý viên
     // ==========================================
 
-    const sql = `
+    const catechistSql = `
+      SELECT
+        id,
+        catechist_code,
+        full_name,
+        holy_name
+      FROM catechists
+      WHERE catechist_code = ?
+        AND church_id = ?
+      LIMIT 1
+    `;
+
+    const [catechistRows] = await db.query(catechistSql, [username, church_id]);
+
+    if (!catechistRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy Giáo lý viên tương ứng với tài khoản",
+      });
+    }
+
+    const catechist = catechistRows[0];
+    const catechist_id = catechist.id;
+
+    // ==========================================
+    // 3. LẤY CÁC LỚP GIÁO LÝ VIÊN ĐƯỢC PHÂN CÔNG
+    // ==========================================
+
+    const classSql = `
       SELECT
         c.*,
 
@@ -339,24 +369,40 @@ exports.getClassesByTeacherId = async (req, res) => {
           FROM class_students cs
           WHERE cs.class_id = c.id
             AND cs.status = 'studying'
-        ) AS studentsCount
+        ) AS studentsCount,
+
+        cc.id AS assignment_id,
+        cc.catechist_id,
+        cc.role AS catechist_role,
+        cc.assigned_date,
+        cc.notes
 
       FROM classes c
 
-      WHERE c.teacher_id = ?
-        AND c.church_id = ?
+      INNER JOIN catechist_classes cc
+        ON cc.class_id = c.id
+        AND cc.catechist_id = ?
+
+      WHERE c.church_id = ?
 
       ORDER BY c.id DESC
     `;
 
-    const [rows] = await db.query(sql, [teacherId, church_id]);
+    const [rows] = await db.query(classSql, [catechist_id, church_id]);
 
     // ==========================================
-    // 3. RESPONSE
+    // 4. RESPONSE
     // ==========================================
 
     return res.status(200).json({
       success: true,
+
+      catechist: {
+        id: catechist.id,
+        catechist_code: catechist.catechist_code,
+        full_name: catechist.full_name,
+        holy_name: catechist.holy_name,
+      },
 
       data: rows.map((item) => ({
         ...item,
@@ -368,7 +414,7 @@ exports.getClassesByTeacherId = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Không thể lấy danh sách lớp của giáo viên",
+      message: "Không thể lấy danh sách lớp của giáo lý viên",
       error: error.message,
     });
   }

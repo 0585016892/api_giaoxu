@@ -29,9 +29,9 @@ const getChurchId = (req) => {
 /**
  * Lấy teacher_id
  *
- * Tùy authMiddleware của project:
- * req.user.id
+ * Có thể tùy authMiddleware:
  * req.user.teacher_id
+ * hoặc req.user.id
  */
 const getTeacherId = (req) => {
   const user = getAuthUser(req);
@@ -47,22 +47,32 @@ const isValidDate = (date) => {
     return false;
   }
 
-  return /^\d{4}-\d{2}-\d{2}$/.test(date);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return false;
+  }
+
+  const parsed = new Date(`${date}T00:00:00`);
+
+  return !Number.isNaN(parsed.getTime());
 };
 
 /**
- * Kiểm tra status
+ * Các trạng thái điểm danh
  */
 const VALID_STATUS = ["present", "absent", "late", "excused"];
 
 /**
  * =========================================================
  * 1. GET ATTENDANCE
+ *
  * GET /api/attendance
  *
  * Query:
  * ?class_id=17
  * &date=2026-09-01
+ *
+ * Lấy toàn bộ học sinh thuộc lớp
+ * + trạng thái điểm danh trong ngày nếu đã có.
  * =========================================================
  */
 const getAttendance = async (req, res) => {
@@ -79,6 +89,9 @@ const getAttendance = async (req, res) => {
     const classId = Number(req.query.class_id);
     const date = req.query.date;
 
+    /**
+     * Validate class_id
+     */
     if (!Number.isInteger(classId) || classId <= 0) {
       return res.status(400).json({
         success: false,
@@ -86,6 +99,9 @@ const getAttendance = async (req, res) => {
       });
     }
 
+    /**
+     * Validate date
+     */
     if (!isValidDate(date)) {
       return res.status(400).json({
         success: false,
@@ -94,7 +110,9 @@ const getAttendance = async (req, res) => {
     }
 
     /**
-     * Kiểm tra lớp thuộc giáo xứ
+     * =====================================================
+     * KIỂM TRA LỚP THUỘC GIÁO XỨ
+     * =====================================================
      */
     const [classRows] = await db.execute(
       `
@@ -118,8 +136,9 @@ const getAttendance = async (req, res) => {
     }
 
     /**
-     * Lấy toàn bộ học sinh của lớp
-     * + điểm danh nếu đã có
+     * =====================================================
+     * LẤY HỌC SINH QUA class_students
+     * =====================================================
      */
     const [rows] = await db.execute(
       `
@@ -132,10 +151,14 @@ const getAttendance = async (req, res) => {
           a.check_in_time,
           a.note,
           a.teacher_id,
+          a.attendance_date,
           a.created_at,
           a.updated_at
 
-        FROM students s
+        FROM class_students cs
+
+        INNER JOIN students s
+          ON s.id = cs.student_id
 
         LEFT JOIN attendances a
           ON a.student_id = s.id
@@ -143,7 +166,7 @@ const getAttendance = async (req, res) => {
           AND a.attendance_date = ?
           AND a.church_id = ?
 
-        WHERE s.class_id = ?
+        WHERE cs.class_id = ?
           AND s.church_id = ?
 
         ORDER BY s.name ASC
@@ -151,24 +174,43 @@ const getAttendance = async (req, res) => {
       [classId, date, churchId, classId, churchId],
     );
 
+    /**
+     * =====================================================
+     * THỐNG KÊ
+     * =====================================================
+     */
+
+    const totalStudents = rows.length;
+
+    const present = rows.filter((item) => item.status === "present").length;
+
+    const absent = rows.filter((item) => item.status === "absent").length;
+
+    const late = rows.filter((item) => item.status === "late").length;
+
+    const excused = rows.filter((item) => item.status === "excused").length;
+
+    const notAttended = rows.filter((item) => !item.status).length;
+
     return res.json({
       success: true,
 
       data: {
         class: classRows[0],
+
         date,
 
-        total_students: rows.length,
+        total_students: totalStudents,
 
-        present: rows.filter((item) => item.status === "present").length,
+        present,
 
-        absent: rows.filter((item) => item.status === "absent").length,
+        absent,
 
-        late: rows.filter((item) => item.status === "late").length,
+        late,
 
-        excused: rows.filter((item) => item.status === "excused").length,
+        excused,
 
-        not_attended: rows.filter((item) => !item.status).length,
+        not_attended: notAttended,
 
         students: rows,
       },
@@ -186,20 +228,21 @@ const getAttendance = async (req, res) => {
 
 /**
  * =========================================================
- * 2. BULK ATTENDANCE
+ * 2. SAVE BULK ATTENDANCE
  *
  * POST /api/attendance/bulk
  *
  * Body:
+ *
  * {
- *   class_id: 17,
- *   date: "2026-09-01",
- *   students: [
+ *   "class_id": 17,
+ *   "date": "2026-09-01",
+ *   "students": [
  *      {
- *        student_id: 1,
- *        status: "present",
- *        check_in_time: "07:30:00",
- *        note: ""
+ *        "student_id": 1,
+ *        "status": "present",
+ *        "check_in_time": "07:30:00",
+ *        "note": ""
  *      }
  *   ]
  * }
@@ -211,6 +254,12 @@ const saveBulkAttendance = async (req, res) => {
   try {
     const churchId = getChurchId(req);
     const teacherId = getTeacherId(req);
+
+    /**
+     * =====================================================
+     * AUTH
+     * =====================================================
+     */
 
     if (!churchId) {
       return res.status(403).json({
@@ -230,6 +279,12 @@ const saveBulkAttendance = async (req, res) => {
 
     const classId = Number(class_id);
 
+    /**
+     * =====================================================
+     * VALIDATE CLASS
+     * =====================================================
+     */
+
     if (!Number.isInteger(classId) || classId <= 0) {
       return res.status(400).json({
         success: false,
@@ -237,12 +292,24 @@ const saveBulkAttendance = async (req, res) => {
       });
     }
 
+    /**
+     * =====================================================
+     * VALIDATE DATE
+     * =====================================================
+     */
+
     if (!isValidDate(date)) {
       return res.status(400).json({
         success: false,
         message: "date phải có định dạng YYYY-MM-DD",
       });
     }
+
+    /**
+     * =====================================================
+     * VALIDATE STUDENTS
+     * =====================================================
+     */
 
     if (!Array.isArray(students)) {
       return res.status(400).json({
@@ -259,8 +326,11 @@ const saveBulkAttendance = async (req, res) => {
     }
 
     /**
-     * Kiểm tra lớp
+     * =====================================================
+     * KIỂM TRA LỚP
+     * =====================================================
      */
+
     const [classRows] = await connection.execute(
       `
         SELECT
@@ -283,28 +353,52 @@ const saveBulkAttendance = async (req, res) => {
     }
 
     /**
-     * Lấy danh sách học sinh hợp lệ
+     * =====================================================
+     * LẤY HỌC SINH THUỘC LỚP
+     *
+     * classes
+     *    ↓
+     * class_students
+     *    ↓
+     * students
+     * =====================================================
      */
+
     const [classStudents] = await connection.execute(
       `
-        SELECT id
-        FROM students
-        WHERE class_id = ?
-          AND church_id = ?
-      `,
+          SELECT
+            cs.student_id
+
+          FROM class_students cs
+
+          INNER JOIN students s
+            ON s.id = cs.student_id
+
+          WHERE cs.class_id = ?
+            AND s.church_id = ?
+        `,
       [classId, churchId],
     );
 
+    /**
+     * Set ID học sinh hợp lệ
+     */
     const validStudentIds = new Set(
-      classStudents.map((student) => Number(student.id)),
+      classStudents.map((student) => Number(student.student_id)),
     );
 
     /**
-     * Validate dữ liệu
+     * =====================================================
+     * VALIDATE TỪNG HỌC SINH
+     * =====================================================
      */
+
     for (const item of students) {
       const studentId = Number(item.student_id);
 
+      /**
+       * student_id
+       */
       if (!Number.isInteger(studentId) || studentId <= 0) {
         return res.status(400).json({
           success: false,
@@ -312,6 +406,9 @@ const saveBulkAttendance = async (req, res) => {
         });
       }
 
+      /**
+       * Học sinh có thuộc lớp không?
+       */
       if (!validStudentIds.has(studentId)) {
         return res.status(403).json({
           success: false,
@@ -319,19 +416,69 @@ const saveBulkAttendance = async (req, res) => {
         });
       }
 
+      /**
+       * Status
+       */
       if (!VALID_STATUS.includes(item.status)) {
         return res.status(400).json({
           success: false,
           message: "status phải là present, absent, late hoặc excused",
         });
       }
+
+      /**
+       * Validate check_in_time nếu có
+       */
+      if (
+        item.check_in_time &&
+        !/^\d{2}:\d{2}:\d{2}$/.test(item.check_in_time)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "check_in_time phải có dạng HH:mm:ss",
+        });
+      }
     }
+
+    /**
+     * =====================================================
+     * CHỐNG GỬI TRÙNG STUDENT_ID
+     * =====================================================
+     */
+
+    const studentIds = students.map((item) => Number(item.student_id));
+
+    const uniqueStudentIds = new Set(studentIds);
+
+    if (uniqueStudentIds.size !== studentIds.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Danh sách học sinh bị trùng student_id",
+      });
+    }
+
+    /**
+     * =====================================================
+     * TRANSACTION
+     * =====================================================
+     */
 
     await connection.beginTransaction();
 
     /**
-     * INSERT hoặc UPDATE
+     * =====================================================
+     * INSERT / UPDATE
+     *
+     * UNIQUE:
+     * student_id
+     * class_id
+     * attendance_date
+     *
+     * Nếu đã có → UPDATE
+     * Nếu chưa có → INSERT
+     * =====================================================
      */
+
     for (const item of students) {
       const studentId = Number(item.student_id);
 
@@ -354,15 +501,24 @@ const saveBulkAttendance = async (req, res) => {
             check_in_time,
             note
           )
+
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 
           ON DUPLICATE KEY UPDATE
 
             status = VALUES(status),
-            check_in_time = VALUES(check_in_time),
-            note = VALUES(note),
-            teacher_id = VALUES(teacher_id),
-            updated_at = CURRENT_TIMESTAMP
+
+            check_in_time =
+              VALUES(check_in_time),
+
+            note =
+              VALUES(note),
+
+            teacher_id =
+              VALUES(teacher_id),
+
+            updated_at =
+              CURRENT_TIMESTAMP
         `,
         [
           churchId,
@@ -377,16 +533,23 @@ const saveBulkAttendance = async (req, res) => {
       );
     }
 
+    /**
+     * Commit
+     */
     await connection.commit();
 
     return res.json({
       success: true,
+
       message: "Lưu điểm danh thành công",
 
       data: {
         class_id: classId,
+
         date,
+
         teacher_id: teacherId,
+
         total: students.length,
       },
     });
@@ -415,6 +578,7 @@ const saveBulkAttendance = async (req, res) => {
 const updateAttendance = async (req, res) => {
   try {
     const churchId = getChurchId(req);
+
     const teacherId = getTeacherId(req);
 
     if (!churchId) {
@@ -435,6 +599,9 @@ const updateAttendance = async (req, res) => {
 
     const { status, check_in_time, note } = req.body;
 
+    /**
+     * Validate status
+     */
     if (!VALID_STATUS.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -442,14 +609,34 @@ const updateAttendance = async (req, res) => {
       });
     }
 
+    /**
+     * Validate time
+     */
+    if (check_in_time && !/^\d{2}:\d{2}:\d{2}$/.test(check_in_time)) {
+      return res.status(400).json({
+        success: false,
+        message: "check_in_time phải có dạng HH:mm:ss",
+      });
+    }
+
+    /**
+     * Kiểm tra bản ghi
+     */
     const [rows] = await db.execute(
       `
-        SELECT id
-        FROM attendances
-        WHERE id = ?
-          AND church_id = ?
-        LIMIT 1
-      `,
+          SELECT
+            id,
+            class_id,
+            student_id,
+            attendance_date
+
+          FROM attendances
+
+          WHERE id = ?
+            AND church_id = ?
+
+          LIMIT 1
+        `,
       [attendanceId, churchId],
     );
 
@@ -460,16 +647,27 @@ const updateAttendance = async (req, res) => {
       });
     }
 
+    /**
+     * Update
+     */
     await db.execute(
       `
         UPDATE attendances
+
         SET
           status = ?,
+
           check_in_time = ?,
+
           note = ?,
+
           teacher_id = ?,
-          updated_at = CURRENT_TIMESTAMP
+
+          updated_at =
+            CURRENT_TIMESTAMP
+
         WHERE id = ?
+
           AND church_id = ?
       `,
       [
@@ -526,10 +724,12 @@ const deleteAttendance = async (req, res) => {
 
     const [result] = await db.execute(
       `
-        DELETE FROM attendances
-        WHERE id = ?
-          AND church_id = ?
-      `,
+          DELETE FROM attendances
+
+          WHERE id = ?
+
+            AND church_id = ?
+        `,
       [attendanceId, churchId],
     );
 
@@ -560,6 +760,12 @@ const deleteAttendance = async (req, res) => {
  * 5. STUDENT ATTENDANCE HISTORY
  *
  * GET /api/attendance/student/:studentId
+ *
+ * LƯU Ý:
+ * students không có class_id.
+ *
+ * Lớp được lấy từ attendances.class_id
+ * và JOIN classes.
  * =========================================================
  */
 const getStudentAttendance = async (req, res) => {
@@ -583,27 +789,24 @@ const getStudentAttendance = async (req, res) => {
     }
 
     /**
-     * Kiểm tra học sinh
+     * =====================================================
+     * KIỂM TRA HỌC SINH
+     * =====================================================
      */
     const [studentRows] = await db.execute(
       `
-        SELECT
-          s.id,
-          s.name,
-          s.class_id,
-          c.name AS class_name
+          SELECT
+            s.id,
+            s.name
 
-        FROM students s
+          FROM students s
 
-        LEFT JOIN classes c
-          ON c.id = s.class_id
-          AND c.church_id = s.church_id
+          WHERE s.id = ?
 
-        WHERE s.id = ?
-          AND s.church_id = ?
+            AND s.church_id = ?
 
-        LIMIT 1
-      `,
+          LIMIT 1
+        `,
       [studentId, churchId],
     );
 
@@ -614,28 +817,60 @@ const getStudentAttendance = async (req, res) => {
       });
     }
 
+    /**
+     * =====================================================
+     * LẤY LỊCH SỬ
+     * =====================================================
+     */
     const [rows] = await db.execute(
       `
-        SELECT
-          a.id,
-          a.attendance_date,
-          a.status,
-          a.check_in_time,
-          a.note,
-          a.teacher_id,
-          a.created_at,
-          a.updated_at
+          SELECT
 
-        FROM attendances a
+            a.id,
 
-        WHERE a.student_id = ?
-          AND a.church_id = ?
+            a.class_id,
 
-        ORDER BY
-          a.attendance_date DESC
-      `,
-      [studentId, churchId],
+            c.name AS class_name,
+
+            c.code AS class_code,
+
+            a.attendance_date,
+
+            a.status,
+
+            a.check_in_time,
+
+            a.note,
+
+            a.teacher_id,
+
+            a.created_at,
+
+            a.updated_at
+
+          FROM attendances a
+
+          INNER JOIN classes c
+            ON c.id = a.class_id
+
+          WHERE a.student_id = ?
+
+            AND a.church_id = ?
+
+            AND c.church_id = ?
+
+          ORDER BY
+            a.attendance_date DESC,
+            a.created_at DESC
+        `,
+      [studentId, churchId, churchId],
     );
+
+    /**
+     * =====================================================
+     * SUMMARY
+     * =====================================================
+     */
 
     const summary = {
       total: rows.length,
@@ -649,6 +884,11 @@ const getStudentAttendance = async (req, res) => {
       excused: rows.filter((x) => x.status === "excused").length,
     };
 
+    /**
+     * Tỷ lệ chuyên cần
+     *
+     * present + late = được tính là đã tham gia
+     */
     const attendanceRate =
       summary.total > 0
         ? (((summary.present + summary.late) / summary.total) * 100).toFixed(2)
@@ -662,6 +902,7 @@ const getStudentAttendance = async (req, res) => {
 
         summary: {
           ...summary,
+
           attendance_rate: Number(attendanceRate),
         },
 
@@ -679,17 +920,6 @@ const getStudentAttendance = async (req, res) => {
   }
 };
 
-/**
- * =========================================================
- * 6. CLASS STATISTICS
- *
- * GET /api/attendance/statistics/class/:classId
- *
- * Query:
- * ?from=2026-08-01
- * &to=2026-08-31
- * =========================================================
- */
 const getClassStatistics = async (req, res) => {
   try {
     const churchId = getChurchId(req);
@@ -704,8 +934,13 @@ const getClassStatistics = async (req, res) => {
     const classId = Number(req.params.classId);
 
     const from = req.query.from || null;
-
     const to = req.query.to || null;
+
+    /**
+     * =====================================================
+     * VALIDATE CLASS
+     * =====================================================
+     */
 
     if (!Number.isInteger(classId) || classId <= 0) {
       return res.status(400).json({
@@ -715,11 +950,44 @@ const getClassStatistics = async (req, res) => {
     }
 
     /**
-     * Kiểm tra lớp
+     * =====================================================
+     * VALIDATE DATE
+     * =====================================================
      */
+
+    if (from && !isValidDate(from)) {
+      return res.status(400).json({
+        success: false,
+        message: "from phải có định dạng YYYY-MM-DD",
+      });
+    }
+
+    if (to && !isValidDate(to)) {
+      return res.status(400).json({
+        success: false,
+        message: "to phải có định dạng YYYY-MM-DD",
+      });
+    }
+
+    if (from && to && from > to) {
+      return res.status(400).json({
+        success: false,
+        message: "from không được lớn hơn to",
+      });
+    }
+
+    /**
+     * =====================================================
+     * KIỂM TRA LỚP
+     * =====================================================
+     */
+
     const [classRows] = await db.execute(
       `
-        SELECT id, name, code
+        SELECT
+          id,
+          name,
+          code
         FROM classes
         WHERE id = ?
           AND church_id = ?
@@ -735,116 +1003,246 @@ const getClassStatistics = async (req, res) => {
       });
     }
 
+    /**
+     * =====================================================
+     * LẤY HỌC SINH
+     *
+     * QUAN TRỌNG:
+     *
+     * students KHÔNG CÓ class_id
+     *
+     * Quan hệ:
+     *
+     * class_students.class_id
+     * class_students.student_id
+     *
+     * =====================================================
+     */
+
     let sql = `
       SELECT
+
         s.id AS student_id,
+
         s.name AS student_name,
 
         COUNT(a.id) AS total,
 
-        SUM(
-          CASE
-            WHEN a.status = 'present'
-            THEN 1 ELSE 0
-          END
+        COALESCE(
+          SUM(
+            CASE
+              WHEN a.status = 'present'
+              THEN 1
+              ELSE 0
+            END
+          ),
+          0
         ) AS present,
 
-        SUM(
-          CASE
-            WHEN a.status = 'absent'
-            THEN 1 ELSE 0
-          END
+        COALESCE(
+          SUM(
+            CASE
+              WHEN a.status = 'absent'
+              THEN 1
+              ELSE 0
+            END
+          ),
+          0
         ) AS absent,
 
-        SUM(
-          CASE
-            WHEN a.status = 'late'
-            THEN 1 ELSE 0
-          END
+        COALESCE(
+          SUM(
+            CASE
+              WHEN a.status = 'late'
+              THEN 1
+              ELSE 0
+            END
+          ),
+          0
         ) AS late,
 
-        SUM(
-          CASE
-            WHEN a.status = 'excused'
-            THEN 1 ELSE 0
-          END
+        COALESCE(
+          SUM(
+            CASE
+              WHEN a.status = 'excused'
+              THEN 1
+              ELSE 0
+            END
+          ),
+          0
         ) AS excused
 
-      FROM students s
+      FROM class_students cs
+
+      INNER JOIN students s
+        ON s.id = cs.student_id
 
       LEFT JOIN attendances a
-        ON a.student_id = s.id
-        AND a.class_id = s.class_id
+        ON a.student_id = cs.student_id
+        AND a.class_id = cs.class_id
         AND a.church_id = s.church_id
+
     `;
 
     const params = [];
 
+    /**
+     * =====================================================
+     * WHERE
+     * =====================================================
+     */
+
     sql += `
-      WHERE s.class_id = ?
+      WHERE cs.class_id = ?
         AND s.church_id = ?
     `;
 
     params.push(classId, churchId);
 
-    if (from && to) {
-      if (!isValidDate(from) || !isValidDate(to)) {
-        return res.status(400).json({
-          success: false,
-          message: "from và to phải có định dạng YYYY-MM-DD",
-        });
-      }
+    /**
+     * =====================================================
+     * DATE FILTER
+     * =====================================================
+     */
 
+    if (from) {
       sql += `
         AND (
-          a.attendance_date IS NULL
-          OR a.attendance_date BETWEEN ? AND ?
+          a.id IS NULL
+          OR a.attendance_date >= ?
         )
       `;
 
-      params.push(from, to);
+      params.push(from);
     }
+
+    if (to) {
+      sql += `
+        AND (
+          a.id IS NULL
+          OR a.attendance_date <= ?
+        )
+      `;
+
+      params.push(to);
+    }
+
+    /**
+     * =====================================================
+     * GROUP
+     * =====================================================
+     */
 
     sql += `
       GROUP BY
         s.id,
         s.name
 
-      ORDER BY s.name ASC
+      ORDER BY
+        s.name ASC
     `;
+
+    /**
+     * =====================================================
+     * EXECUTE
+     * =====================================================
+     */
 
     const [rows] = await db.execute(sql, params);
 
-    const data = rows.map((item) => {
+    /**
+     * =====================================================
+     * FORMAT DATA
+     * =====================================================
+     */
+
+    const students = rows.map((item) => {
       const total = Number(item.total || 0);
+
       const present = Number(item.present || 0);
+
+      const absent = Number(item.absent || 0);
+
       const late = Number(item.late || 0);
 
-      const rate =
-        total > 0 ? (((present + late) / total) * 100).toFixed(2) : "0.00";
+      const excused = Number(item.excused || 0);
+
+      const attended = present + late;
+
+      const attendanceRate =
+        total > 0 ? ((attended / total) * 100).toFixed(2) : "0.00";
 
       return {
-        ...item,
+        student_id: Number(item.student_id),
+
+        student_name: item.student_name,
 
         total,
-        present,
-        absent: Number(item.absent || 0),
-        late,
-        excused: Number(item.excused || 0),
 
-        attendance_rate: Number(rate),
+        present,
+
+        absent,
+
+        late,
+
+        excused,
+
+        attendance_rate: Number(attendanceRate),
       };
     });
+
+    /**
+     * =====================================================
+     * CLASS SUMMARY
+     * =====================================================
+     */
+
+    const summary = {
+      total_students: students.length,
+
+      total_attendance: students.reduce((sum, item) => sum + item.total, 0),
+
+      total_present: students.reduce((sum, item) => sum + item.present, 0),
+
+      total_absent: students.reduce((sum, item) => sum + item.absent, 0),
+
+      total_late: students.reduce((sum, item) => sum + item.late, 0),
+
+      total_excused: students.reduce((sum, item) => sum + item.excused, 0),
+    };
+
+    /**
+     * =====================================================
+     * TỶ LỆ CHUYÊN CẦN TOÀN LỚP
+     * =====================================================
+     */
+
+    const participated = summary.total_present + summary.total_late;
+
+    summary.attendance_rate =
+      summary.total_attendance > 0
+        ? Number(((participated / summary.total_attendance) * 100).toFixed(2))
+        : 0;
+
+    /**
+     * =====================================================
+     * RESPONSE
+     * =====================================================
+     */
 
     return res.json({
       success: true,
 
       data: {
         class: classRows[0],
+
         from,
+
         to,
 
-        students: data,
+        summary,
+
+        students,
       },
     });
   } catch (error) {
@@ -857,7 +1255,6 @@ const getClassStatistics = async (req, res) => {
     });
   }
 };
-
 /**
  * =========================================================
  * EXPORT
@@ -866,9 +1263,14 @@ const getClassStatistics = async (req, res) => {
 
 module.exports = {
   getAttendance,
+
   saveBulkAttendance,
+
   updateAttendance,
+
   deleteAttendance,
+
   getStudentAttendance,
+
   getClassStatistics,
 };

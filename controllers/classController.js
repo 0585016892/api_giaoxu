@@ -309,7 +309,7 @@ exports.getClassesByTeacherId = async (req, res) => {
     // 1. LẤY THÔNG TIN TÀI KHOẢN ĐĂNG NHẬP
     // ==========================================
 
-    const username = req.user?.teacher_id;
+    const username = req.user?.username;
     const church_id = req.user?.church_id;
 
     if (!username) {

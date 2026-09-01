@@ -788,25 +788,51 @@ const getStudentAttendance = async (req, res) => {
       });
     }
 
-    /**
-     * =====================================================
-     * KIỂM TRA HỌC SINH
-     * =====================================================
-     */
+    // =====================================================
+    // MONTH / YEAR
+    // =====================================================
+
+    const currentDate = new Date();
+
+    const month = req.query.month
+      ? Number(req.query.month)
+      : currentDate.getMonth() + 1;
+
+    const year = req.query.year
+      ? Number(req.query.year)
+      : currentDate.getFullYear();
+
+    if (
+      !Number.isInteger(month) ||
+      month < 1 ||
+      month > 12 ||
+      !Number.isInteger(year) ||
+      year < 2000 ||
+      year > 2100
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Tháng hoặc năm không hợp lệ",
+      });
+    }
+
+    // =====================================================
+    // KIỂM TRA HỌC SINH
+    // =====================================================
+
     const [studentRows] = await db.execute(
       `
-          SELECT
-            s.id,
-            s.name
+        SELECT
+          s.id,
+          s.name
 
-          FROM students s
+        FROM students s
 
-          WHERE s.id = ?
+        WHERE s.id = ?
+          AND s.church_id = ?
 
-            AND s.church_id = ?
-
-          LIMIT 1
-        `,
+        LIMIT 1
+      `,
       [studentId, churchId],
     );
 
@@ -817,60 +843,49 @@ const getStudentAttendance = async (req, res) => {
       });
     }
 
-    /**
-     * =====================================================
-     * LẤY LỊCH SỬ
-     * =====================================================
-     */
+    // =====================================================
+    // LẤY LỊCH SỬ ĐIỂM DANH THEO THÁNG
+    // =====================================================
+
     const [rows] = await db.execute(
       `
-          SELECT
+        SELECT
+          a.id,
+          a.class_id,
 
-            a.id,
+          c.name AS class_name,
+          c.code AS class_code,
 
-            a.class_id,
+          a.attendance_date,
+          a.status,
+          a.check_in_time,
+          a.note,
+          a.teacher_id,
+          a.created_at,
+          a.updated_at
 
-            c.name AS class_name,
+        FROM attendances a
 
-            c.code AS class_code,
+        INNER JOIN classes c
+          ON c.id = a.class_id
 
-            a.attendance_date,
+        WHERE a.student_id = ?
+          AND a.church_id = ?
+          AND c.church_id = ?
 
-            a.status,
+          AND YEAR(a.attendance_date) = ?
+          AND MONTH(a.attendance_date) = ?
 
-            a.check_in_time,
-
-            a.note,
-
-            a.teacher_id,
-
-            a.created_at,
-
-            a.updated_at
-
-          FROM attendances a
-
-          INNER JOIN classes c
-            ON c.id = a.class_id
-
-          WHERE a.student_id = ?
-
-            AND a.church_id = ?
-
-            AND c.church_id = ?
-
-          ORDER BY
-            a.attendance_date DESC,
-            a.created_at DESC
-        `,
-      [studentId, churchId, churchId],
+        ORDER BY
+          a.attendance_date DESC,
+          a.created_at DESC
+      `,
+      [studentId, churchId, churchId, year, month],
     );
 
-    /**
-     * =====================================================
-     * SUMMARY
-     * =====================================================
-     */
+    // =====================================================
+    // SUMMARY
+    // =====================================================
 
     const summary = {
       total: rows.length,
@@ -884,15 +899,32 @@ const getStudentAttendance = async (req, res) => {
       excused: rows.filter((x) => x.status === "excused").length,
     };
 
-    /**
-     * Tỷ lệ chuyên cần
-     *
-     * present + late = được tính là đã tham gia
-     */
+    // =====================================================
+    // ATTENDANCE RATE
+    // =====================================================
+
     const attendanceRate =
       summary.total > 0
         ? (((summary.present + summary.late) / summary.total) * 100).toFixed(2)
         : "0.00";
+
+    // =====================================================
+    // DANH SÁCH THEO TỪNG TRẠNG THÁI
+    // =====================================================
+
+    const details = {
+      present: rows.filter((x) => x.status === "present"),
+
+      absent: rows.filter((x) => x.status === "absent"),
+
+      late: rows.filter((x) => x.status === "late"),
+
+      excused: rows.filter((x) => x.status === "excused"),
+    };
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
 
     return res.json({
       success: true,
@@ -900,11 +932,15 @@ const getStudentAttendance = async (req, res) => {
       data: {
         student: studentRows[0],
 
+        month,
+        year,
+
         summary: {
           ...summary,
-
           attendance_rate: Number(attendanceRate),
         },
+
+        details,
 
         attendances: rows,
       },

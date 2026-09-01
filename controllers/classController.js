@@ -303,6 +303,75 @@ exports.getClassById = async (req, res) => {
     });
   }
 };
+exports.getClassesByTeacherId = async (req, res) => {
+  try {
+    // ==========================================
+    // 1. LẤY THÔNG TIN TỪ JWT
+    // ==========================================
+
+    const teacherId = req.user?.id;
+    const church_id = req.user?.church_id;
+
+    if (!teacherId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo viên",
+      });
+    }
+
+    if (!church_id) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được liên kết với giáo xứ",
+      });
+    }
+
+    // ==========================================
+    // 2. LẤY CÁC LỚP CỦA GIÁO VIÊN
+    // ==========================================
+
+    const sql = `
+      SELECT
+        c.*,
+
+        (
+          SELECT COUNT(*)
+          FROM class_students cs
+          WHERE cs.class_id = c.id
+            AND cs.status = 'studying'
+        ) AS studentsCount
+
+      FROM classes c
+
+      WHERE c.teacher_id = ?
+        AND c.church_id = ?
+
+      ORDER BY c.id DESC
+    `;
+
+    const [rows] = await db.query(sql, [teacherId, church_id]);
+
+    // ==========================================
+    // 3. RESPONSE
+    // ==========================================
+
+    return res.status(200).json({
+      success: true,
+      data: rows.map((item) => ({
+        ...item,
+        studentsCount: Number(item.studentsCount || 0),
+      })),
+    });
+  } catch (error) {
+    console.error("❌ getClassesByTeacherId error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể lấy danh sách lớp của giáo viên",
+      error: error.message,
+    });
+  }
+};
 // =========================
 // TẠO LỚP
 // =========================

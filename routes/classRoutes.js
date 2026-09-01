@@ -8,6 +8,7 @@ const {
   createClass,
   updateClass,
   deleteClass,
+  getClassesByTeacherId,
 } = require("../controllers/classController");
 
 const { verifyToken } = require("../middleware/authMiddleware");
@@ -18,10 +19,10 @@ const { verifyToken } = require("../middleware/authMiddleware");
 
 // Danh sách lớp
 router.get("/", verifyToken, getClasses);
+router.get("/teacher-class", verifyToken, getClassesByTeacherId);
 
 // Chi tiết lớp
 router.get("/:id", verifyToken, getClassById);
-
 // Tạo lớp
 router.post("/", verifyToken, createClass);
 

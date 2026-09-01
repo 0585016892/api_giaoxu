@@ -306,7 +306,7 @@ exports.getClassById = async (req, res) => {
 exports.getClassesByTeacherId = async (req, res) => {
   try {
     // ==========================================
-    // 1. LẤY THÔNG TIN TỪ JWT
+    // 1. LẤY THÔNG TIN TEACHER TỪ JWT
     // ==========================================
 
     const teacherId = req.user?.id;
@@ -327,7 +327,7 @@ exports.getClassesByTeacherId = async (req, res) => {
     }
 
     // ==========================================
-    // 2. LẤY CÁC LỚP CỦA GIÁO VIÊN
+    // 2. LẤY CÁC LỚP DO TEACHER QUẢN LÝ
     // ==========================================
 
     const sql = `
@@ -357,6 +357,7 @@ exports.getClassesByTeacherId = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+
       data: rows.map((item) => ({
         ...item,
         studentsCount: Number(item.studentsCount || 0),

@@ -46,6 +46,7 @@ const catechistRoutes = require("./routes/catechistRoutes");
 const gameRoutes = require("./routes/gameRoutes");
 const resultRoutes = require("./routes/resultRoutes");
 const dailyVerseRoutes = require("./routes/dailyVerseRoutes");
+const attendanceRoutes = require("./routes/attendanceRoutes");
 
 // ===============================
 // SOCKET
@@ -219,6 +220,7 @@ app.use("/api/catechist", catechistRoutes);
 app.use("/api/games", gameRoutes);
 app.use("/api/results", resultRoutes);
 app.use("/api/daily-verses", dailyVerseRoutes);
+app.use("/api/attendance", attendanceRoutes);
 app.get("/", (req, res) => {
   res.json({
     success: true,

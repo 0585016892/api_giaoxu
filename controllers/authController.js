@@ -27,7 +27,7 @@ exports.login = async (req, res) => {
 
         c.id AS catechist_id,
         c.catechist_code,
-        c.teacher_id AS catechist_teacher_id
+        c.id AS catechist_teacher_id
 
       FROM admins a
 

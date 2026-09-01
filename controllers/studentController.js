@@ -208,7 +208,149 @@ exports.getStudentById = async (req, res) => {
     });
   }
 };
+exports.getStudentsByTeacher = async (req, res) => {
+  try {
+    // ==========================================
+    // 1. LẤY THÔNG TIN TÀI KHOẢN ĐĂNG NHẬP
+    // ==========================================
 
+    const adminId = req.user?.id;
+    const churchId = req.user?.church_id;
+
+    if (!adminId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được tài khoản giáo viên",
+      });
+    }
+
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được gán giáo xứ",
+      });
+    }
+
+    // ==========================================
+    // 2. TÌM CATECHIST_ID TỪ TÀI KHOẢN ĐĂNG NHẬP
+    //
+    // admins.username = catechists.catechist_code
+    // ==========================================
+
+    const [teacherRows] = await db.query(
+      `
+      SELECT
+        a.id AS admin_id,
+        a.username,
+        a.role,
+        a.church_id,
+
+        ct.id AS catechist_id,
+        ct.catechist_code,
+        ct.full_name
+
+      FROM admins a
+
+      LEFT JOIN catechists ct
+        ON ct.catechist_code = a.username
+       AND ct.church_id = a.church_id
+
+      WHERE a.id = ?
+        AND a.church_id = ?
+
+      LIMIT 1
+      `,
+      [adminId, churchId],
+    );
+
+    if (!teacherRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy tài khoản giáo viên",
+      });
+    }
+
+    const teacher = teacherRows[0];
+
+    if (!teacher.catechist_id) {
+      return res.status(404).json({
+        success: false,
+        message: "Tài khoản giáo viên chưa được liên kết với Giáo lý viên",
+      });
+    }
+
+    const catechistId = teacher.catechist_id;
+
+    // ==========================================
+    // 3. LẤY HỌC SINH THUỘC CÁC LỚP
+    //    MÀ GIÁO VIÊN ĐƯỢC PHÂN CÔNG
+    // ==========================================
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        s.*,
+
+        c.id AS class_id,
+        c.name AS class_name,
+        c.code AS class_code,
+
+        cs.status AS class_student_status,
+        cs.joined_at
+
+      FROM students s
+
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+
+      INNER JOIN catechist_classes cc
+        ON cc.class_id = c.id
+
+      WHERE cc.catechist_id = ?
+        AND c.church_id = ?
+        AND cs.status = 'studying'
+
+      ORDER BY
+        c.name ASC,
+        s.full_name ASC
+      `,
+      [catechistId, churchId],
+    );
+
+    // ==========================================
+    // 4. RESPONSE
+    // ==========================================
+
+    return res.status(200).json({
+      success: true,
+
+      teacher: {
+        admin_id: teacher.admin_id,
+        catechist_id: teacher.catechist_id,
+        catechist_code: teacher.catechist_code,
+        full_name: teacher.full_name,
+      },
+
+      total: rows.length,
+
+      data: rows,
+    });
+  } catch (error) {
+    console.error("========== GET STUDENTS BY TEACHER ERROR ==========");
+    console.error("Message:", error.message);
+    console.error("Code:", error.code);
+    console.error("SQL:", error.sqlMessage);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể lấy danh sách học sinh của giáo viên",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
 // =====================================================
 // POST /api/students
 //

@@ -18,6 +18,11 @@ const { verifyToken } = require("../middleware/authMiddleware");
 
 router.get("/", verifyToken, studentController.getStudents);
 
+router.get(
+  "/student-class",
+  verifyToken,
+  studentController.getStudentsByTeacher,
+);
 router.get("/:id", verifyToken, studentController.getStudentById);
 
 router.post("/", verifyToken, studentController.createStudent);

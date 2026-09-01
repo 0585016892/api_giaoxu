@@ -402,7 +402,7 @@ exports.createCatechist = async (req, res) => {
         phone
       )
       VALUES (
-        ?, ?, ?, 'catechist', 'member', 1, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, 'teacher', 'member', 1, ?, ?, ?, ?, ?, ?
       )
     `;
 

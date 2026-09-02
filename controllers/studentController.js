@@ -471,7 +471,7 @@ exports.createStudent = async (req, res) => {
     // VALIDATE GENDER
     // =====================================================
 
-    const allowedGender = ["Nam", "Nữ", "Khác"];
+    const allowedGender = ["male", "female", "other"];
 
     if (gender && !allowedGender.includes(gender)) {
       return res.status(400).json({
@@ -826,7 +826,7 @@ exports.updateStudent = async (req, res) => {
     // VALIDATE GENDER
     // =====================================================
 
-    const allowedGender = ["Nam", "Nữ", "Khác"];
+    const allowedGender = ["male", "female", "other"];
 
     if (gender && !allowedGender.includes(gender)) {
       return res.status(400).json({
@@ -1280,7 +1280,7 @@ exports.importStudentsExcel = async (req, res) => {
     // VALID VALUES
     // =====================================================
 
-    const allowedGender = ["Nam", "Nữ", "Khác"];
+    const allowedGender = ["male", "female", "other"];
 
     const allowedCatechismStatus = [
       "new",

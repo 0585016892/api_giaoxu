@@ -729,81 +729,85 @@ exports.getDashboardCate = async (req, res) => {
     // 16. THỐNG KÊ HỌC SINH THEO TỪNG LỚP
     // ========================================================
 
+    // ========================================================
+    // 16. THỐNG KÊ HỌC SINH THEO TỪNG LỚP
+    // ========================================================
+
     const [studentClassStats] = await db.query(
       `
-      SELECT
+  SELECT
 
-        c.id AS class_id,
+    c.id AS class_id,
 
-        c.code AS class_code,
+    c.code AS class_code,
 
-        c.name AS class_name,
+    c.name AS class_name,
 
-        c.level AS level,
+    c.category AS category,
 
-        c.status AS class_status,
+    c.status AS class_status,
 
-        COUNT(DISTINCT s.id) AS total_students,
+    COUNT(DISTINCT s.id) AS total_students,
 
-        COUNT(
-          DISTINCT CASE
-            WHEN LOWER(TRIM(s.gender)) IN (
-              'male',
-              'nam'
-            )
-            THEN s.id
-          END
-        ) AS male_students,
+    COUNT(
+      DISTINCT CASE
+        WHEN LOWER(TRIM(s.gender)) IN (
+          'male',
+          'nam'
+        )
+        THEN s.id
+      END
+    ) AS male_students,
 
-        COUNT(
-          DISTINCT CASE
-            WHEN LOWER(TRIM(s.gender)) IN (
-              'female',
-              'nữ',
-              'nu'
-            )
-            THEN s.id
-          END
-        ) AS female_students,
+    COUNT(
+      DISTINCT CASE
+        WHEN LOWER(TRIM(s.gender)) IN (
+          'female',
+          'nữ',
+          'nu'
+        )
+        THEN s.id
+      END
+    ) AS female_students,
 
-        COUNT(
-          DISTINCT CASE
-            WHEN s.created_at >= DATE_FORMAT(
-              CURDATE(),
-              '%Y-%m-01'
-            )
+    COUNT(
+      DISTINCT CASE
+        WHEN s.created_at >= DATE_FORMAT(
+          CURDATE(),
+          '%Y-%m-01'
+        )
 
-            AND s.created_at < DATE_ADD(
-              DATE_FORMAT(
-                CURDATE(),
-                '%Y-%m-01'
-              ),
-              INTERVAL 1 MONTH
-            )
+        AND s.created_at < DATE_ADD(
+          DATE_FORMAT(
+            CURDATE(),
+            '%Y-%m-01'
+          ),
+          INTERVAL 1 MONTH
+        )
 
-            THEN s.id
-          END
-        ) AS new_students_this_month
+        THEN s.id
+      END
+    ) AS new_students_this_month
 
-      FROM classes c
+  FROM classes c
 
-      LEFT JOIN class_students cs
-        ON cs.class_id = c.id
+  LEFT JOIN class_students cs
+    ON cs.class_id = c.id
 
-      LEFT JOIN students s
-        ON s.id = cs.student_id
+  LEFT JOIN students s
+    ON s.id = cs.student_id
 
-      WHERE c.church_id = ?
+  WHERE c.church_id = ?
 
-      GROUP BY
-        c.id,
-        c.code,
-        c.name,
-        c.level,
-        c.status
+  GROUP BY
+    c.id,
+    c.code,
+    c.name,
+    c.category,
+    c.status
 
-      ORDER BY c.name ASC
-      `,
+  ORDER BY c.name ASC
+  `,
       [churchId],
     );
 
@@ -906,18 +910,14 @@ exports.getDashboardCate = async (req, res) => {
       };
 
       const present = attendance.present;
-
       const absent = attendance.absent;
-
       const excused = attendance.excused;
 
-      // Học sinh chưa có trạng thái điểm danh
       const notCheckedIn = Math.max(
         totalStudents - present - absent - excused,
         0,
       );
 
-      // Tỷ lệ có mặt
       const attendanceRate =
         totalStudents > 0 ? Math.round((present / totalStudents) * 100) : 0;
 
@@ -928,7 +928,8 @@ exports.getDashboardCate = async (req, res) => {
 
         class_name: row.class_name,
 
-        level: row.level,
+        // Dùng category thay cho level
+        category: row.category,
 
         status: row.class_status,
 

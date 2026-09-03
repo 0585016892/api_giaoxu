@@ -236,7 +236,7 @@ const getAttendance = async (req, res) => {
       SELECT
         s.id AS student_id,
         s.code,
-        s.full_name,
+        s.name,
         s.status AS student_status,
 
         a.id AS attendance_id,
@@ -261,7 +261,7 @@ const getAttendance = async (req, res) => {
       WHERE cs.class_id = ?
 
       ORDER BY
-        s.full_name ASC,
+        s.name ASC,
         s.id ASC
       `,
       [churchId, classId, churchId, date, classId],
@@ -1046,7 +1046,7 @@ const getClassStatistics = async (req, res) => {
       SELECT
         s.id AS student_id,
         s.code,
-        s.full_name,
+        s.name,
 
         COUNT(
           CASE
@@ -1118,10 +1118,10 @@ const getClassStatistics = async (req, res) => {
       GROUP BY
         s.id,
         s.code,
-        s.full_name
+        s.name
 
       ORDER BY
-        s.full_name ASC,
+        s.name ASC,
         s.id ASC
     `;
 

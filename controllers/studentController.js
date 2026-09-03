@@ -1,23 +1,36 @@
 const db = require("../config/db");
 const XLSX = require("xlsx");
+const crypto = require("crypto");
+
 // =====================================================
 // HELPER: LẤY CHURCH ID TỪ TOKEN
 // =====================================================
+
 const getChurchId = (req) => {
   return req.user?.church_id;
 };
 
 // =====================================================
+// HELPER: TẠO QR TOKEN
+// 32 bytes = 64 ký tự HEX
+// =====================================================
+
+const generateQrToken = () => {
+  return crypto.randomBytes(32).toString("hex");
+};
+
+// =====================================================
 // HELPER: KIỂM TRA LỚP THUỘC GIÁO XỨ
 // =====================================================
+
 const checkClassBelongsToChurch = async (classId, churchId) => {
   const [rows] = await db.query(
     `
-    SELECT id
-    FROM classes
-    WHERE id = ?
-      AND church_id = ?
-    LIMIT 1
+      SELECT id
+      FROM classes
+      WHERE id = ?
+        AND church_id = ?
+      LIMIT 1
     `,
     [classId, churchId],
   );
@@ -27,33 +40,20 @@ const checkClassBelongsToChurch = async (classId, churchId) => {
 
 // =====================================================
 // HELPER: KIỂM TRA HỌC SINH THUỘC GIÁO XỨ
-//
-// Quan hệ:
-//
-// church
-//   ↓
-// classes
-//   ↓
-// class_students
-//   ↓
-// students
 // =====================================================
+
 const checkStudentBelongsToChurch = async (studentId, churchId) => {
   const [rows] = await db.query(
     `
-    SELECT s.id
-    FROM students s
-
-    INNER JOIN class_students cs
-      ON cs.student_id = s.id
-
-    INNER JOIN classes c
-      ON c.id = cs.class_id
-
-    WHERE s.id = ?
-      AND c.church_id = ?
-
-    LIMIT 1
+      SELECT s.id
+      FROM students s
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+      WHERE s.id = ?
+        AND c.church_id = ?
+      LIMIT 1
     `,
     [studentId, churchId],
   );
@@ -63,17 +63,9 @@ const checkStudentBelongsToChurch = async (studentId, churchId) => {
 
 // =====================================================
 // GET /api/students
-//
-// LẤY HỌC SINH CỦA GIÁO XỨ ĐANG ĐĂNG NHẬP
-//
-// church
-//   ↓
-// classes
-//   ↓
-// class_students
-//   ↓
-// students
+// LẤY DANH SÁCH HỌC SINH
 // =====================================================
+
 exports.getStudents = async (req, res) => {
   try {
     const churchId = getChurchId(req);
@@ -91,27 +83,20 @@ exports.getStudents = async (req, res) => {
 
     const [rows] = await db.query(
       `
-      SELECT DISTINCT
-        s.*,
-
-        c.id AS class_id,
-        c.name AS class_name,
-        c.code AS class_code,
-
-        cs.status AS class_student_status,
-        cs.joined_at
-
-      FROM students s
-
-      INNER JOIN class_students cs
-        ON cs.student_id = s.id
-
-      INNER JOIN classes c
-        ON c.id = cs.class_id
-
-      WHERE c.church_id = ?
-
-      ORDER BY s.created_at DESC
+        SELECT DISTINCT
+          s.*,
+          c.id AS class_id,
+          c.name AS class_name,
+          c.code AS class_code,
+          cs.status AS class_student_status,
+          cs.joined_at
+        FROM students s
+        INNER JOIN class_students cs
+          ON cs.student_id = s.id
+        INNER JOIN classes c
+          ON c.id = cs.class_id
+        WHERE c.church_id = ?
+        ORDER BY s.created_at DESC
       `,
       [churchId],
     );
@@ -138,11 +123,9 @@ exports.getStudents = async (req, res) => {
 
 // =====================================================
 // GET /api/students/:id
-//
 // CHI TIẾT HỌC SINH
-//
-// Chỉ xem được nếu học sinh thuộc lớp của giáo xứ hiện tại
 // =====================================================
+
 exports.getStudentById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -157,28 +140,21 @@ exports.getStudentById = async (req, res) => {
 
     const [rows] = await db.query(
       `
-      SELECT
-        s.*,
-
-        c.id AS class_id,
-        c.name AS class_name,
-        c.code AS class_code,
-
-        cs.status AS class_student_status,
-        cs.joined_at
-
-      FROM students s
-
-      INNER JOIN class_students cs
-        ON cs.student_id = s.id
-
-      INNER JOIN classes c
-        ON c.id = cs.class_id
-
-      WHERE s.id = ?
-        AND c.church_id = ?
-
-      LIMIT 1
+        SELECT
+          s.*,
+          c.id AS class_id,
+          c.name AS class_name,
+          c.code AS class_code,
+          cs.status AS class_student_status,
+          cs.joined_at
+        FROM students s
+        INNER JOIN class_students cs
+          ON cs.student_id = s.id
+        INNER JOIN classes c
+          ON c.id = cs.class_id
+        WHERE s.id = ?
+          AND c.church_id = ?
+        LIMIT 1
       `,
       [id, churchId],
     );
@@ -208,12 +184,14 @@ exports.getStudentById = async (req, res) => {
     });
   }
 };
+
+// =====================================================
+// GET /api/students/teacher
+// LẤY HỌC SINH CỦA GIÁO LÝ VIÊN
+// =====================================================
+
 exports.getStudentsByTeacher = async (req, res) => {
   try {
-    // ==========================================
-    // 1. LẤY THÔNG TIN TÀI KHOẢN ĐĂNG NHẬP
-    // ==========================================
-
     const adminId = req.user?.id;
     const churchId = req.user?.church_id;
 
@@ -231,34 +209,27 @@ exports.getStudentsByTeacher = async (req, res) => {
       });
     }
 
-    // ==========================================
-    // 2. TÌM CATECHIST_ID TỪ TÀI KHOẢN ĐĂNG NHẬP
-    //
-    // admins.username = catechists.catechist_code
-    // ==========================================
+    // =================================================
+    // TÌM GIÁO LÝ VIÊN
+    // =================================================
 
     const [teacherRows] = await db.query(
       `
-      SELECT
-        a.id AS admin_id,
-        a.username,
-        a.role,
-        a.church_id,
-
-        ct.id AS catechist_id,
-        ct.catechist_code,
-        ct.full_name
-
-      FROM admins a
-
-      LEFT JOIN catechists ct
-        ON ct.catechist_code = a.username
-       AND ct.church_id = a.church_id
-
-      WHERE a.id = ?
-        AND a.church_id = ?
-
-      LIMIT 1
+        SELECT
+          a.id AS admin_id,
+          a.username,
+          a.role,
+          a.church_id,
+          ct.id AS catechist_id,
+          ct.catechist_code,
+          ct.full_name
+        FROM admins a
+        LEFT JOIN catechists ct
+          ON ct.catechist_code = a.username
+         AND ct.church_id = a.church_id
+        WHERE a.id = ?
+          AND a.church_id = ?
+        LIMIT 1
       `,
       [adminId, churchId],
     );
@@ -281,61 +252,45 @@ exports.getStudentsByTeacher = async (req, res) => {
 
     const catechistId = teacher.catechist_id;
 
-    // ==========================================
-    // 3. LẤY HỌC SINH THUỘC CÁC LỚP
-    //    MÀ GIÁO VIÊN ĐƯỢC PHÂN CÔNG
-    // ==========================================
+    // =================================================
+    // LẤY HỌC SINH
+    // =================================================
 
     const [rows] = await db.query(
       `
-      SELECT
-        s.*,
-
-        c.id AS class_id,
-        c.name AS class_name,
-        c.code AS class_code,
-
-        cs.status AS class_student_status,
-        cs.joined_at
-
-      FROM students s
-
-      INNER JOIN class_students cs
-        ON cs.student_id = s.id
-
-      INNER JOIN classes c
-        ON c.id = cs.class_id
-
-      INNER JOIN catechist_classes cc
-        ON cc.class_id = c.id
-
-      WHERE cc.catechist_id = ?
-        AND c.church_id = ?
-        AND cs.status = 'studying'
-
-      ORDER BY
-        c.name ASC,
-        s.name ASC
+        SELECT
+          s.*,
+          c.id AS class_id,
+          c.name AS class_name,
+          c.code AS class_code,
+          cs.status AS class_student_status,
+          cs.joined_at
+        FROM students s
+        INNER JOIN class_students cs
+          ON cs.student_id = s.id
+        INNER JOIN classes c
+          ON c.id = cs.class_id
+        INNER JOIN catechist_classes cc
+          ON cc.class_id = c.id
+        WHERE cc.catechist_id = ?
+          AND c.church_id = ?
+          AND cs.status = 'studying'
+        ORDER BY
+          c.name ASC,
+          s.name ASC
       `,
       [catechistId, churchId],
     );
 
-    // ==========================================
-    // 4. RESPONSE
-    // ==========================================
-
     return res.status(200).json({
       success: true,
-
       teacher: {
         admin_id: teacher.admin_id,
         catechist_id: teacher.catechist_id,
         catechist_code: teacher.catechist_code,
         full_name: teacher.full_name,
       },
-
       total: rows.length,
-
       data: rows,
     });
   } catch (error) {
@@ -351,26 +306,28 @@ exports.getStudentsByTeacher = async (req, res) => {
     });
   }
 };
+
 // =====================================================
 // POST /api/students
-//
 // TẠO HỌC SINH
 //
-// Request bắt buộc:
-// {
-//   name,
-//   class_id
-// }
-//
-// church_id KHÔNG lấy từ body
-// church_id lấy từ req.user.church_id
+// TỰ ĐỘNG:
+// - Sinh code HS000001...
+// - Sinh QR token
+// - Gán vào lớp
 // =====================================================
+
 exports.createStudent = async (req, res) => {
   const connection = await db.getConnection();
 
+  let transactionStarted = false;
+
   try {
     const churchId = getChurchId(req);
-    console.log(churchId);
+
+    console.log("========== CREATE STUDENT ==========");
+    console.log("CHURCH ID:", churchId);
+    console.log("BODY:", req.body);
 
     if (!churchId) {
       return res.status(403).json({
@@ -385,57 +342,40 @@ exports.createStudent = async (req, res) => {
       date_of_birth,
       birth_place,
       nationality,
-
       phone,
       email,
       address,
       parish,
-
       father_name,
       father_phone,
-
       mother_name,
       mother_phone,
-
       guardian_name,
       guardian_phone,
       guardian_relationship,
-
       baptism_name,
       baptism_date,
       baptism_place,
       baptism_parish,
       baptism_certificate_no,
-
       saint_name,
-
       first_communion_date,
       first_communion_place,
-
       confirmation_date,
       confirmation_place,
       confirmation_saint_name,
-
       catechism_level,
       catechism_status,
       enrollment_date,
-
       note,
       avatar,
       status,
-
-      // Lớp học sinh thuộc về
       class_id,
     } = req.body;
 
-    console.log("========== CREATE STUDENT ==========");
-    console.log("CHURCH ID:", churchId);
-    console.log("CLASS ID:", class_id);
-    console.log("BODY:", req.body);
-
-    // =====================================================
-    // VALIDATE TÊN
-    // =====================================================
+    // =================================================
+    // VALIDATE NAME
+    // =================================================
 
     if (!name || !String(name).trim()) {
       return res.status(400).json({
@@ -444,19 +384,21 @@ exports.createStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
+    // =================================================
     // VALIDATE CLASS
-    // =====================================================
+    // =================================================
 
-    if (!class_id) {
+    const classId = Number(class_id);
+
+    if (!Number.isInteger(classId) || classId <= 0) {
       return res.status(400).json({
         success: false,
-        message: "Vui lòng chọn lớp cho học sinh",
+        message: "Vui lòng chọn lớp hợp lệ cho học sinh",
       });
     }
 
     const classBelongsToChurch = await checkClassBelongsToChurch(
-      class_id,
+      classId,
       churchId,
     );
 
@@ -467,9 +409,9 @@ exports.createStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
+    // =================================================
     // VALIDATE GENDER
-    // =====================================================
+    // =================================================
 
     const allowedGender = ["male", "female", "other"];
 
@@ -480,9 +422,9 @@ exports.createStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
+    // =================================================
     // VALIDATE CATECHISM STATUS
-    // =====================================================
+    // =================================================
 
     const allowedCatechismStatus = [
       "new",
@@ -502,9 +444,9 @@ exports.createStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
+    // =================================================
     // VALIDATE STUDENT STATUS
-    // =====================================================
+    // =================================================
 
     const allowedStatus = [
       "active",
@@ -521,27 +463,24 @@ exports.createStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
+    // =================================================
     // TRANSACTION
-    // =====================================================
+    // =================================================
 
     await connection.beginTransaction();
+    transactionStarted = true;
 
-    // =====================================================
+    // =================================================
     // TẠO CODE
-    //
-    // HS000001
-    // HS000002
-    // ...
-    // =====================================================
+    // =================================================
 
     const [lastStudent] = await connection.query(
       `
-      SELECT id
-      FROM students
-      ORDER BY id DESC
-      LIMIT 1
-      FOR UPDATE
+        SELECT id
+        FROM students
+        ORDER BY id DESC
+        LIMIT 1
+        FOR UPDATE
       `,
     );
 
@@ -549,117 +488,104 @@ exports.createStudent = async (req, res) => {
 
     const studentCode = `HS${String(nextId).padStart(6, "0")}`;
 
-    // =====================================================
+    // =================================================
+    // TẠO QR TOKEN
+    // =================================================
+
+    const qrToken = generateQrToken();
+
+    // =================================================
     // INSERT STUDENT
-    // =====================================================
+    // =================================================
 
     const [result] = await connection.query(
       `
-      INSERT INTO students (
-      church_id,
-        code,
-        name,
-        gender,
-        date_of_birth,
-        birth_place,
-        nationality,
-
-        phone,
-        email,
-        address,
-        parish,
-
-        father_name,
-        father_phone,
-
-        mother_name,
-        mother_phone,
-
-        guardian_name,
-        guardian_phone,
-        guardian_relationship,
-
-        baptism_name,
-        baptism_date,
-        baptism_place,
-        baptism_parish,
-        baptism_certificate_no,
-
-        saint_name,
-
-        first_communion_date,
-        first_communion_place,
-
-        confirmation_date,
-        confirmation_place,
-        confirmation_saint_name,
-
-        catechism_level,
-        catechism_status,
-        enrollment_date,
-
-        note,
-        avatar,
-        status
-      )
-
-      VALUES (
-        ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?,
-        ?, ?,
-        ?, ?,
-        ?, ?, ?,
-        ?, ?, ?, ?, ?,
-        ?,
-        ?, ?,
-        ?, ?, ?,
-        ?, ?, ?,
-        ?, ?, ?, ?
-      )
+        INSERT INTO students (
+          church_id,
+          code,
+          qr_token,
+          name,
+          gender,
+          date_of_birth,
+          birth_place,
+          nationality,
+          phone,
+          email,
+          address,
+          parish,
+          father_name,
+          father_phone,
+          mother_name,
+          mother_phone,
+          guardian_name,
+          guardian_phone,
+          guardian_relationship,
+          baptism_name,
+          baptism_date,
+          baptism_place,
+          baptism_parish,
+          baptism_certificate_no,
+          saint_name,
+          first_communion_date,
+          first_communion_place,
+          confirmation_date,
+          confirmation_place,
+          confirmation_saint_name,
+          catechism_level,
+          catechism_status,
+          enrollment_date,
+          note,
+          avatar,
+          status
+        )
+        VALUES (
+          ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?,
+          ?, ?,
+          ?, ?,
+          ?, ?, ?,
+          ?, ?, ?, ?, ?,
+          ?,
+          ?, ?,
+          ?, ?, ?,
+          ?, ?, ?,
+          ?, ?, ?, ?, ?
+        )
       `,
       [
         churchId,
         studentCode,
+        qrToken,
         String(name).trim(),
         gender || null,
         date_of_birth || null,
         birth_place || null,
         nationality || "Việt Nam",
-
         phone || null,
         email || null,
         address || null,
         parish || null,
-
         father_name || null,
         father_phone || null,
-
         mother_name || null,
         mother_phone || null,
-
         guardian_name || null,
         guardian_phone || null,
         guardian_relationship || null,
-
         baptism_name || null,
         baptism_date || null,
         baptism_place || null,
         baptism_parish || null,
         baptism_certificate_no || null,
-
         saint_name || null,
-
         first_communion_date || null,
         first_communion_place || null,
-
         confirmation_date || null,
         confirmation_place || null,
         confirmation_saint_name || null,
-
         catechism_level || null,
         catechism_status || "new",
         enrollment_date || null,
-
         note || null,
         avatar || null,
         status || "active",
@@ -668,31 +594,33 @@ exports.createStudent = async (req, res) => {
 
     const studentId = result.insertId;
 
-    // =====================================================
+    // =================================================
     // GÁN HỌC SINH VÀO LỚP
-    // =====================================================
+    // =================================================
 
     await connection.query(
       `
-      INSERT INTO class_students (
-        class_id,
-        student_id
-      )
-      VALUES (?, ?)
+        INSERT INTO class_students (
+          class_id,
+          student_id
+        )
+        VALUES (?, ?)
       `,
-      [class_id, studentId],
+      [classId, studentId],
     );
 
-    // =====================================================
+    // =================================================
     // COMMIT
-    // =====================================================
+    // =================================================
 
     await connection.commit();
+    transactionStarted = false;
 
     console.log("✅ CREATE STUDENT SUCCESS");
     console.log("Student ID:", studentId);
     console.log("Code:", studentCode);
-    console.log("Class ID:", class_id);
+    console.log("QR:", qrToken);
+    console.log("Class ID:", classId);
     console.log("Church ID:", churchId);
 
     return res.status(201).json({
@@ -701,12 +629,19 @@ exports.createStudent = async (req, res) => {
       data: {
         id: studentId,
         code: studentCode,
-        class_id: Number(class_id),
+        qr_token: qrToken,
+        class_id: classId,
         church_id: Number(churchId),
       },
     });
   } catch (error) {
-    await connection.rollback();
+    if (transactionStarted) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("ROLLBACK ERROR:", rollbackError.message);
+      }
+    }
 
     console.error("========== CREATE STUDENT ERROR ==========");
     console.error("Message:", error.message);
@@ -725,23 +660,32 @@ exports.createStudent = async (req, res) => {
 
 // =====================================================
 // PUT /api/students/:id
-//
 // CẬP NHẬT HỌC SINH
 //
-// Nếu có class_id:
-// - Kiểm tra lớp thuộc church
-// - Xóa quan hệ lớp cũ
-// - Gán lớp mới
-//
-// KHÔNG UPDATE code
-// KHÔNG UPDATE church_id
+// KHÔNG UPDATE:
+// - id
+// - code
+// - qr_token
+// - church_id
 // =====================================================
+
 exports.updateStudent = async (req, res) => {
   const connection = await db.getConnection();
+
+  let transactionStarted = false;
 
   try {
     const { id } = req.params;
     const churchId = getChurchId(req);
+
+    const studentId = Number(id);
+
+    if (!Number.isInteger(studentId) || studentId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "ID học sinh không hợp lệ",
+      });
+    }
 
     if (!churchId) {
       return res.status(403).json({
@@ -750,11 +694,14 @@ exports.updateStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // KIỂM TRA HỌC SINH THUỘC GIÁO XỨ
-    // =====================================================
+    // =================================================
+    // KIỂM TRA HỌC SINH
+    // =================================================
 
-    const belongsToChurch = await checkStudentBelongsToChurch(id, churchId);
+    const belongsToChurch = await checkStudentBelongsToChurch(
+      studentId,
+      churchId,
+    );
 
     if (!belongsToChurch) {
       return res.status(404).json({
@@ -769,51 +716,40 @@ exports.updateStudent = async (req, res) => {
       date_of_birth,
       birth_place,
       nationality,
-
       phone,
       email,
       address,
       parish,
-
       father_name,
       father_phone,
-
       mother_name,
       mother_phone,
-
       guardian_name,
       guardian_phone,
       guardian_relationship,
-
       baptism_name,
       baptism_date,
       baptism_place,
       baptism_parish,
       baptism_certificate_no,
-
       saint_name,
-
       first_communion_date,
       first_communion_place,
-
       confirmation_date,
       confirmation_place,
       confirmation_saint_name,
-
       catechism_level,
       catechism_status,
       enrollment_date,
-
       note,
       avatar,
       status,
-
       class_id,
     } = req.body;
 
-    // =====================================================
-    // VALIDATE NAME
-    // =====================================================
+    // =================================================
+    // NAME
+    // =================================================
 
     if (!name || !String(name).trim()) {
       return res.status(400).json({
@@ -822,9 +758,9 @@ exports.updateStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // VALIDATE GENDER
-    // =====================================================
+    // =================================================
+    // GENDER
+    // =================================================
 
     const allowedGender = ["male", "female", "other"];
 
@@ -835,9 +771,9 @@ exports.updateStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // VALIDATE CATECHISM STATUS
-    // =====================================================
+    // =================================================
+    // CATECHISM STATUS
+    // =================================================
 
     const allowedCatechismStatus = [
       "new",
@@ -857,9 +793,9 @@ exports.updateStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // VALIDATE STATUS
-    // =====================================================
+    // =================================================
+    // STUDENT STATUS
+    // =================================================
 
     const allowedStatus = [
       "active",
@@ -876,13 +812,24 @@ exports.updateStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // KIỂM TRA LỚP MỚI
-    // =====================================================
+    // =================================================
+    // CLASS
+    // =================================================
 
-    if (class_id) {
+    let classId = null;
+
+    if (class_id !== undefined && class_id !== null && class_id !== "") {
+      classId = Number(class_id);
+
+      if (!Number.isInteger(classId) || classId <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "class_id không hợp lệ",
+        });
+      }
+
       const classBelongsToChurch = await checkClassBelongsToChurch(
-        class_id,
+        classId,
         churchId,
       );
 
@@ -894,67 +841,56 @@ exports.updateStudent = async (req, res) => {
       }
     }
 
-    // =====================================================
+    // =================================================
     // TRANSACTION
-    // =====================================================
+    // =================================================
 
     await connection.beginTransaction();
+    transactionStarted = true;
 
-    // =====================================================
+    // =================================================
     // UPDATE STUDENT
-    // =====================================================
+    // =================================================
 
     const [result] = await connection.query(
       `
-      UPDATE students
-      SET
-        name = ?,
-        gender = ?,
-        date_of_birth = ?,
-        birth_place = ?,
-        nationality = ?,
-
-        phone = ?,
-        email = ?,
-        address = ?,
-        parish = ?,
-
-        father_name = ?,
-        father_phone = ?,
-
-        mother_name = ?,
-        mother_phone = ?,
-
-        guardian_name = ?,
-        guardian_phone = ?,
-        guardian_relationship = ?,
-
-        baptism_name = ?,
-        baptism_date = ?,
-        baptism_place = ?,
-        baptism_parish = ?,
-        baptism_certificate_no = ?,
-
-        saint_name = ?,
-
-        first_communion_date = ?,
-        first_communion_place = ?,
-
-        confirmation_date = ?,
-        confirmation_place = ?,
-        confirmation_saint_name = ?,
-
-        catechism_level = ?,
-        catechism_status = ?,
-        enrollment_date = ?,
-
-        note = ?,
-        avatar = ?,
-        status = ?,
-
-        updated_at = CURRENT_TIMESTAMP
-
-      WHERE id = ?
+        UPDATE students
+        SET
+          name = ?,
+          gender = ?,
+          date_of_birth = ?,
+          birth_place = ?,
+          nationality = ?,
+          phone = ?,
+          email = ?,
+          address = ?,
+          parish = ?,
+          father_name = ?,
+          father_phone = ?,
+          mother_name = ?,
+          mother_phone = ?,
+          guardian_name = ?,
+          guardian_phone = ?,
+          guardian_relationship = ?,
+          baptism_name = ?,
+          baptism_date = ?,
+          baptism_place = ?,
+          baptism_parish = ?,
+          baptism_certificate_no = ?,
+          saint_name = ?,
+          first_communion_date = ?,
+          first_communion_place = ?,
+          confirmation_date = ?,
+          confirmation_place = ?,
+          confirmation_saint_name = ?,
+          catechism_level = ?,
+          catechism_status = ?,
+          enrollment_date = ?,
+          note = ?,
+          avatar = ?,
+          status = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
       `,
       [
         String(name).trim(),
@@ -962,51 +898,41 @@ exports.updateStudent = async (req, res) => {
         date_of_birth || null,
         birth_place || null,
         nationality || "Việt Nam",
-
         phone || null,
         email || null,
         address || null,
         parish || null,
-
         father_name || null,
         father_phone || null,
-
         mother_name || null,
         mother_phone || null,
-
         guardian_name || null,
         guardian_phone || null,
         guardian_relationship || null,
-
         baptism_name || null,
         baptism_date || null,
         baptism_place || null,
         baptism_parish || null,
         baptism_certificate_no || null,
-
         saint_name || null,
-
         first_communion_date || null,
         first_communion_place || null,
-
         confirmation_date || null,
         confirmation_place || null,
         confirmation_saint_name || null,
-
         catechism_level || null,
         catechism_status || "new",
         enrollment_date || null,
-
         note || null,
         avatar || null,
         status || "active",
-
-        id,
+        studentId,
       ],
     );
 
     if (!result.affectedRows) {
       await connection.rollback();
+      transactionStarted = false;
 
       return res.status(404).json({
         success: false,
@@ -1014,50 +940,55 @@ exports.updateStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // NẾU CÓ class_id → ĐỔI LỚP
-    // =====================================================
+    // =================================================
+    // ĐỔI LỚP
+    // =================================================
 
-    if (class_id) {
-      // Xóa quan hệ lớp cũ
+    if (classId !== null) {
       await connection.query(
         `
-        DELETE FROM class_students
-        WHERE student_id = ?
+          DELETE FROM class_students
+          WHERE student_id = ?
         `,
-        [id],
+        [studentId],
       );
 
-      // Gán lớp mới
       await connection.query(
         `
-        INSERT INTO class_students (
-          class_id,
-          student_id
-        )
-        VALUES (?, ?)
+          INSERT INTO class_students (
+            class_id,
+            student_id
+          )
+          VALUES (?, ?)
         `,
-        [class_id, id],
+        [classId, studentId],
       );
     }
 
-    // =====================================================
+    // =================================================
     // COMMIT
-    // =====================================================
+    // =================================================
 
     await connection.commit();
+    transactionStarted = false;
 
     console.log("✅ UPDATE STUDENT SUCCESS");
-    console.log("Student ID:", id);
+    console.log("Student ID:", studentId);
     console.log("Church ID:", churchId);
-    console.log("New Class ID:", class_id || "Không đổi");
+    console.log("New Class ID:", classId !== null ? classId : "Không đổi");
 
     return res.json({
       success: true,
       message: "Cập nhật học sinh thành công",
     });
   } catch (error) {
-    await connection.rollback();
+    if (transactionStarted) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("ROLLBACK ERROR:", rollbackError.message);
+      }
+    }
 
     console.error("========== UPDATE STUDENT ERROR ==========");
     console.error("Message:", error.message);
@@ -1073,20 +1004,34 @@ exports.updateStudent = async (req, res) => {
     connection.release();
   }
 };
+
 // =====================================================
 // IMPORT STUDENTS FROM EXCEL
-// Chỉ import thông tin vào bảng students
-// Không gán lớp
-// Không import id
-// Không import created_at / updated_at
+//
+// Excel KHÔNG cần:
+// - id
+// - church_id
+// - qr_token
+//
+// Backend tự sinh:
+// - id
+// - church_id
+// - qr_token
+//
+// Excel bắt buộc:
+// - name
+// - class_id
 // =====================================================
+
 exports.importStudentsExcel = async (req, res) => {
   const connection = await db.getConnection();
 
+  let transactionStarted = false;
+
   try {
-    // =====================================================
+    // =================================================
     // CHURCH
-    // =====================================================
+    // =================================================
 
     const churchId = getChurchId(req);
 
@@ -1102,9 +1047,9 @@ exports.importStudentsExcel = async (req, res) => {
       });
     }
 
-    // =====================================================
+    // =================================================
     // CHECK FILE
-    // =====================================================
+    // =================================================
 
     if (!req.file) {
       return res.status(400).json({
@@ -1122,9 +1067,9 @@ exports.importStudentsExcel = async (req, res) => {
       });
     }
 
-    // =====================================================
+    // =================================================
     // READ EXCEL
-    // =====================================================
+    // =================================================
 
     let workbook;
 
@@ -1165,9 +1110,9 @@ exports.importStudentsExcel = async (req, res) => {
       });
     }
 
-    // =====================================================
+    // =================================================
     // LIMIT
-    // =====================================================
+    // =================================================
 
     if (rows.length > 1000) {
       return res.status(400).json({
@@ -1180,9 +1125,9 @@ exports.importStudentsExcel = async (req, res) => {
     console.log("SHEET:", sheetName);
     console.log("TOTAL:", rows.length);
 
-    // =====================================================
+    // =================================================
     // DATE PARSER
-    // =====================================================
+    // =================================================
 
     const parseDate = (value) => {
       if (value === null || value === undefined || value === "") {
@@ -1193,7 +1138,7 @@ exports.importStudentsExcel = async (req, res) => {
       // Date object
       // -----------------------------------------------
 
-      if (value instanceof Date && !isNaN(value.getTime())) {
+      if (value instanceof Date && !Number.isNaN(value.getTime())) {
         const year = value.getFullYear();
         const month = String(value.getMonth() + 1).padStart(2, "0");
         const day = String(value.getDate()).padStart(2, "0");
@@ -1224,9 +1169,10 @@ exports.importStudentsExcel = async (req, res) => {
           return null;
         }
 
-        return `${year}-${String(month).padStart(2, "0")}-${String(
-          day,
-        ).padStart(2, "0")}`;
+        return `${year}-${String(month).padStart(
+          2,
+          "0",
+        )}-${String(day).padStart(2, "0")}`;
       }
 
       // -----------------------------------------------
@@ -1246,9 +1192,10 @@ exports.importStudentsExcel = async (req, res) => {
           return null;
         }
 
-        return `${year}-${String(month).padStart(2, "0")}-${String(
-          day,
-        ).padStart(2, "0")}`;
+        return `${year}-${String(month).padStart(
+          2,
+          "0",
+        )}-${String(day).padStart(2, "0")}`;
       }
 
       // -----------------------------------------------
@@ -1262,13 +1209,10 @@ exports.importStudentsExcel = async (req, res) => {
           const excelDate = XLSX.SSF.parse_date_code(serial);
 
           if (excelDate) {
-            const year = excelDate.y;
-            const month = excelDate.m;
-            const day = excelDate.d;
-
-            return `${year}-${String(month).padStart(2, "0")}-${String(
-              day,
-            ).padStart(2, "0")}`;
+            return `${excelDate.y}-${String(excelDate.m).padStart(
+              2,
+              "0",
+            )}-${String(excelDate.d).padStart(2, "0")}`;
           }
         }
       }
@@ -1276,9 +1220,9 @@ exports.importStudentsExcel = async (req, res) => {
       return null;
     };
 
-    // =====================================================
+    // =================================================
     // VALID VALUES
-    // =====================================================
+    // =================================================
 
     const allowedGender = ["male", "female", "other"];
 
@@ -1298,18 +1242,19 @@ exports.importStudentsExcel = async (req, res) => {
       "dropped",
     ];
 
-    // =====================================================
+    // =================================================
     // TRANSACTION
-    // =====================================================
+    // =================================================
 
     await connection.beginTransaction();
+    transactionStarted = true;
 
     const successRows = [];
     const errorRows = [];
 
-    // =====================================================
+    // =================================================
     // LẤY ID CUỐI
-    // =====================================================
+    // =================================================
 
     const [lastStudentRows] = await connection.query(
       `
@@ -1325,22 +1270,18 @@ exports.importStudentsExcel = async (req, res) => {
       ? Number(lastStudentRows[0].id) + 1
       : 1;
 
-    // =====================================================
-    // CODE ĐÃ SỬ DỤNG TRONG FILE
-    // =====================================================
+    // =================================================
+    // CODE ĐÃ DÙNG
+    // =================================================
 
     const usedCodes = new Set();
 
-    // =====================================================
+    // =================================================
     // IMPORT TỪNG DÒNG
-    // =====================================================
+    // =================================================
 
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index];
-
-      // Excel:
-      // dòng 1 = header
-      // dòng 2 = data đầu tiên
 
       const excelRow = index + 2;
 
@@ -1349,9 +1290,9 @@ exports.importStudentsExcel = async (req, res) => {
         console.log("EXCEL ROW:", excelRow);
         console.log("DATA:", row);
 
-        // =================================================
+        // =============================================
         // NAME
-        // =================================================
+        // =============================================
 
         const name = row.name ? String(row.name).trim() : "";
 
@@ -1359,9 +1300,9 @@ exports.importStudentsExcel = async (req, res) => {
           throw new Error("Thiếu họ tên học sinh");
         }
 
-        // =================================================
-        // CLASS ID
-        // =================================================
+        // =============================================
+        // CLASS
+        // =============================================
 
         const classId = row.class_id
           ? Number(String(row.class_id).trim())
@@ -1371,21 +1312,21 @@ exports.importStudentsExcel = async (req, res) => {
           throw new Error("class_id không hợp lệ");
         }
 
-        // =================================================
+        // =============================================
         // CHECK CLASS
-        // =================================================
+        // =============================================
 
         const [classRows] = await connection.query(
           `
-            SELECT
-              id,
-              name,
-              church_id
-            FROM classes
-            WHERE id = ?
-              AND church_id = ?
-            LIMIT 1
-          `,
+              SELECT
+                id,
+                name,
+                church_id
+              FROM classes
+              WHERE id = ?
+                AND church_id = ?
+              LIMIT 1
+            `,
           [classId, churchId],
         );
 
@@ -1397,9 +1338,9 @@ exports.importStudentsExcel = async (req, res) => {
 
         const classInfo = classRows[0];
 
-        // =================================================
+        // =============================================
         // GENDER
-        // =================================================
+        // =============================================
 
         const gender = row.gender ? String(row.gender).trim() : null;
 
@@ -1407,9 +1348,9 @@ exports.importStudentsExcel = async (req, res) => {
           throw new Error(`Giới tính "${gender}" không hợp lệ`);
         }
 
-        // =================================================
+        // =============================================
         // CATECHISM STATUS
-        // =================================================
+        // =============================================
 
         const catechismStatus = row.catechism_status
           ? String(row.catechism_status).trim()
@@ -1419,9 +1360,9 @@ exports.importStudentsExcel = async (req, res) => {
           throw new Error(`catechism_status "${catechismStatus}" không hợp lệ`);
         }
 
-        // =================================================
+        // =============================================
         // STUDENT STATUS
-        // =================================================
+        // =============================================
 
         const studentStatus = row.status ? String(row.status).trim() : "active";
 
@@ -1429,21 +1370,15 @@ exports.importStudentsExcel = async (req, res) => {
           throw new Error(`status "${studentStatus}" không hợp lệ`);
         }
 
-        // =================================================
+        // =============================================
         // CODE
-        // =================================================
+        // =============================================
 
         let code = row.code ? String(row.code).trim() : null;
-
-        // -----------------------------------------------
-        // Nếu Excel không có code
-        // tự sinh HS000001...
-        // -----------------------------------------------
 
         if (!code) {
           code = `HS${String(nextStudentId).padStart(6, "0")}`;
 
-          // Tránh trường hợp code tự sinh bị trùng
           while (usedCodes.has(code)) {
             nextStudentId++;
 
@@ -1451,17 +1386,17 @@ exports.importStudentsExcel = async (req, res) => {
           }
         }
 
-        // =================================================
-        // CHECK CODE TRÙNG TRONG FILE
-        // =================================================
+        // =============================================
+        // CHECK CODE TRONG FILE
+        // =============================================
 
         if (usedCodes.has(code)) {
           throw new Error(`Mã học sinh "${code}" bị trùng trong file Excel`);
         }
 
-        // =================================================
-        // CHECK CODE TRÙNG DATABASE
-        // =================================================
+        // =============================================
+        // CHECK CODE DATABASE
+        // =============================================
 
         const [existingCodeRows] = await connection.query(
           `
@@ -1479,9 +1414,15 @@ exports.importStudentsExcel = async (req, res) => {
 
         usedCodes.add(code);
 
-        // =================================================
+        // =============================================
+        // QR TOKEN
+        // =============================================
+
+        const qrToken = generateQrToken();
+
+        // =============================================
         // DATE
-        // =================================================
+        // =============================================
 
         const dateOfBirth = parseDate(row.date_of_birth);
 
@@ -1493,9 +1434,9 @@ exports.importStudentsExcel = async (req, res) => {
 
         const enrollmentDate = parseDate(row.enrollment_date);
 
-        // =================================================
+        // =============================================
         // VALIDATE DATE
-        // =================================================
+        // =============================================
 
         if (row.date_of_birth && !dateOfBirth) {
           throw new Error(`date_of_birth không hợp lệ: ${row.date_of_birth}`);
@@ -1523,61 +1464,52 @@ exports.importStudentsExcel = async (req, res) => {
           );
         }
 
-        // =================================================
+        // =============================================
         // INSERT STUDENT
-        // =================================================
+        // =============================================
 
         const [result] = await connection.query(
           `
               INSERT INTO students (
                 church_id,
                 code,
+                qr_token,
                 name,
                 gender,
                 date_of_birth,
                 birth_place,
                 nationality,
-
                 phone,
                 email,
                 address,
                 parish,
-
                 father_name,
                 father_phone,
-
                 mother_name,
                 mother_phone,
-
                 guardian_name,
                 guardian_phone,
                 guardian_relationship,
-
                 baptism_name,
                 baptism_date,
                 baptism_place,
                 baptism_parish,
                 baptism_certificate_no,
-
                 saint_name,
-
                 first_communion_date,
                 first_communion_place,
-
                 confirmation_date,
                 confirmation_place,
                 confirmation_saint_name,
-
                 catechism_level,
                 catechism_status,
                 enrollment_date,
-
                 note,
                 avatar,
                 status
               )
               VALUES (
-                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?,
                 ?, ?,
@@ -1587,53 +1519,43 @@ exports.importStudentsExcel = async (req, res) => {
                 ?, ?,
                 ?, ?, ?,
                 ?, ?, ?,
-                ?, ?, ?
+                ?, ?, ?, ?, ?
               )
             `,
           [
             churchId,
             code,
+            qrToken,
             name,
             gender,
-
             dateOfBirth,
             row.birth_place || null,
             row.nationality || "Việt Nam",
-
             row.phone || null,
             row.email || null,
             row.address || null,
             row.parish || null,
-
             row.father_name || null,
             row.father_phone || null,
-
             row.mother_name || null,
             row.mother_phone || null,
-
             row.guardian_name || null,
             row.guardian_phone || null,
             row.guardian_relationship || null,
-
             row.baptism_name || null,
             baptismDate,
             row.baptism_place || null,
             row.baptism_parish || null,
             row.baptism_certificate_no || null,
-
             row.saint_name || null,
-
             firstCommunionDate,
             row.first_communion_place || null,
-
             confirmationDate,
             row.confirmation_place || null,
             row.confirmation_saint_name || null,
-
             row.catechism_level || null,
             catechismStatus,
             enrollmentDate,
-
             row.note || null,
             row.avatar || null,
             studentStatus,
@@ -1642,9 +1564,9 @@ exports.importStudentsExcel = async (req, res) => {
 
         const studentId = result.insertId;
 
-        // =================================================
-        // GÁN HỌC SINH VÀO LỚP
-        // =================================================
+        // =============================================
+        // GÁN VÀO LỚP
+        // =============================================
 
         await connection.query(
           `
@@ -1657,9 +1579,9 @@ exports.importStudentsExcel = async (req, res) => {
           [classId, studentId],
         );
 
-        // =================================================
+        // =============================================
         // SUCCESS
-        // =================================================
+        // =============================================
 
         successRows.push({
           row: excelRow,
@@ -1668,6 +1590,7 @@ exports.importStudentsExcel = async (req, res) => {
           name,
           class_id: classId,
           class_name: classInfo.name,
+          qr_token: qrToken,
         });
 
         nextStudentId++;
@@ -1693,19 +1616,19 @@ exports.importStudentsExcel = async (req, res) => {
       }
     }
 
-    // =====================================================
-    // CÓ LỖI → ROLLBACK
-    // =====================================================
+    // =================================================
+    // CÓ LỖI → ROLLBACK TOÀN BỘ
+    // =================================================
 
     if (errorRows.length > 0) {
       await connection.rollback();
+      transactionStarted = false;
 
       console.error("========================================");
       console.error("❌ IMPORT FAILED");
       console.error("ROLLBACK ALL DATA");
       console.error("TOTAL:", rows.length);
       console.error("FAILED:", errorRows.length);
-      console.error("ERRORS:", errorRows);
       console.error("========================================");
 
       return res.status(400).json({
@@ -1718,11 +1641,12 @@ exports.importStudentsExcel = async (req, res) => {
       });
     }
 
-    // =====================================================
+    // =================================================
     // COMMIT
-    // =====================================================
+    // =================================================
 
     await connection.commit();
+    transactionStarted = false;
 
     console.log("========================================");
     console.log(`✅ IMPORT SUCCESS: ${successRows.length} STUDENTS`);
@@ -1737,14 +1661,12 @@ exports.importStudentsExcel = async (req, res) => {
       data: successRows,
     });
   } catch (error) {
-    // =====================================================
-    // ROLLBACK
-    // =====================================================
-
-    try {
-      await connection.rollback();
-    } catch (rollbackError) {
-      console.error("ROLLBACK ERROR:", rollbackError.message);
+    if (transactionStarted) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("ROLLBACK ERROR:", rollbackError.message);
+      }
     }
 
     console.error("========== IMPORT STUDENTS EXCEL ERROR ==========");
@@ -1759,26 +1681,32 @@ exports.importStudentsExcel = async (req, res) => {
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   } finally {
-    // =====================================================
-    // RELEASE CONNECTION
-    // =====================================================
-
     connection.release();
   }
 };
+
 // =====================================================
 // DELETE /api/students/:id
-//
 // XÓA HỌC SINH
-//
-// Chỉ được xóa nếu học sinh thuộc giáo xứ hiện tại.
 // =====================================================
+
 exports.deleteStudent = async (req, res) => {
   const connection = await db.getConnection();
+
+  let transactionStarted = false;
 
   try {
     const { id } = req.params;
     const churchId = getChurchId(req);
+
+    const studentId = Number(id);
+
+    if (!Number.isInteger(studentId) || studentId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "ID học sinh không hợp lệ",
+      });
+    }
 
     if (!churchId) {
       return res.status(403).json({
@@ -1787,11 +1715,14 @@ exports.deleteStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // KIỂM TRA QUYỀN TRUY CẬP
-    // =====================================================
+    // =================================================
+    // KIỂM TRA QUYỀN
+    // =================================================
 
-    const belongsToChurch = await checkStudentBelongsToChurch(id, churchId);
+    const belongsToChurch = await checkStudentBelongsToChurch(
+      studentId,
+      churchId,
+    );
 
     if (!belongsToChurch) {
       return res.status(404).json({
@@ -1800,38 +1731,40 @@ exports.deleteStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
+    // =================================================
     // TRANSACTION
-    // =====================================================
+    // =================================================
 
     await connection.beginTransaction();
+    transactionStarted = true;
 
-    // =====================================================
+    // =================================================
     // XÓA QUAN HỆ LỚP
-    // =====================================================
+    // =================================================
 
     await connection.query(
       `
-      DELETE FROM class_students
-      WHERE student_id = ?
+        DELETE FROM class_students
+        WHERE student_id = ?
       `,
-      [id],
+      [studentId],
     );
 
-    // =====================================================
+    // =================================================
     // XÓA STUDENT
-    // =====================================================
+    // =================================================
 
     const [result] = await connection.query(
       `
-      DELETE FROM students
-      WHERE id = ?
+        DELETE FROM students
+        WHERE id = ?
       `,
-      [id],
+      [studentId],
     );
 
     if (!result.affectedRows) {
       await connection.rollback();
+      transactionStarted = false;
 
       return res.status(404).json({
         success: false,
@@ -1839,14 +1772,15 @@ exports.deleteStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
+    // =================================================
     // COMMIT
-    // =====================================================
+    // =================================================
 
     await connection.commit();
+    transactionStarted = false;
 
     console.log("✅ DELETE STUDENT SUCCESS");
-    console.log("Student ID:", id);
+    console.log("Student ID:", studentId);
     console.log("Church ID:", churchId);
 
     return res.json({
@@ -1854,7 +1788,13 @@ exports.deleteStudent = async (req, res) => {
       message: "Đã xóa học sinh thành công",
     });
   } catch (error) {
-    await connection.rollback();
+    if (transactionStarted) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("ROLLBACK ERROR:", rollbackError.message);
+      }
+    }
 
     console.error("========== DELETE STUDENT ERROR ==========");
     console.error("Message:", error.message);

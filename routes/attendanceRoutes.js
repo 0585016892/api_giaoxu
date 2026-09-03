@@ -28,6 +28,7 @@ router.get("/", verifyToken, attendanceController.getAttendance);
  * /api/attendance/bulk
  */
 router.post("/bulk", verifyToken, attendanceController.saveBulkAttendance);
+router.post("/scan-qr", verifyToken, attendanceController.scanQRCode);
 
 /**
  * Lịch sử điểm danh của học sinh

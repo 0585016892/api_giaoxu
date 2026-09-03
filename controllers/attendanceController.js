@@ -879,7 +879,7 @@ const getStudentAttendance = async (req, res) => {
       SELECT
         id,
         code,
-        full_name,
+        name,
         status
       FROM students
       WHERE id = ?
@@ -1202,18 +1202,33 @@ const scanQRCode = async (req, res) => {
   let maskedToken = "***";
 
   try {
+    console.log("\n======================================================");
+    console.log("[QR] 🚀 BẮT ĐẦU QUÉT QR");
+    console.log("[QR] Time:", new Date().toISOString());
+
     connection = await db.getConnection();
+
+    console.log("[QR] ✅ DB connection OK");
 
     const churchId = getChurchId(req);
     const teacherId = getTeacherId(req);
 
+    console.log("[QR] AUTH:", {
+      churchId,
+      teacherId,
+      userId: req?.user?.id,
+      role: req?.user?.role,
+    });
+
     /**
-     * -------------------------------------------------------
+     * ======================================================
      * AUTH
-     * -------------------------------------------------------
+     * ======================================================
      */
 
     if (!churchId) {
+      console.warn("[QR] ❌ Không có churchId");
+
       return res.status(403).json({
         success: false,
         message: "Tài khoản chưa được gán giáo xứ",
@@ -1221,6 +1236,8 @@ const scanQRCode = async (req, res) => {
     }
 
     if (!teacherId) {
+      console.warn("[QR] ❌ Không xác định được teacherId");
+
       return res.status(403).json({
         success: false,
         message: "Không xác định được giáo lý viên",
@@ -1228,16 +1245,27 @@ const scanQRCode = async (req, res) => {
     }
 
     /**
-     * -------------------------------------------------------
+     * ======================================================
      * BODY
-     * -------------------------------------------------------
+     * ======================================================
      */
 
     const body = req?.body || {};
 
+    console.log("[QR] BODY:", {
+      class_id: body.class_id,
+      qr_token_exists: !!body.qr_token,
+      qr_token_length:
+        typeof body.qr_token === "string" ? body.qr_token.length : null,
+    });
+
     const classId = toPositiveInt(body.class_id);
 
+    console.log("[QR] classId:", classId);
+
     if (!classId) {
+      console.warn("[QR] ❌ class_id không hợp lệ");
+
       return res.status(400).json({
         success: false,
         message: "class_id không hợp lệ",
@@ -1245,16 +1273,24 @@ const scanQRCode = async (req, res) => {
     }
 
     /**
-     * -------------------------------------------------------
+     * ======================================================
      * QR TOKEN
-     * -------------------------------------------------------
+     * ======================================================
      */
 
     const qrToken = normalizeQrToken(body.qr_token);
 
     maskedToken = maskQrToken(qrToken);
 
+    console.log("[QR] TOKEN:", {
+      maskedToken,
+      valid: !!qrToken,
+      length: qrToken?.length || 0,
+    });
+
     if (!qrToken) {
+      console.warn("[QR] ❌ QR token không hợp lệ");
+
       return res.status(400).json({
         success: false,
         message: "Mã QR không hợp lệ hoặc đã bị hỏng",
@@ -1262,26 +1298,38 @@ const scanQRCode = async (req, res) => {
     }
 
     /**
-     * -------------------------------------------------------
+     * ======================================================
      * KIỂM TRA LỚP
-     * -------------------------------------------------------
+     * ======================================================
      */
+
+    console.log("[QR] 🔎 Kiểm tra lớp:", {
+      classId,
+      churchId,
+    });
 
     const [classRows] = await connection.execute(
       `
-      SELECT
-        id,
-        name,
-        church_id
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
+        SELECT
+          id,
+          name,
+          church_id
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
       `,
       [classId, churchId],
     );
 
+    console.log("[QR] Class result:", {
+      found: classRows.length,
+      class: classRows[0] || null,
+    });
+
     if (!classRows.length) {
+      console.warn("[QR] ❌ Không tìm thấy lớp");
+
       return res.status(404).json({
         success: false,
         message: "Lớp học không tồn tại hoặc không thuộc giáo xứ",
@@ -1289,21 +1337,25 @@ const scanQRCode = async (req, res) => {
     }
 
     /**
-     * -------------------------------------------------------
+     * ======================================================
      * TRANSACTION
-     * -------------------------------------------------------
-     *
-     * Bắt đầu transaction trước khi lock
-     * student / class / attendance.
+     * ======================================================
      */
+
+    console.log("[QR] 🔐 BEGIN TRANSACTION");
+
     await connection.beginTransaction();
+
     transactionStarted = true;
 
     /**
-     * -------------------------------------------------------
+     * ======================================================
      * LOCK CLASS
-     * -------------------------------------------------------
+     * ======================================================
      */
+
+    console.log("[QR] 🔒 LOCK CLASS:", classId);
+
     const [lockedClassRows] = await connection.execute(
       `
         SELECT
@@ -1315,11 +1367,15 @@ const scanQRCode = async (req, res) => {
           AND church_id = ?
         LIMIT 1
         FOR UPDATE
-        `,
+      `,
       [classId, churchId],
     );
 
+    console.log("[QR] Locked class:", lockedClassRows[0] || null);
+
     if (!lockedClassRows.length) {
+      console.warn("[QR] ❌ Class biến mất sau khi lock");
+
       await safeRollback(connection, transactionStarted);
 
       transactionStarted = false;
@@ -1331,19 +1387,22 @@ const scanQRCode = async (req, res) => {
     }
 
     /**
-     * -------------------------------------------------------
-     * TÌM HỌC SINH THEO QR
-     * -------------------------------------------------------
-     *
-     * Quan trọng:
-     * QR chỉ được tìm trong chính giáo xứ.
+     * ======================================================
+     * TÌM HỌC SINH
+     * ======================================================
      */
+
+    console.log("[QR] 🔎 Tìm học sinh bằng QR:", {
+      token: maskedToken,
+      churchId,
+    });
+
     const [studentRows] = await connection.execute(
       `
         SELECT
           id,
           code,
-          full_name,
+          name,
           status,
           church_id,
           qr_token
@@ -1352,9 +1411,23 @@ const scanQRCode = async (req, res) => {
           AND church_id = ?
         LIMIT 1
         FOR UPDATE
-        `,
+      `,
       [qrToken, churchId],
     );
+
+    console.log("[QR] Student result:", {
+      found: studentRows.length,
+      student: studentRows[0]
+        ? {
+            id: studentRows[0].id,
+            code: studentRows[0].code,
+            name: studentRows[0].name,
+            status: studentRows[0].status,
+            church_id: studentRows[0].church_id,
+            qr_token_exists: !!studentRows[0].qr_token,
+          }
+        : null,
+    });
 
     if (!studentRows.length) {
       await safeRollback(connection, transactionStarted);
@@ -1362,7 +1435,7 @@ const scanQRCode = async (req, res) => {
       transactionStarted = false;
 
       console.warn(
-        `[QR] QR KHÔNG TỒN TẠI | token=${maskedToken} | church=${churchId} | class=${classId}`,
+        `[QR] ❌ QR KHÔNG TỒN TẠI | token=${maskedToken} | church=${churchId} | class=${classId}`,
       );
 
       return res.status(404).json({
@@ -1374,14 +1447,19 @@ const scanQRCode = async (req, res) => {
     const student = studentRows[0];
 
     /**
-     * -------------------------------------------------------
+     * ======================================================
      * KIỂM TRA CHURCH
-     * -------------------------------------------------------
-     *
-     * Dù SQL đã check church_id,
-     * vẫn giữ lớp bảo vệ này.
+     * ======================================================
      */
+
+    console.log("[QR] 🏛️ Kiểm tra church:", {
+      studentChurchId: student.church_id,
+      requestChurchId: churchId,
+    });
+
     if (Number(student.church_id) !== Number(churchId)) {
+      console.warn("[QR] ❌ Học sinh khác giáo xứ");
+
       await safeRollback(connection, transactionStarted);
 
       transactionStarted = false;
@@ -1393,11 +1471,19 @@ const scanQRCode = async (req, res) => {
     }
 
     /**
-     * -------------------------------------------------------
-     * KIỂM TRA STATUS HỌC SINH
-     * -------------------------------------------------------
+     * ======================================================
+     * KIỂM TRA STATUS
+     * ======================================================
      */
+
+    console.log("[QR] 👤 Student status:", student.status);
+
     if (student.status !== "active") {
+      console.warn("[QR] ❌ Học sinh không active:", {
+        studentId: student.id,
+        status: student.status,
+      });
+
       await safeRollback(connection, transactionStarted);
 
       transactionStarted = false;
@@ -1408,17 +1494,23 @@ const scanQRCode = async (req, res) => {
         student: {
           id: student.id,
           code: student.code,
-          full_name: student.full_name,
+          name: student.name,
           status: student.status,
         },
       });
     }
 
     /**
-     * -------------------------------------------------------
-     * KIỂM TRA HỌC SINH CÓ TRONG LỚP KHÔNG
-     * -------------------------------------------------------
+     * ======================================================
+     * KIỂM TRA MEMBERSHIP
+     * ======================================================
      */
+
+    console.log("[QR] 🔎 Kiểm tra học sinh trong lớp:", {
+      studentId: student.id,
+      classId,
+    });
+
     const [membershipRows] = await connection.execute(
       `
         SELECT
@@ -1428,11 +1520,18 @@ const scanQRCode = async (req, res) => {
         WHERE class_id = ?
           AND student_id = ?
         LIMIT 1
-        `,
+      `,
       [classId, student.id],
     );
 
+    console.log("[QR] Membership:", {
+      exists: membershipRows.length > 0,
+      data: membershipRows[0] || null,
+    });
+
     if (!membershipRows.length) {
+      console.warn("[QR] ❌ Học sinh KHÔNG thuộc lớp");
+
       await safeRollback(connection, transactionStarted);
 
       transactionStarted = false;
@@ -1443,7 +1542,7 @@ const scanQRCode = async (req, res) => {
         student: {
           id: student.id,
           code: student.code,
-          full_name: student.full_name,
+          name: student.name,
         },
         class: {
           id: classId,
@@ -1453,12 +1552,17 @@ const scanQRCode = async (req, res) => {
     }
 
     /**
-     * -------------------------------------------------------
-     * KIỂM TRA ĐÃ ĐIỂM DANH HÔM NAY CHƯA
-     * -------------------------------------------------------
-     *
-     * Dùng CURDATE() để ngày lấy trực tiếp từ MySQL.
+     * ======================================================
+     * KIỂM TRA ĐÃ ĐIỂM DANH HÔM NAY
+     * ======================================================
      */
+
+    console.log("[QR] 🔎 Kiểm tra attendance hôm nay:", {
+      studentId: student.id,
+      classId,
+      churchId,
+    });
+
     const [existingAttendanceRows] = await connection.execute(
       `
         SELECT
@@ -1475,12 +1579,24 @@ const scanQRCode = async (req, res) => {
           AND attendance_date = CURDATE()
         LIMIT 1
         FOR UPDATE
-        `,
+      `,
       [student.id, classId, churchId],
     );
 
+    console.log("[QR] Existing attendance:", {
+      exists: existingAttendanceRows.length > 0,
+      attendance: existingAttendanceRows[0] || null,
+    });
+
     if (existingAttendanceRows.length) {
       const existing = existingAttendanceRows[0];
+
+      console.warn("[QR] ⚠️ ĐÃ ĐIỂM DANH HÔM NAY:", {
+        attendanceId: existing.id,
+        studentId: student.id,
+        date: existing.attendance_date,
+        time: existing.check_in_time,
+      });
 
       await safeRollback(connection, transactionStarted);
 
@@ -1493,7 +1609,7 @@ const scanQRCode = async (req, res) => {
         student: {
           id: student.id,
           code: student.code,
-          full_name: student.full_name,
+          name: student.name,
         },
         attendance: {
           id: existing.id,
@@ -1505,12 +1621,18 @@ const scanQRCode = async (req, res) => {
     }
 
     /**
-     * -------------------------------------------------------
-     * INSERT ATTENDANCE
-     * -------------------------------------------------------
-     *
-     * CURDATE + CURTIME lấy trực tiếp từ DB.
+     * ======================================================
+     * INSERT
+     * ======================================================
      */
+
+    console.log("[QR] 📝 INSERT ATTENDANCE:", {
+      churchId,
+      classId,
+      studentId: student.id,
+      teacherId,
+    });
+
     let insertResult;
 
     try {
@@ -1538,24 +1660,26 @@ const scanQRCode = async (req, res) => {
             CURTIME(),
             NULL
           )
-          `,
+        `,
         [churchId, classId, student.id, teacherId],
       );
 
       insertResult = result;
+
+      console.log("[QR] ✅ INSERT SUCCESS:", {
+        insertId: result.insertId,
+        affectedRows: result.affectedRows,
+      });
     } catch (insertError) {
-      /**
-       * -----------------------------------------------------
-       * RACE CONDITION
-       * -----------------------------------------------------
-       *
-       * Trường hợp:
-       * Máy A và máy B cùng quét đúng lúc.
-       *
-       * Cả hai có thể cùng SELECT chưa có attendance,
-       * nhưng UNIQUE KEY sẽ chặn INSERT thứ 2.
-       */
+      console.error("[QR] ❌ INSERT ERROR:", {
+        code: insertError?.code,
+        message: insertError?.message,
+        sqlState: insertError?.sqlState,
+      });
+
       if (insertError?.code === "ER_DUP_ENTRY") {
+        console.warn("[QR] ⚠️ RACE CONDITION - DUPLICATE ATTENDANCE");
+
         await safeRollback(connection, transactionStarted);
 
         transactionStarted = false;
@@ -1571,13 +1695,15 @@ const scanQRCode = async (req, res) => {
     }
 
     /**
-     * -------------------------------------------------------
-     * LẤY LẠI RECORD VỪA INSERT
-     * -------------------------------------------------------
-     *
-     * Không dùng new Date() của Node.
-     * Lấy trực tiếp từ MySQL để tránh lệch timezone.
+     * ======================================================
+     * LẤY RECORD
+     * ======================================================
      */
+
+    console.log("[QR] 🔎 Lấy attendance vừa insert:", {
+      insertId: insertResult.insertId,
+    });
+
     const [savedRows] = await connection.execute(
       `
         SELECT
@@ -1592,9 +1718,11 @@ const scanQRCode = async (req, res) => {
         WHERE id = ?
           AND church_id = ?
         LIMIT 1
-        `,
+      `,
       [insertResult.insertId, churchId],
     );
+
+    console.log("[QR] Saved attendance:", savedRows[0] || null);
 
     if (!savedRows.length) {
       throw new Error("Không tìm thấy bản ghi điểm danh sau khi insert");
@@ -1603,37 +1731,57 @@ const scanQRCode = async (req, res) => {
     const savedAttendance = savedRows[0];
 
     /**
-     * -------------------------------------------------------
+     * ======================================================
      * COMMIT
-     * -------------------------------------------------------
+     * ======================================================
      */
+
+    console.log("[QR] 💾 COMMIT TRANSACTION");
+
     await connection.commit();
+
     transactionStarted = false;
 
     /**
-     * -------------------------------------------------------
-     * LOG
-     * -------------------------------------------------------
-     *
-     * Không log full QR token.
+     * ======================================================
+     * SUCCESS LOG
+     * ======================================================
      */
+
     console.log(
-      `[QR] ĐIỂM DANH THÀNH CÔNG | token=${maskedToken} | student=${student.id} | class=${classId} | church=${churchId} | teacher=${teacherId}`,
+      `[QR] ✅ ĐIỂM DANH THÀNH CÔNG
+       token=${maskedToken}
+       student=${student.id}
+       code=${student.code}
+       name="${student.name}"
+       class=${classId}
+       className="${lockedClassRows[0].name}"
+       church=${churchId}
+       teacher=${teacherId}
+       attendance=${savedAttendance.id}
+       date=${savedAttendance.attendance_date}
+       time=${savedAttendance.check_in_time}`,
     );
+
+    console.log("[QR] 🏁 KẾT THÚC QUÉT QR");
+    console.log("======================================================\n");
 
     return res.status(201).json({
       success: true,
       code: "ATTENDANCE_SUCCESS",
       message: "Điểm danh thành công",
+
       student: {
         id: student.id,
         code: student.code,
-        full_name: student.full_name,
+        name: student.name,
       },
+
       class: {
         id: classId,
         name: lockedClassRows[0].name,
       },
+
       attendance: {
         id: savedAttendance.id,
         attendance_date: savedAttendance.attendance_date,
@@ -1644,17 +1792,16 @@ const scanQRCode = async (req, res) => {
   } catch (error) {
     await safeRollback(connection, transactionStarted);
 
-    console.error("SCAN QR ATTENDANCE ERROR:", {
-      message: error?.message,
-      code: error?.code,
-      sqlState: error?.sqlState,
-      token: maskedToken,
-    });
+    console.error("\n======================================================");
+    console.error("[QR] 💥 SCAN QR ERROR");
+    console.error("[QR] token:", maskedToken);
+    console.error("[QR] message:", error?.message);
+    console.error("[QR] code:", error?.code);
+    console.error("[QR] sqlState:", error?.sqlState);
+    console.error("[QR] errno:", error?.errno);
+    console.error("[QR] stack:", error?.stack);
+    console.error("======================================================\n");
 
-    /**
-     * Trường hợp UNIQUE KEY bị trùng
-     * nhưng lọt ra ngoài inner try.
-     */
     if (error?.code === "ER_DUP_ENTRY") {
       return res.status(409).json({
         success: false,
@@ -1671,6 +1818,8 @@ const scanQRCode = async (req, res) => {
   } finally {
     if (connection) {
       connection.release();
+
+      console.log("[QR] 🔓 DB connection released");
     }
   }
 };

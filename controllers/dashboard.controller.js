@@ -239,17 +239,6 @@ exports.getDashboardCate = async (req, res) => {
     // ========================================================
     // 1. TỔNG HỌC VIÊN CỦA GIÁO XỨ
     // ========================================================
-    //
-    // students
-    //    ↓
-    // class_students
-    //    ↓
-    // classes
-    //    ↓
-    // church_id
-    //
-    // Không dùng s.class_id
-    // ========================================================
 
     const [[studentStats]] = await db.query(
       `
@@ -383,13 +372,6 @@ exports.getDashboardCate = async (req, res) => {
     // ========================================================
     // 5. TỔNG BÀI HỌC
     // ========================================================
-    //
-    // Hiện tại lessons chưa có church_id.
-    //
-    // Vì vậy lessons đang được coi là
-    // dữ liệu dùng chung toàn hệ thống.
-    //
-    // ========================================================
 
     const [[lessonStats]] = await db.query(`
       SELECT
@@ -399,20 +381,6 @@ exports.getDashboardCate = async (req, res) => {
 
     // ========================================================
     // 6. TỔNG RESULTS CỦA GIÁO XỨ
-    // ========================================================
-    //
-    // results
-    //    ↓
-    // students
-    //    ↓
-    // class_students
-    //    ↓
-    // classes
-    //    ↓
-    // church_id
-    //
-    // DISTINCT r.id để tránh trường hợp
-    // một học sinh có nhiều bản ghi class_students.
     // ========================================================
 
     const [[resultStats]] = await db.query(
@@ -582,12 +550,6 @@ exports.getDashboardCate = async (req, res) => {
     // ========================================================
     // 11. WEEKLY PROGRESS
     // ========================================================
-    //
-    // Thứ 2 -> Chủ Nhật
-    //
-    // Chỉ lấy results thuộc giáo xứ hiện tại.
-    //
-    // ========================================================
 
     const [weeklyRows] = await db.query(
       `
@@ -648,12 +610,6 @@ exports.getDashboardCate = async (req, res) => {
 
       let dayIndex;
 
-      // MySQL:
-      // 1 = CN
-      // 2 = Thứ 2
-      // ...
-      // 7 = Thứ 7
-
       if (mysqlDay === 1) {
         dayIndex = 7;
       } else {
@@ -700,12 +656,6 @@ exports.getDashboardCate = async (req, res) => {
 
     // ========================================================
     // 14. QUIZ METRICS
-    // ========================================================
-    //
-    // score >= 50 : Đạt
-    // score < 50  : Không đạt
-    // score NULL  : Chưa hoàn thành
-    //
     // ========================================================
 
     const [[quizStats]] = await db.query(
@@ -776,7 +726,303 @@ exports.getDashboardCate = async (req, res) => {
     };
 
     // ========================================================
-    // 16. RESPONSE
+    // 16. THỐNG KÊ HỌC SINH THEO TỪNG LỚP
+    // ========================================================
+
+    const [studentClassStats] = await db.query(
+      `
+      SELECT
+
+        c.id AS class_id,
+
+        c.code AS class_code,
+
+        c.name AS class_name,
+
+        c.level AS level,
+
+        c.status AS class_status,
+
+        COUNT(DISTINCT s.id) AS total_students,
+
+        COUNT(
+          DISTINCT CASE
+            WHEN LOWER(TRIM(s.gender)) IN (
+              'male',
+              'nam'
+            )
+            THEN s.id
+          END
+        ) AS male_students,
+
+        COUNT(
+          DISTINCT CASE
+            WHEN LOWER(TRIM(s.gender)) IN (
+              'female',
+              'nữ',
+              'nu'
+            )
+            THEN s.id
+          END
+        ) AS female_students,
+
+        COUNT(
+          DISTINCT CASE
+            WHEN s.created_at >= DATE_FORMAT(
+              CURDATE(),
+              '%Y-%m-01'
+            )
+
+            AND s.created_at < DATE_ADD(
+              DATE_FORMAT(
+                CURDATE(),
+                '%Y-%m-01'
+              ),
+              INTERVAL 1 MONTH
+            )
+
+            THEN s.id
+          END
+        ) AS new_students_this_month
+
+      FROM classes c
+
+      LEFT JOIN class_students cs
+        ON cs.class_id = c.id
+
+      LEFT JOIN students s
+        ON s.id = cs.student_id
+
+      WHERE c.church_id = ?
+
+      GROUP BY
+        c.id,
+        c.code,
+        c.name,
+        c.level,
+        c.status
+
+      ORDER BY c.name ASC
+      `,
+      [churchId],
+    );
+
+    // ========================================================
+    // 17. ĐIỂM DANH HÔM NAY THEO TỪNG LỚP
+    // ========================================================
+
+    /*
+      Lưu ý:
+
+      Đoạn này giả định bảng attendances có:
+
+      - student_id
+      - class_id
+      - date
+      - status
+
+      Và status:
+
+      present = có mặt
+      absent  = vắng
+      excused = có phép
+    */
+
+    const [studentAttendanceStats] = await db.query(
+      `
+      SELECT
+
+        c.id AS class_id,
+
+        COUNT(
+          DISTINCT CASE
+            WHEN a.status = 'present'
+            THEN a.student_id
+          END
+        ) AS present_today,
+
+        COUNT(
+          DISTINCT CASE
+            WHEN a.status = 'absent'
+            THEN a.student_id
+          END
+        ) AS absent_today,
+
+        COUNT(
+          DISTINCT CASE
+            WHEN a.status = 'excused'
+            THEN a.student_id
+          END
+        ) AS excused_today
+
+      FROM classes c
+
+      LEFT JOIN class_students cs
+        ON cs.class_id = c.id
+
+      LEFT JOIN attendances a
+        ON a.class_id = c.id
+
+        AND a.student_id = cs.student_id
+
+        AND DATE(a.date) = CURDATE()
+
+      WHERE c.church_id = ?
+
+      GROUP BY c.id
+      `,
+      [churchId],
+    );
+
+    // ========================================================
+    // 18. MAP ĐIỂM DANH THEO LỚP
+    // ========================================================
+
+    const attendanceByClass = {};
+
+    studentAttendanceStats.forEach((row) => {
+      attendanceByClass[Number(row.class_id)] = {
+        present: Number(row.present_today || 0),
+
+        absent: Number(row.absent_today || 0),
+
+        excused: Number(row.excused_today || 0),
+      };
+    });
+
+    // ========================================================
+    // 19. GHÉP THỐNG KÊ HỌC SINH + ĐIỂM DANH
+    // ========================================================
+
+    const studentStatisticsByClass = studentClassStats.map((row) => {
+      const classId = Number(row.class_id);
+
+      const totalStudents = Number(row.total_students || 0);
+
+      const attendance = attendanceByClass[classId] || {
+        present: 0,
+        absent: 0,
+        excused: 0,
+      };
+
+      const present = attendance.present;
+
+      const absent = attendance.absent;
+
+      const excused = attendance.excused;
+
+      // Học sinh chưa có trạng thái điểm danh
+      const notCheckedIn = Math.max(
+        totalStudents - present - absent - excused,
+        0,
+      );
+
+      // Tỷ lệ có mặt
+      const attendanceRate =
+        totalStudents > 0 ? Math.round((present / totalStudents) * 100) : 0;
+
+      return {
+        class_id: classId,
+
+        class_code: row.class_code,
+
+        class_name: row.class_name,
+
+        level: row.level,
+
+        status: row.class_status,
+
+        students: {
+          total: totalStudents,
+
+          male: Number(row.male_students || 0),
+
+          female: Number(row.female_students || 0),
+
+          new_this_month: Number(row.new_students_this_month || 0),
+        },
+
+        attendance_today: {
+          present,
+
+          absent,
+
+          excused,
+
+          not_checked_in: notCheckedIn,
+
+          attendance_rate_pct: attendanceRate,
+        },
+      };
+    });
+
+    // ========================================================
+    // 20. TỔNG THỐNG KÊ HỌC SINH
+    // ========================================================
+
+    const studentStatisticsOverview = {
+      total_students: studentStatisticsByClass.reduce(
+        (sum, item) => sum + item.students.total,
+        0,
+      ),
+
+      male_students: studentStatisticsByClass.reduce(
+        (sum, item) => sum + item.students.male,
+        0,
+      ),
+
+      female_students: studentStatisticsByClass.reduce(
+        (sum, item) => sum + item.students.female,
+        0,
+      ),
+
+      total_classes: studentStatisticsByClass.length,
+
+      active_classes: studentStatisticsByClass.filter(
+        (item) => item.status === "active",
+      ).length,
+
+      new_students_this_month: studentStatisticsByClass.reduce(
+        (sum, item) => sum + item.students.new_this_month,
+        0,
+      ),
+    };
+
+    // ========================================================
+    // 21. TỔNG ĐIỂM DANH TOÀN GIÁO XỨ
+    // ========================================================
+
+    const attendanceTodayOverview = studentStatisticsByClass.reduce(
+      (acc, item) => {
+        acc.present += item.attendance_today.present;
+
+        acc.absent += item.attendance_today.absent;
+
+        acc.excused += item.attendance_today.excused;
+
+        acc.not_checked_in += item.attendance_today.not_checked_in;
+
+        return acc;
+      },
+      {
+        present: 0,
+        absent: 0,
+        excused: 0,
+        not_checked_in: 0,
+      },
+    );
+
+    const totalStudentForAttendance = studentStatisticsOverview.total_students;
+
+    const attendanceRateToday =
+      totalStudentForAttendance > 0
+        ? Math.round(
+            (attendanceTodayOverview.present / totalStudentForAttendance) * 100,
+          )
+        : 0;
+
+    // ========================================================
+    // 22. RESPONSE
     // ========================================================
 
     return res.status(200).json({
@@ -784,6 +1030,10 @@ exports.getDashboardCate = async (req, res) => {
 
       data: {
         church_id: churchId,
+
+        // ====================================================
+        // THỐNG KÊ CŨ
+        // ====================================================
 
         top_metrics: {
           total_students: {
@@ -812,13 +1062,45 @@ exports.getDashboardCate = async (req, res) => {
           },
         },
 
+        // ====================================================
+        // WEEKLY PROGRESS
+        // ====================================================
+
         weekly_progress: {
           view_type: "week",
 
           chart_data: weeklyProgress,
         },
 
+        // ====================================================
+        // QUIZ METRICS
+        // ====================================================
+
         quiz_metrics: quizMetrics,
+
+        // ====================================================
+        // ⭐ THỐNG KÊ HỌC SINH THEO LỚP - MỚI
+        // ====================================================
+
+        student_statistics: {
+          overview: {
+            ...studentStatisticsOverview,
+
+            attendance_today: {
+              present: attendanceTodayOverview.present,
+
+              absent: attendanceTodayOverview.absent,
+
+              excused: attendanceTodayOverview.excused,
+
+              not_checked_in: attendanceTodayOverview.not_checked_in,
+
+              attendance_rate_pct: attendanceRateToday,
+            },
+          },
+
+          classes: studentStatisticsByClass,
+        },
       },
     });
   } catch (error) {

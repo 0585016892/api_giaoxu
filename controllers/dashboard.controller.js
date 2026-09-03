@@ -729,108 +729,109 @@ exports.getDashboardCate = async (req, res) => {
     // 16. THỐNG KÊ HỌC SINH THEO TỪNG LỚP
     // ========================================================
 
-    // ========================================================
-    // 16. THỐNG KÊ HỌC SINH THEO TỪNG LỚP
-    // ========================================================
-
     const [studentClassStats] = await db.query(
       `
-  SELECT
+      SELECT
 
-    c.id AS class_id,
+        c.id AS class_id,
 
-    c.code AS class_code,
+        c.code AS class_code,
 
-    c.name AS class_name,
+        c.name AS class_name,
 
-    c.category AS category,
+        c.category AS category,
 
-    c.status AS class_status,
+        c.status AS class_status,
 
-    COUNT(DISTINCT s.id) AS total_students,
+        COUNT(DISTINCT s.id) AS total_students,
 
-    COUNT(
-      DISTINCT CASE
-        WHEN LOWER(TRIM(s.gender)) IN (
-          'male',
-          'nam'
-        )
-        THEN s.id
-      END
-    ) AS male_students,
+        COUNT(
+          DISTINCT CASE
+            WHEN LOWER(TRIM(s.gender)) IN (
+              'male',
+              'nam'
+            )
+            THEN s.id
+          END
+        ) AS male_students,
 
-    COUNT(
-      DISTINCT CASE
-        WHEN LOWER(TRIM(s.gender)) IN (
-          'female',
-          'nữ',
-          'nu'
-        )
-        THEN s.id
-      END
-    ) AS female_students,
+        COUNT(
+          DISTINCT CASE
+            WHEN LOWER(TRIM(s.gender)) IN (
+              'female',
+              'nữ',
+              'nu'
+            )
+            THEN s.id
+          END
+        ) AS female_students,
 
-    COUNT(
-      DISTINCT CASE
-        WHEN s.created_at >= DATE_FORMAT(
-          CURDATE(),
-          '%Y-%m-01'
-        )
+        COUNT(
+          DISTINCT CASE
+            WHEN s.created_at >= DATE_FORMAT(
+              CURDATE(),
+              '%Y-%m-01'
+            )
 
-        AND s.created_at < DATE_ADD(
-          DATE_FORMAT(
-            CURDATE(),
-            '%Y-%m-01'
-          ),
-          INTERVAL 1 MONTH
-        )
+            AND s.created_at < DATE_ADD(
+              DATE_FORMAT(
+                CURDATE(),
+                '%Y-%m-01'
+              ),
+              INTERVAL 1 MONTH
+            )
 
-        THEN s.id
-      END
-    ) AS new_students_this_month
+            THEN s.id
+          END
+        ) AS new_students_this_month
 
-  FROM classes c
+      FROM classes c
 
-  LEFT JOIN class_students cs
-    ON cs.class_id = c.id
+      LEFT JOIN class_students cs
+        ON cs.class_id = c.id
 
-  LEFT JOIN students s
-    ON s.id = cs.student_id
+      LEFT JOIN students s
+        ON s.id = cs.student_id
 
-  WHERE c.church_id = ?
+      WHERE c.church_id = ?
 
-  GROUP BY
-    c.id,
-    c.code,
-    c.name,
-    c.category,
-    c.status
+      GROUP BY
+        c.id,
+        c.code,
+        c.name,
+        c.category,
+        c.status
 
-  ORDER BY c.name ASC
-  `,
+      ORDER BY c.name ASC
+      `,
       [churchId],
     );
 
     // ========================================================
     // 17. ĐIỂM DANH HÔM NAY THEO TỪNG LỚP
     // ========================================================
-
-    /*
-      Lưu ý:
-
-      Đoạn này giả định bảng attendances có:
-
-      - student_id
-      - class_id
-      - date
-      - status
-
-      Và status:
-
-      present = có mặt
-      absent  = vắng
-      excused = có phép
-    */
+    //
+    // Schema attendances thực tế:
+    //
+    // id
+    // church_id
+    // class_id
+    // student_id
+    // teacher_id
+    // attendance_date  <-- NGÀY ĐIỂM DANH
+    // status
+    // check_in_time
+    // note
+    // created_at
+    // updated_at
+    //
+    // status:
+    // present
+    // absent
+    // late
+    // excused
+    //
+    // ========================================================
 
     const [studentAttendanceStats] = await db.query(
       `
@@ -854,6 +855,13 @@ exports.getDashboardCate = async (req, res) => {
 
         COUNT(
           DISTINCT CASE
+            WHEN a.status = 'late'
+            THEN a.student_id
+          END
+        ) AS late_today,
+
+        COUNT(
+          DISTINCT CASE
             WHEN a.status = 'excused'
             THEN a.student_id
           END
@@ -869,7 +877,7 @@ exports.getDashboardCate = async (req, res) => {
 
         AND a.student_id = cs.student_id
 
-        AND DATE(a.date) = CURDATE()
+        AND a.attendance_date = CURDATE()
 
       WHERE c.church_id = ?
 
@@ -890,6 +898,8 @@ exports.getDashboardCate = async (req, res) => {
 
         absent: Number(row.absent_today || 0),
 
+        late: Number(row.late_today || 0),
+
         excused: Number(row.excused_today || 0),
       };
     });
@@ -906,20 +916,30 @@ exports.getDashboardCate = async (req, res) => {
       const attendance = attendanceByClass[classId] || {
         present: 0,
         absent: 0,
+        late: 0,
         excused: 0,
       };
 
       const present = attendance.present;
+
       const absent = attendance.absent;
+
+      const late = attendance.late;
+
       const excused = attendance.excused;
 
-      const notCheckedIn = Math.max(
-        totalStudents - present - absent - excused,
-        0,
-      );
+      // Tổng số học sinh đã có trạng thái điểm danh
+      const checkedIn = present + absent + late + excused;
 
+      // Học sinh chưa được điểm danh
+      const notCheckedIn = Math.max(totalStudents - checkedIn, 0);
+
+      // Tỷ lệ đã có mặt.
+      // "late" vẫn được tính là có mặt.
       const attendanceRate =
-        totalStudents > 0 ? Math.round((present / totalStudents) * 100) : 0;
+        totalStudents > 0
+          ? Math.round(((present + late) / totalStudents) * 100)
+          : 0;
 
       return {
         class_id: classId,
@@ -928,7 +948,6 @@ exports.getDashboardCate = async (req, res) => {
 
         class_name: row.class_name,
 
-        // Dùng category thay cho level
         category: row.category,
 
         status: row.class_status,
@@ -948,7 +967,11 @@ exports.getDashboardCate = async (req, res) => {
 
           absent,
 
+          late,
+
           excused,
+
+          checked_in: checkedIn,
 
           not_checked_in: notCheckedIn,
 
@@ -999,7 +1022,11 @@ exports.getDashboardCate = async (req, res) => {
 
         acc.absent += item.attendance_today.absent;
 
+        acc.late += item.attendance_today.late;
+
         acc.excused += item.attendance_today.excused;
+
+        acc.checked_in += item.attendance_today.checked_in;
 
         acc.not_checked_in += item.attendance_today.not_checked_in;
 
@@ -1008,17 +1035,22 @@ exports.getDashboardCate = async (req, res) => {
       {
         present: 0,
         absent: 0,
+        late: 0,
         excused: 0,
+        checked_in: 0,
         not_checked_in: 0,
       },
     );
 
     const totalStudentForAttendance = studentStatisticsOverview.total_students;
 
+    // Có mặt + đi trễ được tính là đã đi học
     const attendanceRateToday =
       totalStudentForAttendance > 0
         ? Math.round(
-            (attendanceTodayOverview.present / totalStudentForAttendance) * 100,
+            ((attendanceTodayOverview.present + attendanceTodayOverview.late) /
+              totalStudentForAttendance) *
+              100,
           )
         : 0;
 
@@ -1033,7 +1065,7 @@ exports.getDashboardCate = async (req, res) => {
         church_id: churchId,
 
         // ====================================================
-        // THỐNG KÊ CŨ
+        // THỐNG KÊ CŨ - GIỮ NGUYÊN
         // ====================================================
 
         top_metrics: {
@@ -1052,7 +1084,6 @@ exports.getDashboardCate = async (req, res) => {
           lessons: {
             total: Number(lessonStats?.total || 0),
 
-            // lessons chưa có church_id
             new_this_month: 0,
           },
 
@@ -1092,7 +1123,11 @@ exports.getDashboardCate = async (req, res) => {
 
               absent: attendanceTodayOverview.absent,
 
+              late: attendanceTodayOverview.late,
+
               excused: attendanceTodayOverview.excused,
+
+              checked_in: attendanceTodayOverview.checked_in,
 
               not_checked_in: attendanceTodayOverview.not_checked_in,
 

@@ -97,14 +97,14 @@ const allowedOrigins = [
 
   "http://localhost:3001",
 
-  "http://localhost:3002",
-
   "https://giaoxudongquan.site",
 
   "https://www.giaoxudongquan.site",
 
   "https://ffcf-118-70-186-232.ngrok-free.app",
   "https://quantrigiaoly.vercel.app",
+  "https://giaolyso.site",
+  "https://www.giaolyso.site",
 ];
 
 const corsOptions = {

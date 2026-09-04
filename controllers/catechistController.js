@@ -1263,14 +1263,13 @@ exports.removeClass = async (req, res) => {
 
     const { catechist_id, class_id } = req.body;
 
-    console.log("========== REMOVE CATECHIST FROM CLASS ==========");
-    console.log("👤 CATECHIST ID:", catechist_id);
-    console.log("🏫 CLASS ID:", class_id);
-    console.log("⛪ CHURCH ID:", churchId);
+    console.log("========================================");
+    console.log("REMOVE CATECHIST FROM CLASS");
+    console.log("CATECHIST ID:", catechist_id);
+    console.log("CLASS ID:", class_id);
+    console.log("CHURCH ID:", churchId);
+    console.log("========================================");
 
-    // =====================================================
-    // KIỂM TRA GIÁO XỨ
-    // =====================================================
     if (!churchId) {
       return res.status(403).json({
         success: false,
@@ -1278,9 +1277,6 @@ exports.removeClass = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // VALIDATE INPUT
-    // =====================================================
     if (!catechist_id || !class_id) {
       return res.status(400).json({
         success: false,
@@ -1289,8 +1285,9 @@ exports.removeClass = async (req, res) => {
     }
 
     // =====================================================
-    // KIỂM TRA GIÁO LÝ VIÊN THUỘC GIÁO XỨ
+    // KIỂM TRA GLV THUỘC GIÁO XỨ
     // =====================================================
+
     const [catechists] = await db.query(
       `
       SELECT id
@@ -1312,6 +1309,7 @@ exports.removeClass = async (req, res) => {
     // =====================================================
     // KIỂM TRA LỚP THUỘC GIÁO XỨ
     // =====================================================
+
     const [classes] = await db.query(
       `
       SELECT id, name
@@ -1331,8 +1329,9 @@ exports.removeClass = async (req, res) => {
     }
 
     // =====================================================
-    // KIỂM TRA ĐANG ĐƯỢC PHÂN VÀO LỚP
+    // KIỂM TRA PHÂN CÔNG
     // =====================================================
+
     const [assignment] = await db.query(
       `
       SELECT catechist_id, class_id
@@ -1354,6 +1353,7 @@ exports.removeClass = async (req, res) => {
     // =====================================================
     // XÓA PHÂN CÔNG
     // =====================================================
+
     await db.query(
       `
       DELETE FROM catechist_classes
@@ -1362,8 +1362,6 @@ exports.removeClass = async (req, res) => {
       `,
       [catechist_id, class_id],
     );
-
-    console.log("✅ Xóa giáo viên khỏi lớp thành công");
 
     return res.status(200).json({
       success: true,

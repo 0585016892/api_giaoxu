@@ -65,14 +65,15 @@ const checkStudentBelongsToChurch = async (studentId, churchId) => {
 // GET /api/students
 // LẤY DANH SÁCH HỌC SINH
 // =====================================================
-
 exports.getStudents = async (req, res) => {
   try {
     const churchId = getChurchId(req);
+    const { class_id } = req.query;
 
     console.log("========== GET STUDENTS ==========");
     console.log("USER:", req.user);
     console.log("CHURCH ID:", churchId);
+    console.log("CLASS ID:", class_id);
 
     if (!churchId) {
       return res.status(403).json({
@@ -81,29 +82,59 @@ exports.getStudents = async (req, res) => {
       });
     }
 
-    const [rows] = await db.query(
-      `
-        SELECT DISTINCT
-          s.*,
-          c.id AS class_id,
-          c.name AS class_name,
-          c.code AS class_code,
-          cs.status AS class_student_status,
-          cs.joined_at
-        FROM students s
-        INNER JOIN class_students cs
-          ON cs.student_id = s.id
-        INNER JOIN classes c
-          ON c.id = cs.class_id
-        WHERE c.church_id = ?
-        ORDER BY s.created_at DESC
-      `,
-      [churchId],
-    );
+    let sql = `
+      SELECT DISTINCT
+        s.*,
+        c.id AS class_id,
+        c.name AS class_name,
+        c.code AS class_code,
+        cs.status AS class_student_status,
+        cs.joined_at
+      FROM students s
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+      WHERE c.church_id = ?
+    `;
+
+    const params = [churchId];
+
+    // ============================================
+    // LỌC THEO LỚP NẾU CÓ class_id
+    // ============================================
+    if (class_id !== undefined && class_id !== null && class_id !== "") {
+      const classIdNumber = Number(class_id);
+
+      if (!Number.isInteger(classIdNumber) || classIdNumber <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "class_id không hợp lệ",
+        });
+      }
+
+      sql += `
+        AND c.id = ?
+      `;
+
+      params.push(classIdNumber);
+    }
+
+    sql += `
+      ORDER BY s.created_at DESC
+    `;
+
+    console.log("SQL:", sql);
+    console.log("PARAMS:", params);
+
+    const [rows] = await db.query(sql, params);
+
+    console.log("TOTAL STUDENTS:", rows.length);
 
     return res.json({
       success: true,
       church_id: Number(churchId),
+      class_id: class_id ? Number(class_id) : null,
       total: rows.length,
       data: rows,
     });
@@ -120,7 +151,6 @@ exports.getStudents = async (req, res) => {
     });
   }
 };
-
 // =====================================================
 // GET /api/students/:id
 // CHI TIẾT HỌC SINH

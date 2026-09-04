@@ -368,6 +368,8 @@ exports.getAdminById = async (req, res) => {
    UPDATE ADMIN
 ========================================================= */
 exports.updateAdmin = async (req, res) => {
+  const connection = await db.getConnection();
+
   try {
     const {
       role,
@@ -388,11 +390,17 @@ exports.updateAdmin = async (req, res) => {
 
     const adminId = req.params.id;
 
+    console.log("========================================");
+    console.log("========== UPDATE ADMIN ==========");
+    console.log("🆔 ADMIN ID:", adminId);
+    console.log("📥 BODY:", req.body);
+    console.log("========================================");
+
     // ============================================================
     // 1. LẤY TÀI KHOẢN HIỆN TẠI
     // ============================================================
 
-    const [old] = await db.query(
+    const [old] = await connection.query(
       `
       SELECT *
       FROM admins
@@ -411,22 +419,34 @@ exports.updateAdmin = async (req, res) => {
 
     const currentAdmin = old[0];
 
+    console.log("👤 CURRENT ADMIN:", {
+      id: currentAdmin.id,
+      username: currentAdmin.username,
+      email: currentAdmin.email,
+      role: currentAdmin.role,
+      church_id: currentAdmin.church_id,
+    });
+
     // ============================================================
-    // 2. GIỮ NGUYÊN CHURCH_ID
+    // 2. CHURCH ID
     // ============================================================
 
     const churchId = currentAdmin.church_id;
 
+    if (!churchId) {
+      return res.status(400).json({
+        success: false,
+        message: "Tài khoản chưa được gán giáo xứ",
+      });
+    }
+
     // ============================================================
-    // 3. KIỂM TRA ACCOUNT_TYPE
-    //
-    // DB:
-    // ENUM('member', 'vip')
+    // 3. ACCOUNT TYPE
     // ============================================================
 
     const finalAccountType =
       account_type !== undefined && account_type !== null && account_type !== ""
-        ? String(account_type).toLowerCase()
+        ? String(account_type).trim().toLowerCase()
         : currentAdmin.account_type || "member";
 
     if (!["member", "vip"].includes(finalAccountType)) {
@@ -437,16 +457,20 @@ exports.updateAdmin = async (req, res) => {
     }
 
     // ============================================================
-    // 4. KIỂM TRA EMAIL TRÙNG
+    // 4. EMAIL MỚI
     // ============================================================
 
     const finalEmail =
       email !== undefined && email !== null && email !== ""
-        ? email.trim()
+        ? String(email).trim().toLowerCase()
         : currentAdmin.email;
 
+    // ============================================================
+    // 5. CHECK EMAIL ADMINS TRÙNG
+    // ============================================================
+
     if (finalEmail && finalEmail !== currentAdmin.email) {
-      const [existEmail] = await db.query(
+      const [existEmail] = await connection.query(
         `
         SELECT id
         FROM admins
@@ -458,7 +482,7 @@ exports.updateAdmin = async (req, res) => {
       );
 
       if (existEmail.length > 0) {
-        return res.status(400).json({
+        return res.status(409).json({
           success: false,
           message: "Email đã được sử dụng bởi tài khoản khác",
         });
@@ -466,7 +490,11 @@ exports.updateAdmin = async (req, res) => {
     }
 
     // ============================================================
-    // 5. TỰ ĐỘNG TẠO USERNAME TỪ EMAIL
+    // 6. TẠO USERNAME TỪ EMAIL
+    //
+    // admins.username
+    //       =
+    // catechists.catechist_code
     // ============================================================
 
     let finalUsername = currentAdmin.username;
@@ -474,33 +502,35 @@ exports.updateAdmin = async (req, res) => {
     if (finalEmail && finalEmail.includes("@")) {
       const emailUsername = finalEmail
         .split("@")[0]
+        .trim()
         .toLowerCase()
         .replace(/[^a-z0-9_]/g, "");
 
-      // Chỉ cập nhật username nếu tạo ra username hợp lệ
       if (emailUsername) {
         finalUsername = emailUsername;
       }
     }
 
+    console.log("👤 USERNAME:", currentAdmin.username, "→", finalUsername);
+
     // ============================================================
-    // 6. KIỂM TRA USERNAME TRÙNG
+    // 7. CHECK USERNAME ADMINS TRÙNG
     // ============================================================
 
     if (finalUsername !== currentAdmin.username) {
-      const [existUsername] = await db.query(
+      const [existUsername] = await connection.query(
         `
-        SELECT id
-        FROM admins
-        WHERE username = ?
-          AND id != ?
-        LIMIT 1
-        `,
+          SELECT id
+          FROM admins
+          WHERE username = ?
+            AND id != ?
+          LIMIT 1
+          `,
         [finalUsername, adminId],
       );
 
       if (existUsername.length > 0) {
-        return res.status(400).json({
+        return res.status(409).json({
           success: false,
           message: "Username được tạo từ Email đã tồn tại",
         });
@@ -508,48 +538,59 @@ exports.updateAdmin = async (req, res) => {
     }
 
     // ============================================================
-    // 7. AVATAR
+    // 8. AVATAR
     // ============================================================
 
     let avatar = currentAdmin.avatar;
 
     if (req.file) {
       avatar = `/uploads/avatars/${req.file.filename}`;
+
+      console.log("🖼️ NEW AVATAR:", avatar);
     }
 
     // ============================================================
-    // 8. GIÁ TRỊ MỚI
+    // 9. GIÁ TRỊ MỚI
     // ============================================================
 
     const finalRole =
       role !== undefined && role !== null && role !== ""
-        ? role
+        ? String(role).trim().toLowerCase()
         : currentAdmin.role;
 
     const finalFullName =
       full_name !== undefined && full_name !== null
-        ? full_name.trim()
+        ? String(full_name).trim()
         : currentAdmin.full_name;
+
+    if (!finalFullName) {
+      return res.status(400).json({
+        success: false,
+        message: "Họ và tên không được để trống",
+      });
+    }
 
     const finalSaintName =
       saint_name !== undefined && saint_name !== null
-        ? saint_name.trim()
+        ? String(saint_name).trim()
         : currentAdmin.saint_name;
 
     const finalPhone =
-      phone !== undefined && phone !== null ? phone.trim() : currentAdmin.phone;
+      phone !== undefined && phone !== null
+        ? String(phone).trim()
+        : currentAdmin.phone;
 
     const finalBirthday =
       birthday !== undefined ? birthday || null : currentAdmin.birthday;
 
     const finalHometown =
       hometown !== undefined && hometown !== null
-        ? hometown.trim()
+        ? String(hometown).trim()
         : currentAdmin.hometown;
 
     const finalAddress =
       address !== undefined && address !== null
-        ? address.trim()
+        ? String(address).trim()
         : currentAdmin.address;
 
     const finalOrdinationDate =
@@ -559,47 +600,152 @@ exports.updateAdmin = async (req, res) => {
 
     const finalPosition =
       position !== undefined && position !== null
-        ? position.trim()
+        ? String(position).trim()
         : currentAdmin.position;
 
     const finalMotto =
-      motto !== undefined && motto !== null ? motto.trim() : currentAdmin.motto;
+      motto !== undefined && motto !== null
+        ? String(motto).trim()
+        : currentAdmin.motto;
 
     const finalBio =
-      bio !== undefined && bio !== null ? bio.trim() : currentAdmin.bio;
+      bio !== undefined && bio !== null ? String(bio).trim() : currentAdmin.bio;
 
     // ============================================================
-    // 9. UPDATE DATABASE
+    // 10. XÁC ĐỊNH CÓ PHẢI GIÁO LÝ VIÊN KHÔNG
+    // ============================================================
+
+    const isCatechistRole = ["teacher", "catechist"].includes(finalRole);
+
+    console.log("🎓 IS CATECHIST:", isCatechistRole);
+
+    // ============================================================
+    // 11. TÌM CATECHIST THEO USERNAME CŨ
     //
-    // LƯU Ý:
-    // church_id KHÔNG update ở đây
+    // admins.username
+    //       =
+    // catechists.catechist_code
     // ============================================================
 
-    await db.query(
+    const [catechistRows] = await connection.query(
       `
-      UPDATE admins
-      SET
-        account_type = ?,
-        username = ?,
-        role = ?,
+        SELECT *
+        FROM catechists
+        WHERE catechist_code = ?
+          AND church_id = ?
+        LIMIT 1
+        `,
+      [currentAdmin.username, churchId],
+    );
 
-        full_name = ?,
-        saint_name = ?,
-        email = ?,
-        phone = ?,
-        avatar = ?,
+    const currentCatechist = catechistRows.length > 0 ? catechistRows[0] : null;
 
-        birthday = ?,
-        hometown = ?,
-        address = ?,
+    if (currentCatechist) {
+      console.log("🎓 FOUND CATECHIST:", {
+        id: currentCatechist.id,
+        catechist_code: currentCatechist.catechist_code,
+        email: currentCatechist.email,
+      });
+    } else {
+      console.log("⚠️ KHÔNG TÌM THẤY CATECHIST:", currentAdmin.username);
+    }
 
-        ordination_date = ?,
-        position = ?,
-        motto = ?,
-        bio = ?
+    // ============================================================
+    // 12. CHECK CATECHIST CODE MỚI
+    //
+    // Vì username mới cũng chính là code mới
+    // ============================================================
 
-      WHERE id = ?
-      `,
+    if (isCatechistRole && finalUsername !== currentAdmin.username) {
+      const [duplicateCatechist] = await connection.query(
+        `
+          SELECT id
+          FROM catechists
+          WHERE catechist_code = ?
+            AND church_id = ?
+            AND id != ?
+          LIMIT 1
+          `,
+        [finalUsername, churchId, currentCatechist ? currentCatechist.id : 0],
+      );
+
+      if (duplicateCatechist.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: `Mã Giáo lý viên "${finalUsername}" đã tồn tại`,
+        });
+      }
+    }
+
+    // ============================================================
+    // 13. CHECK EMAIL TRÙNG TRONG CATECHISTS
+    // ============================================================
+
+    if (
+      isCatechistRole &&
+      finalEmail &&
+      currentCatechist &&
+      finalEmail !== currentCatechist.email
+    ) {
+      const [duplicateCatechistEmail] = await connection.query(
+        `
+          SELECT id
+          FROM catechists
+          WHERE email = ?
+            AND church_id = ?
+            AND id != ?
+          LIMIT 1
+          `,
+        [finalEmail, churchId, currentCatechist.id],
+      );
+
+      if (duplicateCatechistEmail.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: `Email "${finalEmail}" đã được sử dụng bởi Giáo lý viên khác`,
+        });
+      }
+    }
+
+    // ============================================================
+    // 14. START TRANSACTION
+    // ============================================================
+
+    await connection.beginTransaction();
+
+    console.log("🔄 TRANSACTION START");
+
+    // ============================================================
+    // 15. UPDATE ADMINS
+    //
+    // saint_name chỉ nằm ở admins
+    // ============================================================
+
+    const [adminResult] = await connection.query(
+      `
+        UPDATE admins
+        SET
+          account_type = ?,
+          username = ?,
+          role = ?,
+
+          full_name = ?,
+          saint_name = ?,
+          email = ?,
+          phone = ?,
+          avatar = ?,
+
+          birthday = ?,
+          hometown = ?,
+          address = ?,
+
+          ordination_date = ?,
+          position = ?,
+          motto = ?,
+          bio = ?
+
+        WHERE id = ?
+        `,
       [
         finalAccountType,
         finalUsername,
@@ -624,66 +770,296 @@ exports.updateAdmin = async (req, res) => {
       ],
     );
 
-    // ============================================================
-    // 10. AUDIT LOG
-    // ============================================================
-
-    await writeLog({
-      admin_id: req.user?.id,
-      action: "UPDATE_ADMIN",
-      target_type: "admins",
-      target_id: adminId,
-      description:
-        `Cập nhật tài khoản ${finalFullName} ` +
-        `(@${finalUsername}) - loại tài khoản: ${finalAccountType}`,
-      ip_address: req.ip,
-    });
+    console.log("📊 UPDATE ADMINS:", adminResult);
 
     // ============================================================
-    // 11. NOTIFICATION
+    // 16. ĐỒNG BỘ CATECHISTS
+    //
+    // Chỉ đồng bộ nếu:
+    //
+    // - role = teacher
+    // - hoặc role = catechist
+    //
+    // Không có saint_name
     // ============================================================
 
-    await createNotification({
-      type: "UPDATE_ADMIN",
-      title: "Cập nhật tài khoản",
-      content:
-        `Tài khoản ${finalFullName} vừa được cập nhật ` +
-        `(${finalAccountType === "vip" ? "VIP" : "Member"})`,
-      created_by: req.user?.id,
-      related_type: "admins",
-      related_id: adminId,
-    });
+    if (isCatechistRole) {
+      // ==========================================================
+      // CASE 1:
+      // ĐÃ CÓ CATECHIST
+      // ==========================================================
+
+      if (currentCatechist) {
+        console.log("🔄 UPDATE EXISTING CATECHIST:", currentCatechist.id);
+
+        const [catechistResult] = await connection.query(
+          `
+            UPDATE catechists
+            SET
+              catechist_code = ?,
+              full_name = ?,
+              email = ?,
+              phone = ?,
+              birthday = ?,
+              hometown = ?,
+              address = ?,
+              ordination_date = ?,
+              position = ?,
+              motto = ?,
+              bio = ?
+
+            WHERE id = ?
+              AND church_id = ?
+            `,
+          [
+            finalUsername,
+            finalFullName,
+            finalEmail,
+            finalPhone,
+            finalBirthday,
+            finalHometown,
+            finalAddress,
+            finalOrdinationDate,
+            finalPosition,
+            finalMotto,
+            finalBio,
+
+            currentCatechist.id,
+            churchId,
+          ],
+        );
+
+        console.log("📊 UPDATE CATECHISTS:", catechistResult);
+
+        console.log("✅ CATECHIST SYNC SUCCESS");
+      }
+
+      // ==========================================================
+      // CASE 2:
+      // ADMIN CHƯA CÓ CATECHIST
+      //
+      // Ví dụ:
+      // member → teacher
+      // member → catechist
+      // ==========================================================
+      else {
+        console.log("➕ CREATE CATECHIST FOR ADMIN");
+
+        const [checkCode] = await connection.query(
+          `
+            SELECT id
+            FROM catechists
+            WHERE catechist_code = ?
+              AND church_id = ?
+            LIMIT 1
+            `,
+          [finalUsername, churchId],
+        );
+
+        if (checkCode.length > 0) {
+          throw new Error(`Mã Giáo lý viên "${finalUsername}" đã tồn tại`);
+        }
+
+        const [insertCatechist] = await connection.query(
+          `
+            INSERT INTO catechists (
+              church_id,
+              catechist_code,
+              full_name,
+              email,
+              phone,
+              birthday,
+              hometown,
+              address,
+              ordination_date,
+              position,
+              motto,
+              bio
+            )
+            VALUES (
+              ?, ?, ?, ?, ?,
+              ?, ?, ?, ?, ?, ?, ?
+            )
+            `,
+          [
+            churchId,
+            finalUsername,
+            finalFullName,
+            finalEmail,
+            finalPhone,
+            finalBirthday,
+            finalHometown,
+            finalAddress,
+            finalOrdinationDate,
+            finalPosition,
+            finalMotto,
+            finalBio,
+          ],
+        );
+
+        console.log("➕ INSERT CATECHIST:", insertCatechist);
+
+        console.log("✅ CATECHIST CREATED");
+      }
+    }
 
     // ============================================================
-    // 12. RESPONSE
+    // 17. NẾU ROLE KHÔNG PHẢI GIÁO LÝ VIÊN
+    //
+    // KHÔNG XÓA CATECHIST
+    //
+    // để giữ:
+    // - catechist_classes
+    // - lịch sử phân lớp
+    // - dữ liệu điểm danh
+    // ============================================================
+
+    if (!isCatechistRole && currentCatechist) {
+      console.log("ℹ️ ROLE KHÔNG PHẢI TEACHER/CATECHIST");
+
+      console.log("ℹ️ GIỮ NGUYÊN CATECHIST ĐỂ BẢO TOÀN LỊCH SỬ");
+    }
+
+    // ============================================================
+    // 18. COMMIT
+    // ============================================================
+
+    await connection.commit();
+
+    console.log("✅ TRANSACTION COMMITTED");
+
+    // ============================================================
+    // 19. AUDIT LOG
+    // ============================================================
+
+    try {
+      await writeLog({
+        admin_id: req.user?.id || null,
+
+        action: "UPDATE_ADMIN",
+
+        target_type: "admins",
+
+        target_id: adminId,
+
+        description:
+          `Cập nhật tài khoản ${finalFullName} ` +
+          `(@${finalUsername}) - ` +
+          `role: ${finalRole} - ` +
+          `loại tài khoản: ${finalAccountType}`,
+
+        ip_address: req.ip,
+      });
+    } catch (logError) {
+      console.error("⚠️ WRITE LOG ERROR:", logError);
+    }
+
+    // ============================================================
+    // 20. NOTIFICATION
+    // ============================================================
+
+    try {
+      await createNotification({
+        type: "UPDATE_ADMIN",
+
+        title: "Cập nhật tài khoản",
+
+        content:
+          `Tài khoản ${finalFullName} vừa được cập nhật ` +
+          `(${finalAccountType === "vip" ? "VIP" : "Member"})`,
+
+        created_by: req.user?.id,
+
+        related_type: "admins",
+
+        related_id: adminId,
+      });
+    } catch (notificationError) {
+      console.error("⚠️ CREATE NOTIFICATION ERROR:", notificationError);
+    }
+
+    // ============================================================
+    // 21. RESPONSE
     // ============================================================
 
     return res.json({
       success: true,
+
       message: "Cập nhật tài khoản thành công!",
+
       data: {
         id: Number(adminId),
 
-        // Giáo xứ vẫn giữ nguyên
         church_id: churchId,
 
-        // Loại tài khoản
         account_type: finalAccountType,
 
         username: finalUsername,
+
         role: finalRole,
 
         full_name: finalFullName,
+
+        email: finalEmail,
+
+        catechist_synced: isCatechistRole,
+
+        catechist_code: isCatechistRole ? finalUsername : null,
       },
     });
   } catch (err) {
-    console.error("❌ Lỗi updateAdmin:", err);
+    console.error("❌ LỖI UPDATE ADMIN:", err);
+
+    // ============================================================
+    // ROLLBACK
+    // ============================================================
+
+    try {
+      await connection.rollback();
+    } catch (rollbackError) {
+      console.error("❌ ROLLBACK ERROR:", rollbackError);
+    }
+
+    // ============================================================
+    // DUPLICATE
+    // ============================================================
+
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        success: false,
+        message: "Username, email hoặc mã Giáo lý viên đã tồn tại",
+        errorCode: err.code,
+      });
+    }
+
+    // ============================================================
+    // UNKNOWN COLUMN
+    // ============================================================
+
+    if (err.code === "ER_BAD_FIELD_ERROR") {
+      return res.status(500).json({
+        success: false,
+        message: "Tên cột trong câu SQL không tồn tại trong database",
+        errorCode: err.code,
+        error: err.message,
+      });
+    }
+
+    // ============================================================
+    // RESPONSE
+    // ============================================================
 
     return res.status(500).json({
       success: false,
+
       message: "Lỗi server khi cập nhật tài khoản",
+
+      errorCode: err.code || null,
+
       error: err.message,
     });
+  } finally {
+    connection.release();
   }
 };
 

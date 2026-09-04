@@ -25,9 +25,11 @@ router.get("/:id", catechistController.getCatechistById);
 
 // Tạo Giáo lý viên thuộc giáo xứ hiện tại
 router.post("/", catechistController.createCatechist);
+router.post("/assign-class", catechistController.assignClass);
 
 // Cập nhật Giáo lý viên
 router.put("/:id", catechistController.updateCatechist);
+router.delete("/remove-class", catechistController.removeClass);
 
 // Xóa Giáo lý viên
 router.delete("/:id", catechistController.deleteCatechist);
@@ -36,7 +38,4 @@ router.delete("/:id", catechistController.deleteCatechist);
 // PHÂN CÔNG GIÁO LÝ VIÊN VÀO LỚP
 // =========================================================
 
-router.post("/assign-class", catechistController.assignClass);
-
-router.delete("/remove-class", catechistController.removeClass);
 module.exports = router;

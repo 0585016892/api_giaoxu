@@ -33,31 +33,51 @@ const validateChurch = (req, res) => {
 // =========================================================
 const getResults = async (req, res) => {
   try {
+    console.log("\n");
+    console.log("====================================================");
+    console.log("📊 GET RESULTS - DEBUG");
+    console.log("====================================================");
+
+    // =====================================================
+    // 1. USER ĐĂNG NHẬP
+    // =====================================================
+
+    console.log("👤 req.user =", req.user);
+
     const churchId = validateChurch(req, res);
+
+    console.log("⛪ churchId =", churchId);
+
     if (!churchId) return;
 
     const { class_id } = req.query;
 
-    // =====================================================
-    // LẤY GIÁO LÝ VIÊN ĐANG ĐĂNG NHẬP
-    // username = catechist_code và không thay đổi
-    // =====================================================
+    console.log("🏫 class_id query =", class_id);
 
     const username = req.user?.username;
 
+    console.log("🔑 username =", username);
+
     if (!username) {
+      console.log("❌ KHÔNG CÓ USERNAME");
+
       return res.status(401).json({
         success: false,
         message: "Không xác định được tài khoản giáo viên",
       });
     }
 
+    // =====================================================
+    // 2. TÌM GIÁO LÝ VIÊN
+    // =====================================================
+
     const [catechists] = await db.query(
       `
       SELECT
         id,
         catechist_code,
-        full_name
+        full_name,
+        church_id
       FROM catechists
       WHERE catechist_code = ?
         AND church_id = ?
@@ -66,7 +86,11 @@ const getResults = async (req, res) => {
       [username, churchId],
     );
 
+    console.log("👨‍🏫 catechists =", catechists);
+
     if (!catechists.length) {
+      console.log("❌ KHÔNG TÌM THẤY GIÁO LÝ VIÊN");
+
       return res.status(403).json({
         success: false,
         message: "Tài khoản chưa được liên kết với giáo lý viên",
@@ -75,9 +99,71 @@ const getResults = async (req, res) => {
 
     const catechistId = catechists[0].id;
 
+    console.log("🆔 catechistId =", catechistId);
+
     // =====================================================
-    // LẤY KẾT QUẢ
-    // CHỈ NHỮNG LỚP GIÁO VIÊN ĐANG QUẢN LÝ
+    // 3. KIỂM TRA GIÁO LÝ VIÊN ĐƯỢC PHÂN NHỮNG LỚP NÀO
+    // =====================================================
+
+    const [assignedClasses] = await db.query(
+      `
+      SELECT
+        ctc.catechist_id,
+        ctc.class_id,
+        c.id AS real_class_id,
+        c.name AS class_name,
+        c.church_id
+      FROM catechist_classes ctc
+      INNER JOIN classes c
+        ON c.id = ctc.class_id
+      WHERE ctc.catechist_id = ?
+        AND c.church_id = ?
+      ORDER BY c.id
+      `,
+      [catechistId, churchId],
+    );
+
+    console.log("🏫 LỚP GIÁO VIÊN ĐƯỢC PHÂN:");
+
+    console.table(assignedClasses);
+
+    // =====================================================
+    // 4. KIỂM TRA TẤT CẢ STUDENT TRONG CÁC LỚP
+    // =====================================================
+
+    const [assignedStudents] = await db.query(
+      `
+      SELECT
+        s.id AS student_id,
+        s.name AS student_name,
+        c.id AS class_id,
+        c.name AS class_name,
+        ctc.catechist_id
+      FROM catechist_classes ctc
+
+      INNER JOIN classes c
+        ON c.id = ctc.class_id
+       AND c.church_id = ?
+
+      INNER JOIN class_students cs
+        ON cs.class_id = c.id
+
+      INNER JOIN students s
+        ON s.id = cs.student_id
+
+      WHERE ctc.catechist_id = ?
+
+      ORDER BY c.id, s.name
+      `,
+      [churchId, catechistId],
+    );
+
+    console.log("👨‍🎓 HỌC SINH CỦA GIÁO VIÊN:");
+
+    console.table(assignedStudents);
+
+    // =====================================================
+    // 5. SQL RESULTS
     // =====================================================
 
     let sql = `
@@ -128,10 +214,6 @@ const getResults = async (req, res) => {
 
     const params = [catechistId, churchId];
 
-    // =====================================================
-    // NẾU CHỌN MỘT LỚP
-    // =====================================================
-
     if (class_id) {
       sql += `
         AND c.id = ?
@@ -153,14 +235,40 @@ const getResults = async (req, res) => {
         s.name ASC
     `;
 
+    // =====================================================
+    // 6. LOG SQL
+    // =====================================================
+
+    console.log("\n================ SQL =================");
+
+    console.log(sql);
+
+    console.log("\n================ PARAMS =================");
+
+    console.log(params);
+
+    // =====================================================
+    // 7. CHẠY SQL
+    // =====================================================
+
     const [results] = await db.query(sql, params);
+
+    console.log("\n================ RESULT =================");
+
+    console.log("📊 Tổng số dòng:", results.length);
+
+    console.table(results);
+
+    console.log("====================================================");
+    console.log("✅ GET RESULTS DONE");
+    console.log("====================================================\n");
 
     return res.status(200).json({
       success: true,
       data: results,
     });
   } catch (error) {
-    console.error("GET RESULTS ERROR:", error);
+    console.error("❌ GET RESULTS ERROR:", error);
 
     return res.status(500).json({
       success: false,

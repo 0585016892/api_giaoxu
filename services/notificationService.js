@@ -18,29 +18,51 @@ const VALID_TYPES = [
 const VALID_PRIORITIES = ["low", "normal", "high", "urgent"];
 
 /**
- * Tạo notification
- *
- * Có 2 cách chọn người nhận:
- *
- * 1. user_ids:
- *    [1, 2, 3]
- *
- * 2. target_role:
- *    "teacher"
- *    "catechist"
- *    "admin"
- *
- * target_role chỉ dùng để tìm user,
- * KHÔNG lưu vào bảng notifications.
+ * ============================================================
+ * HELPER
+ * ============================================================
  */
+
+const normalizeIds = (ids = []) => {
+  if (!Array.isArray(ids)) return [];
+
+  return [
+    ...new Set(
+      ids
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  ];
+};
+
+/**
+ * ============================================================
+ * CREATE NOTIFICATION
+ *
+ * Có thể:
+ *
+ * 1. Gửi cho user cụ thể:
+ *    user_ids: [1, 2, 3]
+ *
+ * 2. Gửi theo role:
+ *    target_role: "teacher"
+ *
+ * 3. Gửi tất cả user trong giáo xứ:
+ *    target_role: "all"
+ *
+ * target_role KHÔNG lưu vào notifications.
+ * Nó chỉ được dùng để tìm người nhận.
+ * ============================================================
+ */
+
 const createNotification = async ({
   church_id,
   type = "system",
   title,
   content = null,
   priority = "normal",
-  related_id = null,
   related_type = null,
+  related_id = null,
   action_url = null,
   created_by = null,
 
@@ -52,11 +74,14 @@ const createNotification = async ({
   let transactionStarted = false;
 
   try {
-    // =========================================================
-    // 1. VALIDATE
-    // =========================================================
+    // ========================================================
+    // VALIDATE
+    // ========================================================
 
-    if (!church_id || Number(church_id) <= 0) {
+    church_id = Number(church_id);
+    created_by = created_by ? Number(created_by) : null;
+
+    if (!Number.isInteger(church_id) || church_id <= 0) {
       throw new Error("church_id không hợp lệ");
     }
 
@@ -69,42 +94,25 @@ const createNotification = async ({
     }
 
     if (!VALID_PRIORITIES.includes(priority)) {
-      throw new Error(`Mức độ ưu tiên không hợp lệ: ${priority}`);
+      throw new Error(`Độ ưu tiên không hợp lệ: ${priority}`);
     }
 
-    // =========================================================
-    // 2. CHUẨN HÓA USER IDS
-    // =========================================================
+    // ========================================================
+    // NORMALIZE USER IDS
+    // ========================================================
 
-    let normalizedUserIds = [];
+    let recipientIds = normalizeIds(user_ids);
 
-    if (Array.isArray(user_ids)) {
-      normalizedUserIds = user_ids
-        .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id) && id > 0);
-    }
-
-    // loại trùng
-    normalizedUserIds = [...new Set(normalizedUserIds)];
-
-    // =========================================================
-    // 3. START TRANSACTION
-    // =========================================================
+    // ========================================================
+    // START TRANSACTION
+    // ========================================================
 
     await connection.beginTransaction();
     transactionStarted = true;
 
-    // =========================================================
-    // 4. XÁC ĐỊNH NGƯỜI NHẬN
-    // =========================================================
-
-    /**
-     * Nếu truyền target_role thì tìm tất cả admin
-     * thuộc church hiện tại và đang active.
-     *
-     * Ví dụ:
-     * target_role = "teacher"
-     */
+    // ========================================================
+    // TÌM USER THEO ROLE
+    // ========================================================
 
     if (target_role) {
       let roleSql = `
@@ -116,7 +124,6 @@ const createNotification = async ({
 
       const roleParams = [church_id];
 
-      // Nếu muốn gửi theo role
       if (target_role !== "all") {
         roleSql += ` AND role = ?`;
         roleParams.push(target_role);
@@ -126,20 +133,24 @@ const createNotification = async ({
 
       const roleUserIds = roleUsers.map((user) => Number(user.id));
 
-      normalizedUserIds = [...new Set([...normalizedUserIds, ...roleUserIds])];
+      recipientIds = [...new Set([...recipientIds, ...roleUserIds])];
     }
 
-    // =========================================================
-    // 5. KIỂM TRA USER CÓ THUỘC CHURCH KHÔNG
-    // =========================================================
+    // ========================================================
+    // PHẢI CÓ NGƯỜI NHẬN
+    // ========================================================
 
-    if (normalizedUserIds.length === 0) {
+    if (recipientIds.length === 0) {
       throw new Error("Không có người nhận thông báo");
     }
 
-    const placeholders = normalizedUserIds.map(() => "?").join(",");
+    // ========================================================
+    // KIỂM TRA USER THUỘC ĐÚNG CHURCH
+    // ========================================================
 
-    const [validUsers] = await connection.query(
+    const placeholders = recipientIds.map(() => "?").join(",");
+
+    const [users] = await connection.query(
       `
       SELECT id
       FROM admins
@@ -147,35 +158,35 @@ const createNotification = async ({
         AND church_id = ?
         AND is_active = 1
       `,
-      [...normalizedUserIds, church_id],
+      [...recipientIds, church_id],
     );
 
-    const validUserIds = validUsers.map((user) => Number(user.id));
+    const validRecipientIds = users.map((user) => Number(user.id));
 
-    if (validUserIds.length === 0) {
+    if (validRecipientIds.length === 0) {
       throw new Error("Không tìm thấy người nhận hợp lệ");
     }
 
-    // =========================================================
-    // 6. INSERT NOTIFICATION
-    // =========================================================
+    // ========================================================
+    // INSERT NOTIFICATION
+    // ========================================================
 
     const [notificationResult] = await connection.query(
       `
-      INSERT INTO notifications
-      (
-        church_id,
-        type,
-        title,
-        content,
-        priority,
-        related_type,
-        related_id,
-        action_url,
-        created_by
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
+        INSERT INTO notifications
+        (
+          church_id,
+          type,
+          title,
+          content,
+          priority,
+          related_type,
+          related_id,
+          action_url,
+          created_by
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
       [
         church_id,
         type,
@@ -185,51 +196,55 @@ const createNotification = async ({
         related_type,
         related_id,
         action_url,
-        created_by || null,
+        created_by,
       ],
     );
 
     const notificationId = notificationResult.insertId;
 
-    // =========================================================
-    // 7. INSERT NOTIFICATION USERS
-    // =========================================================
+    // ========================================================
+    // INSERT NOTIFICATION USERS
+    // ========================================================
 
-    const notificationUserValues = validUserIds.map((userId) => [
+    const values = validRecipientIds.map((userId) => [
       notificationId,
       userId,
+      0,
+      null,
+      0,
+      null,
     ]);
 
-    if (notificationUserValues.length > 0) {
-      await connection.query(
-        `
-        INSERT INTO notification_users
-        (
-          notification_id,
-          user_id,
-          is_read,
-          is_deleted
-        )
-        VALUES ?
-        `,
-        [notificationUserValues],
-      );
-    }
+    await connection.query(
+      `
+      INSERT INTO notification_users
+      (
+        notification_id,
+        user_id,
+        is_read,
+        read_at,
+        is_deleted,
+        deleted_at
+      )
+      VALUES ?
+      `,
+      [values],
+    );
 
-    // =========================================================
-    // 8. COMMIT
-    // =========================================================
+    // ========================================================
+    // COMMIT
+    // ========================================================
 
     await connection.commit();
     transactionStarted = false;
 
-    // =========================================================
-    // 9. OBJECT RESPONSE
-    // =========================================================
+    // ========================================================
+    // DATA TRẢ VỀ
+    // ========================================================
 
     const notificationData = {
       id: notificationId,
-      church_id: Number(church_id),
+      church_id,
       type,
       title: String(title).trim(),
       content,
@@ -237,50 +252,36 @@ const createNotification = async ({
       related_type,
       related_id,
       action_url,
-      created_by: created_by !== null ? Number(created_by) : null,
+      created_by,
       created_at: new Date(),
+
+      is_read: 0,
+      is_deleted: 0,
     };
 
-    // =========================================================
-    // 10. SOCKET.IO
-    // =========================================================
+    // ========================================================
+    // SOCKET.IO
+    // ========================================================
 
     try {
       const io = getIO();
 
-      /**
-       * Không emit io.emit()
-       *
-       * Vì io.emit() sẽ gửi thông báo cho TẤT CẢ user
-       * của toàn hệ thống.
-       *
-       * Chỉ gửi tới đúng người nhận.
-       */
-
-      validUserIds.forEach((userId) => {
+      validRecipientIds.forEach((userId) => {
         io.to(`user:${userId}`).emit("notification", notificationData);
       });
 
       console.log(
-        `📢 Notification #${notificationId} emitted to users:`,
-        validUserIds,
+        `📢 Notification #${notificationId} sent to:`,
+        validRecipientIds,
       );
     } catch (socketError) {
-      /**
-       * Socket lỗi không được làm fail transaction
-       * vì DB đã commit thành công.
-       */
       console.error("⚠️ Socket notification error:", socketError);
     }
 
-    // =========================================================
-    // 11. RETURN
-    // =========================================================
-
     return {
       ...notificationData,
-      recipient_count: validUserIds.length,
-      user_ids: validUserIds,
+      recipient_count: validRecipientIds.length,
+      user_ids: validRecipientIds,
     };
   } catch (error) {
     if (transactionStarted) {
@@ -291,7 +292,7 @@ const createNotification = async ({
       }
     }
 
-    console.error("❌ createNotification error:", error);
+    console.error("❌ createNotification:", error);
 
     throw error;
   } finally {
@@ -300,10 +301,11 @@ const createNotification = async ({
 };
 
 /**
- * =========================================================
- * LẤY THÔNG BÁO CỦA USER
- * =========================================================
+ * ============================================================
+ * GET MY NOTIFICATIONS
+ * ============================================================
  */
+
 const getMyNotifications = async ({
   user_id,
   church_id,
@@ -311,9 +313,13 @@ const getMyNotifications = async ({
   limit = 20,
   unread_only = false,
 }) => {
-  const offset = (Number(page) - 1) * Number(limit);
+  user_id = Number(user_id);
+  church_id = Number(church_id);
 
-  const params = [user_id, church_id];
+  page = Math.max(Number(page) || 1, 1);
+  limit = Math.min(Math.max(Number(limit) || 20, 1), 100);
+
+  const offset = (page - 1) * limit;
 
   let where = `
     WHERE nu.user_id = ?
@@ -321,7 +327,14 @@ const getMyNotifications = async ({
       AND n.church_id = ?
   `;
 
-  if (unread_only) {
+  const params = [user_id, church_id];
+
+  if (
+    unread_only === true ||
+    unread_only === "true" ||
+    unread_only === 1 ||
+    unread_only === "1"
+  ) {
     where += `
       AND nu.is_read = 0
     `;
@@ -344,9 +357,7 @@ const getMyNotifications = async ({
       n.updated_at,
 
       nu.is_read,
-      nu.read_at,
-      nu.is_deleted,
-      nu.deleted_at
+      nu.read_at
 
     FROM notification_users nu
 
@@ -359,10 +370,10 @@ const getMyNotifications = async ({
 
     LIMIT ? OFFSET ?
     `,
-    [...params, Number(limit), Number(offset)],
+    [...params, limit, offset],
   );
 
-  const [[countResult]] = await db.query(
+  const [[count]] = await db.query(
     `
     SELECT COUNT(*) AS total
 
@@ -376,22 +387,69 @@ const getMyNotifications = async ({
     params,
   );
 
+  const total = Number(count.total || 0);
+
   return {
     data: rows,
     pagination: {
-      page: Number(page),
-      limit: Number(limit),
-      total: Number(countResult.total),
-      totalPages: Math.ceil(Number(countResult.total) / Number(limit)),
+      page,
+      limit,
+      total,
+      totalPages: total > 0 ? Math.ceil(total / limit) : 0,
     },
   };
 };
 
 /**
- * =========================================================
- * LẤY 1 THÔNG BÁO
- * =========================================================
+ * ============================================================
+ * GET TODAY NOTIFICATIONS
+ * ============================================================
  */
+
+const getMyNotificationsToday = async ({ user_id, church_id }) => {
+  const [rows] = await db.query(
+    `
+    SELECT
+      n.id,
+      n.church_id,
+      n.type,
+      n.title,
+      n.content,
+      n.priority,
+      n.related_type,
+      n.related_id,
+      n.action_url,
+      n.created_by,
+      n.created_at,
+      n.updated_at,
+
+      nu.is_read,
+      nu.read_at
+
+    FROM notification_users nu
+
+    INNER JOIN notifications n
+      ON n.id = nu.notification_id
+
+    WHERE nu.user_id = ?
+      AND nu.is_deleted = 0
+      AND n.church_id = ?
+      AND DATE(n.created_at) = CURDATE()
+
+    ORDER BY n.created_at DESC
+    `,
+    [Number(user_id), Number(church_id)],
+  );
+
+  return rows;
+};
+
+/**
+ * ============================================================
+ * GET ONE
+ * ============================================================
+ */
+
 const getMyNotificationById = async ({
   notification_id,
   user_id,
@@ -428,17 +486,18 @@ const getMyNotificationById = async ({
 
     LIMIT 1
     `,
-    [notification_id, user_id, church_id],
+    [Number(notification_id), Number(user_id), Number(church_id)],
   );
 
   return rows[0] || null;
 };
 
 /**
- * =========================================================
- * ĐÁNH DẤU ĐÃ ĐỌC
- * =========================================================
+ * ============================================================
+ * MARK ONE AS READ
+ * ============================================================
  */
+
 const markAsRead = async ({ notification_id, user_id, church_id }) => {
   const [result] = await db.query(
     `
@@ -456,17 +515,18 @@ const markAsRead = async ({ notification_id, user_id, church_id }) => {
       AND nu.is_deleted = 0
       AND n.church_id = ?
     `,
-    [notification_id, user_id, church_id],
+    [Number(notification_id), Number(user_id), Number(church_id)],
   );
 
   return result.affectedRows > 0;
 };
 
 /**
- * =========================================================
- * ĐÁNH DẤU TẤT CẢ ĐÃ ĐỌC
- * =========================================================
+ * ============================================================
+ * MARK ALL AS READ
+ * ============================================================
  */
+
 const markAllAsRead = async ({ user_id, church_id }) => {
   const [result] = await db.query(
     `
@@ -484,17 +544,21 @@ const markAllAsRead = async ({ user_id, church_id }) => {
       AND nu.is_deleted = 0
       AND n.church_id = ?
     `,
-    [user_id, church_id],
+    [Number(user_id), Number(church_id)],
   );
 
   return result.affectedRows;
 };
 
 /**
- * =========================================================
- * XÓA 1 THÔNG BÁO CỦA USER
- * =========================================================
+ * ============================================================
+ * DELETE ONE
+ *
+ * Chỉ xóa với user hiện tại.
+ * Không xóa notification gốc.
+ * ============================================================
  */
+
 const deleteMyNotification = async ({
   notification_id,
   user_id,
@@ -516,17 +580,18 @@ const deleteMyNotification = async ({
       AND nu.is_deleted = 0
       AND n.church_id = ?
     `,
-    [notification_id, user_id, church_id],
+    [Number(notification_id), Number(user_id), Number(church_id)],
   );
 
   return result.affectedRows > 0;
 };
 
 /**
- * =========================================================
- * XÓA TẤT CẢ THÔNG BÁO CỦA USER
- * =========================================================
+ * ============================================================
+ * DELETE ALL MY NOTIFICATIONS
+ * ============================================================
  */
+
 const deleteAllMyNotifications = async ({ user_id, church_id }) => {
   const [result] = await db.query(
     `
@@ -543,35 +608,42 @@ const deleteAllMyNotifications = async ({ user_id, church_id }) => {
       AND nu.is_deleted = 0
       AND n.church_id = ?
     `,
-    [user_id, church_id],
+    [Number(user_id), Number(church_id)],
   );
 
   return result.affectedRows;
 };
 
 /**
- * =========================================================
- * THỐNG KÊ
- * =========================================================
+ * ============================================================
+ * STATS
+ * ============================================================
  */
+
 const getMyNotificationStats = async ({ user_id, church_id }) => {
   const [[stats]] = await db.query(
     `
     SELECT
       COUNT(*) AS total,
 
-      SUM(
-        CASE
-          WHEN nu.is_read = 0 THEN 1
-          ELSE 0
-        END
+      COALESCE(
+        SUM(
+          CASE
+            WHEN nu.is_read = 0 THEN 1
+            ELSE 0
+          END
+        ),
+        0
       ) AS unread,
 
-      SUM(
-        CASE
-          WHEN nu.is_read = 1 THEN 1
-          ELSE 0
-        END
+      COALESCE(
+        SUM(
+          CASE
+            WHEN nu.is_read = 1 THEN 1
+            ELSE 0
+          END
+        ),
+        0
       ) AS read_count
 
     FROM notification_users nu
@@ -583,7 +655,7 @@ const getMyNotificationStats = async ({ user_id, church_id }) => {
       AND nu.is_deleted = 0
       AND n.church_id = ?
     `,
-    [user_id, church_id],
+    [Number(user_id), Number(church_id)],
   );
 
   return {
@@ -594,10 +666,11 @@ const getMyNotificationStats = async ({ user_id, church_id }) => {
 };
 
 /**
- * =========================================================
+ * ============================================================
  * UNREAD COUNT
- * =========================================================
+ * ============================================================
  */
+
 const getUnreadCount = async ({ user_id, church_id }) => {
   const [[result]] = await db.query(
     `
@@ -613,7 +686,7 @@ const getUnreadCount = async ({ user_id, church_id }) => {
       AND nu.is_deleted = 0
       AND n.church_id = ?
     `,
-    [user_id, church_id],
+    [Number(user_id), Number(church_id)],
   );
 
   return Number(result.unread || 0);
@@ -623,6 +696,7 @@ module.exports = {
   createNotification,
 
   getMyNotifications,
+  getMyNotificationsToday,
   getMyNotificationById,
 
   markAsRead,

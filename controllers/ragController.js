@@ -1,6 +1,6 @@
 const { syncTable } = require("../services/syncService");
 const { trainEmbeddings } = require("../services/trainEmbeddingService");
-const { createNotification } = require("../services/notification.service");
+const { createNotification } = require("../services/notificationService");
 
 // ========================================
 // 1. ĐỒNG BỘ DỮ LIỆU RAG (SYNC DATA)

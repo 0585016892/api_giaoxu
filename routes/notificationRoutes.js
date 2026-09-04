@@ -2,22 +2,55 @@ const express = require("express");
 
 const router = express.Router();
 
-const { verifyToken } = require("../middleware/authMiddleware");
 const notificationController = require("../controllers/notificationController");
-router.get("/today", notificationController.getNotificationsToDay);
+
+// ============================================================
+// AUTH MIDDLEWARE
+// ============================================================
+
+const { verifyToken } = require("../middleware/authMiddleware");
+
+// ============================================================
+// NOTIFICATION ROUTES
+// ============================================================
+
+// Danh sách thông báo
+router.get("/", verifyToken, notificationController.getNotifications);
+
+// Thông báo hôm nay
+router.get("/today", verifyToken, notificationController.getNotificationsToday);
+
+// Thống kê
+router.get("/stats", verifyToken, notificationController.getNotificationStats);
+
+// Số thông báo chưa đọc
+router.get("/unread-count", verifyToken, notificationController.getUnreadCount);
+
+// Đánh dấu tất cả đã đọc
 router.put("/read-all", verifyToken, notificationController.markAllAsRead);
 
-router.post("/", notificationController.createNotification);
+// Xóa tất cả thông báo của user hiện tại
+router.delete(
+  "/my/all",
+  verifyToken,
+  notificationController.deleteAllNotifications,
+);
 
-router.get("/", notificationController.getNotifications);
+// Tạo notification
+router.post("/", verifyToken, notificationController.createNotification);
 
-router.get("/stats", notificationController.getNotificationStats);
+// ============================================================
+// ROUTES CÓ :id
+// Phải đặt SAU các route đặc biệt ở trên.
+// ============================================================
 
-router.get("/:id", notificationController.getNotificationById);
+// Chi tiết notification
+router.get("/:id", verifyToken, notificationController.getNotificationById);
 
-router.put("/:id/read", notificationController.markAsRead);
-// ĐẶT TRƯỚC: Route xóa tất cả
-router.delete("/delete-all", notificationController.deleteAllNotifications);
+// Đánh dấu một notification đã đọc
+router.put("/:id/read", verifyToken, notificationController.markAsRead);
 
-router.delete("/:id", notificationController.deleteNotification);
+// Xóa một notification của user hiện tại
+router.delete("/:id", verifyToken, notificationController.deleteNotification);
+
 module.exports = router;

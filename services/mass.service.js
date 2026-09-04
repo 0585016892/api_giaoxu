@@ -1,6 +1,6 @@
 const db = require("../config/db");
 
-const { createNotification } = require("./notification.service");
+const { createNotification } = require("./notificationService");
 
 let notifiedToday = false;
 

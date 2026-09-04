@@ -1,252 +1,434 @@
-const db = require("../config/db");
+const notificationService = require("../services/notificationService");
 
-exports.getNotificationsToDay = async (req, res) => {
+/**
+ * ============================================================
+ * HELPERS
+ * ============================================================
+ */
+
+const getChurchId = (req) => {
+  return Number(req.user?.church_id || req.user?.parish_id || 0);
+};
+
+const getUserId = (req) => {
+  return Number(req.user?.id || 0);
+};
+
+const isValidId = (id) => {
+  return Number.isInteger(Number(id)) && Number(id) > 0;
+};
+
+/**
+ * ============================================================
+ * GET /api/notifications
+ * ============================================================
+ */
+
+exports.getNotifications = async (req, res) => {
   try {
-    const [rows] = await db.query(`
-      SELECT *
-      FROM notifications
-      WHERE DATE(created_at) = CURDATE()
-      ORDER BY created_at DESC
-    `);
+    const userId = getUserId(req);
+    const churchId = getChurchId(req);
 
-    res.json(rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
+    if (!userId || !churchId) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được người dùng hoặc giáo xứ",
+      });
+    }
+
+    const { page = 1, limit = 20, unread_only = false } = req.query;
+
+    const result = await notificationService.getMyNotifications({
+      user_id: userId,
+      church_id: churchId,
+      page,
+      limit,
+      unread_only,
+    });
+
+    return res.json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    console.error("GET NOTIFICATIONS ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Không thể tải thông báo",
+    });
   }
 };
+
+/**
+ * ============================================================
+ * GET /api/notifications/today
+ * ============================================================
+ */
+
+exports.getNotificationsToday = async (req, res) => {
+  try {
+    const userId = getUserId(req);
+    const churchId = getChurchId(req);
+
+    if (!userId || !churchId) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được người dùng hoặc giáo xứ",
+      });
+    }
+
+    const data = await notificationService.getMyNotificationsToday({
+      user_id: userId,
+      church_id: churchId,
+    });
+
+    return res.json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    console.error("GET TODAY NOTIFICATIONS ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Không thể tải thông báo hôm nay",
+    });
+  }
+};
+
+/**
+ * ============================================================
+ * GET /api/notifications/:id
+ * ============================================================
+ */
+
+exports.getNotificationById = async (req, res) => {
+  try {
+    const notificationId = Number(req.params.id);
+
+    const userId = getUserId(req);
+    const churchId = getChurchId(req);
+
+    if (!isValidId(notificationId)) {
+      return res.status(400).json({
+        success: false,
+        message: "ID thông báo không hợp lệ",
+      });
+    }
+
+    const data = await notificationService.getMyNotificationById({
+      notification_id: notificationId,
+      user_id: userId,
+      church_id: churchId,
+    });
+
+    if (!data) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy thông báo",
+      });
+    }
+
+    return res.json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    console.error("GET NOTIFICATION DETAIL ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Không thể tải thông báo",
+    });
+  }
+};
+
+/**
+ * ============================================================
+ * POST /api/notifications
+ * ============================================================
+ */
+
+exports.createNotification = async (req, res) => {
+  try {
+    const churchId = getChurchId(req);
+    const createdBy = getUserId(req);
+
+    if (!churchId || !createdBy) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được người dùng hoặc giáo xứ",
+      });
+    }
+
+    const {
+      type = "system",
+      title,
+      content = null,
+      priority = "normal",
+      related_type = null,
+      related_id = null,
+      action_url = null,
+
+      user_ids = [],
+      target_role = null,
+    } = req.body;
+
+    if (!Array.isArray(user_ids) && !target_role) {
+      return res.status(400).json({
+        success: false,
+        message: "Phải cung cấp user_ids hoặc target_role",
+      });
+    }
+
+    const data = await notificationService.createNotification({
+      church_id: churchId,
+
+      type,
+      title,
+      content,
+      priority,
+
+      related_type,
+      related_id,
+      action_url,
+
+      created_by: createdBy,
+
+      user_ids,
+      target_role,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Tạo thông báo thành công",
+      data,
+    });
+  } catch (error) {
+    console.error("CREATE NOTIFICATION ERROR:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Không thể tạo thông báo",
+    });
+  }
+};
+
+/**
+ * ============================================================
+ * PUT /api/notifications/:id/read
+ * ============================================================
+ */
+
+exports.markAsRead = async (req, res) => {
+  try {
+    const notificationId = Number(req.params.id);
+
+    const userId = getUserId(req);
+    const churchId = getChurchId(req);
+
+    if (!isValidId(notificationId)) {
+      return res.status(400).json({
+        success: false,
+        message: "ID thông báo không hợp lệ",
+      });
+    }
+
+    const updated = await notificationService.markAsRead({
+      notification_id: notificationId,
+      user_id: userId,
+      church_id: churchId,
+    });
+
+    if (!updated) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy thông báo",
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "Đã đánh dấu thông báo là đã đọc",
+    });
+  } catch (error) {
+    console.error("MARK NOTIFICATION READ ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Không thể cập nhật thông báo",
+    });
+  }
+};
+
+/**
+ * ============================================================
+ * PUT /api/notifications/read-all
+ * ============================================================
+ */
+
 exports.markAllAsRead = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = getUserId(req);
+    const churchId = getChurchId(req);
 
-    await db.query(
-      `UPDATE notifications
-       SET is_read = 1
-       WHERE is_read = 0`,
-      [userId],
-    );
+    const affectedRows = await notificationService.markAllAsRead({
+      user_id: userId,
+      church_id: churchId,
+    });
 
     return res.json({
       success: true,
       message: "Đã đánh dấu tất cả thông báo là đã đọc",
+      affectedRows,
     });
-  } catch (err) {
-    console.error("MARK ALL READ ERROR:", err);
+  } catch (error) {
+    console.error("MARK ALL NOTIFICATIONS READ ERROR:", error);
+
     return res.status(500).json({
       success: false,
-      message: err.message,
+      message: error.message || "Không thể cập nhật thông báo",
     });
   }
 };
-exports.createNotification = async (req, res) => {
+
+/**
+ * ============================================================
+ * DELETE /api/notifications/:id
+ * ============================================================
+ */
+
+exports.deleteNotification = async (req, res) => {
   try {
-    const {
-      type,
-      title,
-      content,
-      target_role,
-      created_by,
-      related_type,
-      related_id,
-    } = req.body;
+    const notificationId = Number(req.params.id);
 
-    const [result] = await db.query(
-      `
-      INSERT INTO notifications (
-        type,
-        title,
-        content,
-        target_role,
-        created_by,
-        related_type,
-        related_id
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      `,
-      [type, title, content, target_role, created_by, related_type, related_id],
-    );
+    const userId = getUserId(req);
+    const churchId = getChurchId(req);
 
-    res.json({
-      success: true,
-      id: result.insertId,
-    });
-  } catch (err) {
-    console.log(err);
-
-    res.status(500).json({
-      success: false,
-    });
-  }
-};
-exports.getNotifications = async (req, res) => {
-  try {
-    const { role } = req.query;
-
-    let query = `
-      SELECT *
-      FROM notifications
-    `;
-
-    const params = [];
-
-    if (role) {
-      query += `
-        WHERE target_role = ?
-      `;
-
-      params.push(role);
-    }
-
-    query += `
-      ORDER BY created_at DESC
-    `;
-
-    const [rows] = await db.query(query, params);
-
-    res.json({
-      success: true,
-      total: rows.length,
-      data: rows,
-    });
-  } catch (err) {
-    console.log(err);
-
-    res.status(500).json({
-      success: false,
-    });
-  }
-};
-exports.getNotificationById = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const [rows] = await db.query(
-      `
-      SELECT *
-      FROM notifications
-      WHERE id = ?
-      `,
-      [id],
-    );
-
-    if (!rows.length) {
-      return res.status(404).json({
+    if (!isValidId(notificationId)) {
+      return res.status(400).json({
         success: false,
+        message: "ID thông báo không hợp lệ",
       });
     }
 
-    res.json({
-      success: true,
-      data: rows[0],
+    const deleted = await notificationService.deleteMyNotification({
+      notification_id: notificationId,
+      user_id: userId,
+      church_id: churchId,
     });
-  } catch (err) {
-    console.log(err);
 
-    res.status(500).json({
+    if (!deleted) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy thông báo",
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "Đã xóa thông báo",
+    });
+  } catch (error) {
+    console.error("DELETE NOTIFICATION ERROR:", error);
+
+    return res.status(500).json({
       success: false,
+      message: error.message || "Không thể xóa thông báo",
     });
   }
 };
-exports.markAsRead = async (req, res) => {
-  try {
-    const { id } = req.params;
 
-    await db.query(
-      `
-      UPDATE notifications
-      SET is_read = 1
-      WHERE id = ?
-      `,
-      [id],
-    );
+/**
+ * ============================================================
+ * DELETE /api/notifications/my/all
+ * ============================================================
+ */
 
-    res.json({
-      success: true,
-    });
-  } catch (err) {
-    console.log(err);
-
-    res.status(500).json({
-      success: false,
-    });
-  }
-};
-exports.deleteNotification = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    await db.query(
-      `
-      DELETE
-      FROM notifications
-      WHERE id = ?
-      `,
-      [id],
-    );
-
-    res.json({
-      success: true,
-    });
-  } catch (err) {
-    console.log(err);
-
-    res.status(500).json({
-      success: false,
-    });
-  }
-};
 exports.deleteAllNotifications = async (req, res) => {
   try {
-    await db.query(`
-      DELETE
-      FROM notifications
-    `);
+    const userId = getUserId(req);
+    const churchId = getChurchId(req);
 
-    res.json({
-      success: true,
-      message: "Đã xóa toàn bộ thông báo thành công!",
+    const affectedRows = await notificationService.deleteAllMyNotifications({
+      user_id: userId,
+      church_id: churchId,
     });
-  } catch (err) {
-    console.log(err);
 
-    res.status(500).json({
+    return res.json({
+      success: true,
+      message: "Đã xóa tất cả thông báo",
+      affectedRows,
+    });
+  } catch (error) {
+    console.error("DELETE ALL NOTIFICATIONS ERROR:", error);
+
+    return res.status(500).json({
       success: false,
-      message: "Lỗi hệ thống, không thể xóa toàn bộ thông báo!",
+      message: error.message || "Không thể xóa thông báo",
     });
   }
 };
+
+/**
+ * ============================================================
+ * GET /api/notifications/stats
+ * ============================================================
+ */
+
 exports.getNotificationStats = async (req, res) => {
   try {
-    const [total] = await db.query(`
-      SELECT COUNT(*) total
-      FROM notifications
-    `);
+    const userId = getUserId(req);
+    const churchId = getChurchId(req);
 
-    const [read] = await db.query(`
-      SELECT COUNT(*) total
-      FROM notifications
-      WHERE is_read = 1
-    `);
+    const data = await notificationService.getMyNotificationStats({
+      user_id: userId,
+      church_id: churchId,
+    });
 
-    const [unread] = await db.query(`
-      SELECT COUNT(*) total
-      FROM notifications
-      WHERE is_read = 0
-    `);
+    return res.json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    console.error("GET NOTIFICATION STATS ERROR:", error);
 
-    res.json({
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Không thể lấy thống kê thông báo",
+    });
+  }
+};
+
+/**
+ * ============================================================
+ * GET /api/notifications/unread-count
+ * ============================================================
+ */
+
+exports.getUnreadCount = async (req, res) => {
+  try {
+    const userId = getUserId(req);
+    const churchId = getChurchId(req);
+
+    const unread = await notificationService.getUnreadCount({
+      user_id: userId,
+      church_id: churchId,
+    });
+
+    return res.json({
       success: true,
       data: {
-        total: total[0].total,
-        read: read[0].total,
-        unread: unread[0].total,
+        unread,
       },
     });
-  } catch (err) {
-    console.log(err);
+  } catch (error) {
+    console.error("GET UNREAD COUNT ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
+      message: error.message || "Không thể lấy số thông báo chưa đọc",
     });
   }
 };

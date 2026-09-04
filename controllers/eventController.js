@@ -3,7 +3,7 @@ const slugify = require("slugify");
 const fs = require("fs");
 const path = require("path");
 const { writeLog } = require("../utils/activityLogger");
-const { createNotification } = require("../services/notification.service");
+const { createNotification } = require("../services/notificationService");
 // ================= GET WITH PAGINATION =================
 exports.getEvents = async (req, res) => {
   try {

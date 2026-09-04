@@ -1,6 +1,6 @@
 const db = require("../config/db");
 const { writeLog } = require("../utils/activityLogger");
-const { createNotification } = require("../services/notification.service");
+const { createNotification } = require("../services/notificationService");
 const fs = require("fs");
 const path = require("path");
 

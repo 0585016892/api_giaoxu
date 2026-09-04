@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const db = require("../config/db");
 const { writeLog } = require("../utils/activityLogger");
-const { createNotification } = require("../services/notification.service");
+const { createNotification } = require("../services/notificationService");
 
 // ==========================================
 // 1. GET ALL (Chỉ lấy danh sách CHỦ HỘ hiển thị bảng chính)

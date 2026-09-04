@@ -31,14 +31,54 @@ const validateChurch = (req, res) => {
 //
 // Chỉ lấy dữ liệu của giáo xứ đang đăng nhập
 // =========================================================
-
 const getResults = async (req, res) => {
   try {
     const churchId = validateChurch(req, res);
-
     if (!churchId) return;
 
     const { class_id } = req.query;
+
+    // =====================================================
+    // LẤY GIÁO LÝ VIÊN ĐANG ĐĂNG NHẬP
+    // username = catechist_code và không thay đổi
+    // =====================================================
+
+    const username = req.user?.username;
+
+    if (!username) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được tài khoản giáo viên",
+      });
+    }
+
+    const [catechists] = await db.query(
+      `
+      SELECT
+        id,
+        catechist_code,
+        name
+      FROM catechists
+      WHERE catechist_code = ?
+        AND church_id = ?
+      LIMIT 1
+      `,
+      [username, churchId],
+    );
+
+    if (!catechists.length) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được liên kết với giáo lý viên",
+      });
+    }
+
+    const catechistId = catechists[0].id;
+
+    // =====================================================
+    // LẤY KẾT QUẢ
+    // CHỈ NHỮNG LỚP GIÁO VIÊN ĐANG QUẢN LÝ
+    // =====================================================
 
     let sql = `
       SELECT
@@ -79,13 +119,17 @@ const getResults = async (req, res) => {
         ON c.id = cs.class_id
        AND c.church_id = r.church_id
 
+      INNER JOIN catechist_classes ctc
+        ON ctc.class_id = c.id
+       AND ctc.catechist_id = ?
+
       WHERE r.church_id = ?
     `;
 
-    const params = [churchId];
+    const params = [catechistId, churchId];
 
     // =====================================================
-    // FILTER CLASS
+    // NẾU CHỌN MỘT LỚP
     // =====================================================
 
     if (class_id) {
@@ -111,14 +155,14 @@ const getResults = async (req, res) => {
 
     const [results] = await db.query(sql, params);
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       data: results,
     });
   } catch (error) {
     console.error("GET RESULTS ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Không thể lấy danh sách bảng điểm",
       error: error.message,

@@ -2,6 +2,8 @@ const express = require("express");
 
 const router = express.Router();
 
+console.log("🔥 CLASS ROUTES LOADED");
+
 const {
   getClasses,
   getClassById,
@@ -19,10 +21,22 @@ const { verifyToken } = require("../middleware/authMiddleware");
 
 // Danh sách lớp
 router.get("/", verifyToken, getClasses);
-router.get("/teacher-class", verifyToken, getClassesByTeacherId);
+
+// Lớp của giáo lý viên đang đăng nhập
+router.get(
+  "/teacher-class",
+  verifyToken,
+  (req, res, next) => {
+    console.log("🔥 HIT GET /api/classes/teacher-class");
+    console.log("USER:", req.user);
+    next();
+  },
+  getClassesByTeacherId,
+);
 
 // Chi tiết lớp
 router.get("/:id", verifyToken, getClassById);
+
 // Tạo lớp
 router.post("/", verifyToken, createClass);
 

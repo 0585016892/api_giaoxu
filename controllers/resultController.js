@@ -57,7 +57,7 @@ const getResults = async (req, res) => {
       SELECT
         id,
         catechist_code,
-        name
+        full_name
       FROM catechists
       WHERE catechist_code = ?
         AND church_id = ?

@@ -1257,3 +1257,130 @@ exports.assignClass = async (req, res) => {
     });
   }
 };
+exports.removeClass = async (req, res) => {
+  try {
+    const churchId = getChurchId(req);
+
+    const { catechist_id, class_id } = req.body;
+
+    console.log("========== REMOVE CATECHIST FROM CLASS ==========");
+    console.log("👤 CATECHIST ID:", catechist_id);
+    console.log("🏫 CLASS ID:", class_id);
+    console.log("⛪ CHURCH ID:", churchId);
+
+    // =====================================================
+    // KIỂM TRA GIÁO XỨ
+    // =====================================================
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được gán giáo xứ",
+      });
+    }
+
+    // =====================================================
+    // VALIDATE INPUT
+    // =====================================================
+    if (!catechist_id || !class_id) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu catechist_id hoặc class_id",
+      });
+    }
+
+    // =====================================================
+    // KIỂM TRA GIÁO LÝ VIÊN THUỘC GIÁO XỨ
+    // =====================================================
+    const [catechists] = await db.query(
+      `
+      SELECT id
+      FROM catechists
+      WHERE id = ?
+        AND church_id = ?
+      LIMIT 1
+      `,
+      [catechist_id, churchId],
+    );
+
+    if (catechists.length === 0) {
+      return res.status(403).json({
+        success: false,
+        message: "Giáo lý viên không thuộc giáo xứ hiện tại",
+      });
+    }
+
+    // =====================================================
+    // KIỂM TRA LỚP THUỘC GIÁO XỨ
+    // =====================================================
+    const [classes] = await db.query(
+      `
+      SELECT id, name
+      FROM classes
+      WHERE id = ?
+        AND church_id = ?
+      LIMIT 1
+      `,
+      [class_id, churchId],
+    );
+
+    if (classes.length === 0) {
+      return res.status(403).json({
+        success: false,
+        message: "Lớp học không thuộc giáo xứ hiện tại",
+      });
+    }
+
+    // =====================================================
+    // KIỂM TRA ĐANG ĐƯỢC PHÂN VÀO LỚP
+    // =====================================================
+    const [assignment] = await db.query(
+      `
+      SELECT catechist_id, class_id
+      FROM catechist_classes
+      WHERE catechist_id = ?
+        AND class_id = ?
+      LIMIT 1
+      `,
+      [catechist_id, class_id],
+    );
+
+    if (assignment.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Giáo lý viên chưa được phân vào lớp này",
+      });
+    }
+
+    // =====================================================
+    // XÓA PHÂN CÔNG
+    // =====================================================
+    await db.query(
+      `
+      DELETE FROM catechist_classes
+      WHERE catechist_id = ?
+        AND class_id = ?
+      `,
+      [catechist_id, class_id],
+    );
+
+    console.log("✅ Xóa giáo viên khỏi lớp thành công");
+
+    return res.status(200).json({
+      success: true,
+      message: "Đã xóa giáo lý viên khỏi lớp",
+      data: {
+        catechist_id: Number(catechist_id),
+        class_id: Number(class_id),
+      },
+    });
+  } catch (error) {
+    console.error("❌ REMOVE CATECHIST FROM CLASS ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể xóa giáo lý viên khỏi lớp",
+      errorCode: error.code,
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};

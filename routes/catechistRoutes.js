@@ -37,5 +37,5 @@ router.delete("/:id", catechistController.deleteCatechist);
 // =========================================================
 
 router.post("/assign-class", catechistController.assignClass);
-
+router.delete("/remove-class", catechistController.removeClass);
 module.exports = router;

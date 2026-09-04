@@ -74,34 +74,67 @@ exports.createSlide = async (req, res) => {
 exports.updateSlide = async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, subtitle, link, sort_order, is_active } = req.body;
 
-    let sql =
-      "UPDATE slides SET title=?, subtitle=?, link=?, sort_order=?, is_active=?";
-    let params = [title, subtitle, link, sort_order, is_active];
+    const { title, subtitle, link, sort_order } = req.body;
 
-    let oldImage = null;
+    // =====================================================
+    // LẤY DATA CŨ
+    // =====================================================
 
-    // lấy data cũ để log
-    const [old] = await db.query("SELECT * FROM slides WHERE id=?", [id]);
+    const [old] = await db.query("SELECT * FROM slides WHERE id = ?", [id]);
+
     if (old.length === 0) {
-      return res.status(404).json({ message: "Không tìm thấy slide" });
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy slide",
+      });
     }
 
-    oldImage = old[0].image;
+    const oldSlide = old[0];
+
+    // =====================================================
+    // SQL UPDATE
+    // is_active LUÔN = 1
+    // =====================================================
+
+    let sql = `
+      UPDATE slides 
+      SET 
+        title = ?,
+        subtitle = ?,
+        link = ?,
+        sort_order = ?,
+        is_active = 1
+    `;
+
+    let params = [title, subtitle, link, sort_order];
+
+    // =====================================================
+    // NẾU CÓ ẢNH MỚI
+    // =====================================================
 
     if (req.file) {
       const imagePath = `/uploads/slides/${req.file.filename}`;
-      sql += ", image=?";
+
+      sql += `, image = ?`;
+
       params.push(imagePath);
     }
 
-    sql += " WHERE id=?";
+    sql += ` WHERE id = ?`;
+
     params.push(id);
+
+    // =====================================================
+    // UPDATE DATABASE
+    // =====================================================
 
     await db.query(sql, params);
 
-    // ================= LOG =================
+    // =====================================================
+    // LOG
+    // =====================================================
+
     await writeLog({
       admin_id: req.user?.id,
       action: "UPDATE_SLIDE",
@@ -111,7 +144,10 @@ exports.updateSlide = async (req, res) => {
       ip_address: req.ip,
     });
 
-    // ================= NOTIFICATION =================
+    // =====================================================
+    // NOTIFICATION
+    // =====================================================
+
     await createNotification({
       type: "SLIDE_UPDATE",
       title: "Cập nhật slide",
@@ -121,10 +157,22 @@ exports.updateSlide = async (req, res) => {
       related_id: id,
     });
 
-    res.json({ message: "Cập nhật thành công" });
+    // =====================================================
+    // RESPONSE
+    // =====================================================
+
+    return res.json({
+      success: true,
+      message: "Cập nhật slide thành công",
+    });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Lỗi cập nhật slide" });
+    console.error("UPDATE SLIDE ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi cập nhật slide",
+      error: error.message,
+    });
   }
 };
 // ================= UPDATE STATUS =================

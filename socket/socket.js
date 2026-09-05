@@ -24,9 +24,10 @@ const initSocket = (server) => {
         "https://giaoxudongquan.site",
         "https://www.giaoxudongquan.site",
 
-        "https://ffcf-118-70-186-232.ngrok-free.app",
         "https://giaolyso.site",
         "https://www.giaolyso.site",
+
+        "https://ffcf-118-70-186-232.ngrok-free.app",
       ],
 
       methods: ["GET", "POST"],
@@ -43,86 +44,91 @@ const initSocket = (server) => {
     console.log("🟢 Socket connected:", socket.id);
 
     // ========================================================
-    // NOTIFICATION - USER JOIN ROOM
+    // USER JOIN CHURCH ROOM
     // ========================================================
 
-    /**
-     * Frontend gửi:
-     *
-     * socket.emit("join:user", {
-     *   userId: user.id,
-     *   churchId: user.church_id,
-     * });
-     */
-
     socket.on("join:user", (data = {}) => {
-      const userId = Number(data.userId);
+      try {
+        const userId = Number(data.userId);
 
-      const churchId = Number(data.churchId);
+        const churchId = Number(data.churchId);
 
-      if (!Number.isInteger(userId) || userId <= 0) {
-        console.warn("⚠️ Invalid userId:", data.userId);
+        // ----------------------------------------------------
+        // VALIDATE USER
+        // ----------------------------------------------------
 
-        return;
-      }
+        if (!Number.isInteger(userId) || userId <= 0) {
+          console.warn("⚠️ Invalid userId when join socket:", data.userId);
 
-      // ====================================================
-      // LƯU USER ID VÀO SOCKET
-      // ====================================================
+          return;
+        }
 
-      socket.userId = userId;
-      socket.churchId =
-        Number.isInteger(churchId) && churchId > 0 ? churchId : null;
+        // ----------------------------------------------------
+        // SAVE SOCKET DATA
+        // ----------------------------------------------------
 
-      // ====================================================
-      // JOIN ROOM RIÊNG USER
-      // ====================================================
+        socket.userId = userId;
 
-      socket.join(`user:${userId}`);
+        socket.churchId =
+          Number.isInteger(churchId) && churchId > 0 ? churchId : null;
 
-      console.log(`🔔 User ${userId} joined room user:${userId}`);
+        // ----------------------------------------------------
+        // JOIN USER ROOM
+        // ----------------------------------------------------
 
-      // ====================================================
-      // JOIN ROOM GIÁO XỨ
-      // ====================================================
+        socket.join(`user:${userId}`);
 
-      if (socket.churchId) {
-        socket.join(`church:${socket.churchId}`);
+        console.log(`👤 User ${userId} joined room: user:${userId}`);
 
-        console.log(`⛪ User ${userId} joined room church:${socket.churchId}`);
+        // ----------------------------------------------------
+        // JOIN CHURCH ROOM
+        // ----------------------------------------------------
+
+        if (socket.churchId) {
+          socket.join(`church:${socket.churchId}`);
+
+          console.log(
+            `⛪ User ${userId} joined room: church:${socket.churchId}`,
+          );
+        }
+      } catch (error) {
+        console.error("❌ JOIN USER SOCKET ERROR:", error);
       }
     });
 
     // ========================================================
-    // LEAVE USER ROOM
+    // LEAVE USER / CHURCH ROOM
     // ========================================================
 
     socket.on("leave:user", (data = {}) => {
-      const userId = Number(data.userId);
+      try {
+        const userId = Number(data.userId);
 
-      const churchId = Number(data.churchId);
+        const churchId = Number(data.churchId);
 
-      if (Number.isInteger(userId) && userId > 0) {
-        socket.leave(`user:${userId}`);
+        // ----------------------------------------------------
+        // LEAVE USER ROOM
+        // ----------------------------------------------------
+
+        if (Number.isInteger(userId) && userId > 0) {
+          socket.leave(`user:${userId}`);
+
+          console.log(`👤 User ${userId} left room: user:${userId}`);
+        }
+
+        // ----------------------------------------------------
+        // LEAVE CHURCH ROOM
+        // ----------------------------------------------------
+
+        if (Number.isInteger(churchId) && churchId > 0) {
+          socket.leave(`church:${churchId}`);
+
+          console.log(`⛪ User ${userId} left room: church:${churchId}`);
+        }
+      } catch (error) {
+        console.error("❌ LEAVE USER SOCKET ERROR:", error);
       }
-
-      if (Number.isInteger(churchId) && churchId > 0) {
-        socket.leave(`church:${churchId}`);
-      }
-
-      console.log(`🔕 User ${userId} left notification room`);
     });
-
-    // ========================================================
-    // CHATBOT AI
-    // ========================================================
-
-    /*
-      chatbot sẽ đăng ký ở chatSocket.js
-
-      Không viết chatbot ở đây
-      để tách module.
-    */
 
     // ========================================================
     // HỌC VIÊN BẮT ĐẦU LÀM BÀI
@@ -173,19 +179,25 @@ const initSocket = (server) => {
     // ========================================================
 
     socket.on("disconnect", (reason) => {
-      console.log("🔴 Socket disconnected:", socket.id, reason);
+      console.log("🔴 Socket disconnected:", socket.id, "| Reason:", reason);
 
       // ----------------------------------------------------
       // XÓA HỌC VIÊN ĐANG THI
       // ----------------------------------------------------
 
+      let hasChanged = false;
+
       for (const [examCode, student] of studentsDoingExam.entries()) {
         if (student.socketId === socket.id) {
           studentsDoingExam.delete(examCode);
+
+          hasChanged = true;
         }
       }
 
-      io.emit("students_doing_exam", Array.from(studentsDoingExam.values()));
+      if (hasChanged) {
+        io.emit("students_doing_exam", Array.from(studentsDoingExam.values()));
+      }
     });
   });
 

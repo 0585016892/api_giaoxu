@@ -4,53 +4,72 @@ const router = express.Router();
 
 const notificationController = require("../controllers/notificationController");
 
-// ============================================================
-// AUTH MIDDLEWARE
-// ============================================================
-
 const { verifyToken } = require("../middleware/authMiddleware");
 
 // ============================================================
-// NOTIFICATION ROUTES
+// ALL ROUTES REQUIRE LOGIN
 // ============================================================
 
-// Danh sách thông báo
-router.get("/", verifyToken, notificationController.getNotifications);
-
-// Thông báo hôm nay
-router.get("/today", verifyToken, notificationController.getNotificationsToday);
-
-// Thống kê
-router.get("/stats", verifyToken, notificationController.getNotificationStats);
-
-// Số thông báo chưa đọc
-router.get("/unread-count", verifyToken, notificationController.getUnreadCount);
-
-// Đánh dấu tất cả đã đọc
-router.put("/read-all", verifyToken, notificationController.markAllAsRead);
-
-// Xóa tất cả thông báo của user hiện tại
-router.delete(
-  "/my/all",
-  verifyToken,
-  notificationController.deleteAllNotifications,
-);
-
-// Tạo notification
-router.post("/", verifyToken, notificationController.createNotification);
+router.use(verifyToken);
 
 // ============================================================
-// ROUTES CÓ :id
-// Phải đặt SAU các route đặc biệt ở trên.
+// CREATE
 // ============================================================
 
-// Chi tiết notification
-router.get("/:id", verifyToken, notificationController.getNotificationById);
+router.post("/", notificationController.createNotification);
 
-// Đánh dấu một notification đã đọc
-router.put("/:id/read", verifyToken, notificationController.markAsRead);
+// ============================================================
+// LIST
+// ============================================================
 
-// Xóa một notification của user hiện tại
-router.delete("/:id", verifyToken, notificationController.deleteNotification);
+router.get("/", notificationController.getNotifications);
+
+// ============================================================
+// TODAY
+// ============================================================
+
+router.get("/today", notificationController.getNotificationsToday);
+
+// ============================================================
+// STATS
+// ============================================================
+
+router.get("/stats", notificationController.getNotificationStats);
+
+// ============================================================
+// UNREAD COUNT
+// ============================================================
+
+router.get("/unread-count", notificationController.getUnreadCount);
+
+// ============================================================
+// MARK ALL READ
+// ============================================================
+
+router.put("/read-all", notificationController.markAllAsRead);
+
+// ============================================================
+// DELETE ALL
+// ============================================================
+
+router.delete("/my/all", notificationController.deleteAllNotifications);
+
+// ============================================================
+// DETAIL
+// ============================================================
+
+router.get("/:id", notificationController.getNotificationById);
+
+// ============================================================
+// MARK ONE READ
+// ============================================================
+
+router.put("/:id/read", notificationController.markAsRead);
+
+// ============================================================
+// DELETE ONE
+// ============================================================
+
+router.delete("/:id", notificationController.deleteNotification);
 
 module.exports = router;

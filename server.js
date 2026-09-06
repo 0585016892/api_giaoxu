@@ -102,7 +102,7 @@ const allowedOrigins = [
   "https://www.giaoxudongquan.site",
 
   "https://ffcf-118-70-186-232.ngrok-free.app",
-  "https://quantrigiaoly.vercel.app",
+  "https://quantridongquan.vercel.app",
   "https://giaolyso.site",
   "https://www.giaolyso.site",
 ];

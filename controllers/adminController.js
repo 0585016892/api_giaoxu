@@ -1,7 +1,6 @@
 const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 const { writeLog } = require("../utils/activityLogger");
-const { createNotification } = require("../services/notificationService");
 const fs = require("fs");
 const path = require("path");
 
@@ -229,19 +228,6 @@ exports.createAdmin = async (req, res) => {
       target_id: result.insertId,
       description: `Tạo tài khoản ${full_name} (@${finalUsername}), loại ${account_type}, thuộc giáo xứ #${church_id}`,
       ip_address: req.ip,
-    });
-
-    // ============================================================
-    // 11. NOTIFICATION
-    // ============================================================
-
-    await createNotification({
-      type: "CREATE_ADMIN",
-      title: "Tạo tài khoản mới",
-      content: `${full_name} vừa được tạo tài khoản ${account_type}`,
-      created_by: req.user?.id || null,
-      related_type: "admins",
-      related_id: result.insertId,
     });
 
     // ============================================================
@@ -989,21 +975,6 @@ exports.updateAdmin = async (req, res) => {
     // ============================================================
 
     try {
-      await createNotification({
-        type: "UPDATE_ADMIN",
-
-        title: "Cập nhật tài khoản",
-
-        content:
-          `Tài khoản ${finalFullName} vừa được cập nhật ` +
-          `(${finalAccountType === "vip" ? "VIP" : "Member"})`,
-
-        created_by: req.user?.id,
-
-        related_type: "admins",
-
-        related_id: adminId,
-      });
     } catch (notificationError) {
       console.error("⚠️ CREATE NOTIFICATION ERROR:", notificationError);
     }
@@ -1140,15 +1111,6 @@ exports.resetAdminPassword = async (req, res) => {
       ip_address: req.ip,
     });
 
-    await createNotification({
-      type: "RESET_PASSWORD",
-      title: "Reset mật khẩu",
-      content: `${admin[0].full_name} vừa được reset mật khẩu`,
-      created_by: req.user?.id,
-      related_type: "admins",
-      related_id: req.params.id,
-    });
-
     return res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -1187,15 +1149,6 @@ exports.deleteAdmin = async (req, res) => {
       ip_address: req.ip,
     });
 
-    await createNotification({
-      type: "DELETE_ADMIN",
-      title: "Xóa tài khoản",
-      content: `${admin.full_name} vừa bị xóa`,
-      created_by: req.user?.id,
-      related_type: "admins",
-      related_id: req.params.id,
-    });
-
     return res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -1231,15 +1184,6 @@ exports.toggleActive = async (req, res) => {
       target_id: req.params.id,
       description: `${newStatus ? "Bật" : "Tắt"} ${admin.full_name}`,
       ip_address: req.ip,
-    });
-
-    await createNotification({
-      type: "TOGGLE_ACTIVE",
-      title: "Trạng thái tài khoản",
-      content: `${admin.full_name} vừa được cập nhật`,
-      created_by: req.user?.id,
-      related_type: "admins",
-      related_id: req.params.id,
     });
 
     return res.json({ success: true, is_active: newStatus });

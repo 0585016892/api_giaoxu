@@ -1,6 +1,5 @@
 const db = require("../config/db");
 const { writeLog } = require("../utils/activityLogger");
-const { createNotification } = require("../services/notificationService");
 const fs = require("fs");
 const path = require("path");
 
@@ -246,17 +245,6 @@ exports.create = async (req, res) => {
           ip_address: req.ip,
         });
       }
-
-      if (typeof createNotification === "function") {
-        await createNotification({
-          type: "CREATE_CHURCH",
-          title: "Giáo xứ mới",
-          content: `${name} vừa được tạo`,
-          created_by: req.user?.id,
-          related_type: "churches",
-          related_id: result.insertId,
-        });
-      }
     } catch (logErr) {
       console.error(
         "Lỗi ghi log/thông báo (Không ảnh hưởng đếm db):",
@@ -410,17 +398,6 @@ exports.update = async (req, res) => {
           ip_address: req.ip,
         });
       }
-
-      if (typeof createNotification === "function") {
-        await createNotification({
-          type: "UPDATE_CHURCH",
-          title: "Cập nhật giáo xứ",
-          content: `Một giáo xứ vừa được cập nhật`,
-          created_by: req.user?.id,
-          related_type: "churches",
-          related_id: id,
-        });
-      }
     } catch (logErr) {
       console.error("Lỗi ghi log/thông báo khi update:", logErr.message);
     }
@@ -467,15 +444,6 @@ exports.remove = async (req, res) => {
       ip_address: req.ip,
     });
 
-    await createNotification({
-      type: "DELETE_CHURCH",
-      title: "Xóa giáo xứ",
-      content: `Một giáo xứ vừa bị xóa`,
-      created_by: req.user?.id,
-      related_type: "churches",
-      related_id: req.params.id,
-    });
-
     res.json({ message: "Deleted successfully" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -509,15 +477,6 @@ exports.toggleActive = async (req, res) => {
       target_id: req.params.id,
       description: `Cập nhật trạng thái giáo xứ`,
       ip_address: req.ip,
-    });
-
-    await createNotification({
-      type: "CHURCH_STATUS",
-      title: "Trạng thái giáo xứ",
-      content: `Giáo xứ ID ${req.params.id} vừa đổi trạng thái`,
-      created_by: req.user?.id,
-      related_type: "churches",
-      related_id: req.params.id,
     });
 
     res.json({

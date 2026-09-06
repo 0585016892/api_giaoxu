@@ -1,6 +1,5 @@
 const { syncTable } = require("../services/syncService");
 const { trainEmbeddings } = require("../services/trainEmbeddingService");
-const { createNotification } = require("../services/notificationService");
 
 // ========================================
 // 1. ĐỒNG BỘ DỮ LIỆU RAG (SYNC DATA)
@@ -150,16 +149,6 @@ exports.trainEmbedding = async (req, res) => {
         status: "completed",
       });
     }
-
-    // Tạo thông báo hệ thống
-    await createNotification({
-      type: "AI_TRAINING",
-      title: "Cập nhật dữ liệu AI Giáo Xứ",
-      content: "Chatbot AI vừa được cập nhật kiến thức mới từ dữ liệu giáo xứ",
-      created_by: req.user?.id || null,
-      related_type: "rag",
-      related_id: null,
-    });
 
     return res.json({
       success: true,

@@ -3,7 +3,6 @@ const slugify = require("slugify");
 const fs = require("fs");
 const path = require("path");
 const { writeLog } = require("../utils/activityLogger");
-const { createNotification } = require("../services/notificationService");
 // ================= GET WITH PAGINATION =================
 exports.getEvents = async (req, res) => {
   try {
@@ -219,14 +218,6 @@ exports.createEvent = async (req, res) => {
       ip_address: req.ip,
     });
 
-    await createNotification({
-      type: "CREATE_EVENT",
-      title: "Sự kiện mới",
-      content: `${title} vừa được tạo`,
-      created_by: req.user?.id,
-      related_type: "events",
-      related_id: eventId,
-    });
     res.json({ message: "Tạo sự kiện thành công" });
   } catch (error) {
     console.log("❌ CREATE ERROR:", error);
@@ -325,14 +316,6 @@ exports.updateEvent = async (req, res) => {
       ip_address: req.ip,
     });
 
-    await createNotification({
-      type: "UPDATE_EVENT",
-      title: "Cập nhật sự kiện",
-      content: `${title} vừa được cập nhật`,
-      created_by: req.user?.id,
-      related_type: "events",
-      related_id: id,
-    });
     res.json({
       message: "Cập nhật sự kiện thành công",
     });
@@ -364,14 +347,6 @@ exports.updateEventStatus = async (req, res) => {
       ip_address: req.ip,
     });
 
-    await createNotification({
-      type: "EVENT_STATUS",
-      title: "Trạng thái sự kiện",
-      content: `Sự kiện ID ${id} vừa đổi trạng thái`,
-      created_by: req.user?.id,
-      related_type: "events",
-      related_id: id,
-    });
     res.json({
       message: "Cập nhật trạng thái thành công",
       id,
@@ -415,16 +390,6 @@ exports.deleteEvent = async (req, res) => {
       description: `Xóa sự kiện ID ${id}`,
       ip_address: req.ip,
     });
-
-    await createNotification({
-      type: "DELETE_EVENT",
-      title: "Xóa sự kiện",
-      content: `Một sự kiện vừa bị xóa`,
-      created_by: req.user?.id,
-      related_type: "events",
-      related_id: id,
-    });
-    console.log("✅ DELETE DONE");
 
     res.json({ message: "Xóa thành công" });
   } catch (error) {

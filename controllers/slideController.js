@@ -2,7 +2,6 @@ const db = require("../config/db");
 const fs = require("fs");
 const path = require("path");
 const { writeLog } = require("../utils/activityLogger");
-const { createNotification } = require("../services/notificationService");
 // ================= GET ALL =================
 exports.getSlides = async (req, res) => {
   try {
@@ -52,16 +51,6 @@ exports.createSlide = async (req, res) => {
       target_id: result.insertId,
       description: `Tạo slide: ${title}`,
       ip_address: req.ip,
-    });
-
-    // ================= NOTIFICATION =================
-    await createNotification({
-      type: "SLIDE_CREATE",
-      title: "Thêm slide mới",
-      content: `Slide "${title}" vừa được tạo`,
-      created_by: req.user?.id,
-      related_type: "slides",
-      related_id: result.insertId,
     });
 
     res.json({ message: "Thêm slide thành công" });
@@ -148,15 +137,6 @@ exports.updateSlide = async (req, res) => {
     // NOTIFICATION
     // =====================================================
 
-    await createNotification({
-      type: "SLIDE_UPDATE",
-      title: "Cập nhật slide",
-      content: `Slide "${title}" vừa được cập nhật`,
-      created_by: req.user?.id,
-      related_type: "slides",
-      related_id: id,
-    });
-
     // =====================================================
     // RESPONSE
     // =====================================================
@@ -204,16 +184,6 @@ exports.updateSlideStatus = async (req, res) => {
       ip_address: req.ip,
     });
 
-    // ================= NOTIFICATION =================
-    await createNotification({
-      type: "SLIDE_STATUS",
-      title: "Cập nhật trạng thái slide",
-      content: `Slide vừa được ${statusText}`,
-      created_by: req.user?.id,
-      related_type: "slides",
-      related_id: id,
-    });
-
     res.json({ message: "Cập nhật trạng thái thành công" });
   } catch (error) {
     console.error("Lỗi cập nhật status:", error);
@@ -248,16 +218,6 @@ exports.deleteSlide = async (req, res) => {
       target_id: id,
       description: `Xóa slide: ${rows[0].title}`,
       ip_address: req.ip,
-    });
-
-    // ================= NOTIFICATION =================
-    await createNotification({
-      type: "SLIDE_DELETE",
-      title: "Xóa slide",
-      content: `Slide "${rows[0].title}" vừa bị xóa`,
-      created_by: req.user?.id,
-      related_type: "slides",
-      related_id: id,
     });
 
     res.json({ message: "Xóa thành công" });

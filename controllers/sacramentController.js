@@ -1,6 +1,5 @@
 const db = require("../config/db");
 const { writeLog } = require("../utils/activityLogger");
-const { createNotification } = require("../services/notificationService");
 
 // ==========================================
 // 1. GET ALL (SEARCH + FILTER + PAGINATION)
@@ -298,17 +297,6 @@ exports.create = async (req, res) => {
           target_id: newId,
           description: `Thêm bí tích ${type} cho giáo dân ID ${parishioner_id}`,
           ip_address: req.ip,
-        });
-      }
-
-      if (typeof createNotification === "function") {
-        await createNotification({
-          type: "CREATE_SACRAMENT",
-          title: "Hồ sơ Bí Tích Mới",
-          content: `Bí tích ${type} vừa được ghi nhận thành công`,
-          created_by: req.user?.id,
-          related_type: "sacraments",
-          related_id: newId,
         });
       }
     } catch (logErr) {

@@ -1,6 +1,5 @@
 const db = require("../config/db");
 const { writeLog } = require("../utils/activityLogger");
-const { createNotification } = require("../services/notificationService");
 
 /* =============================
    GET ALL (FE FORMAT)
@@ -151,16 +150,6 @@ exports.create = async (req, res) => {
       ip_address: req.ip,
     });
 
-    // NOTIFY
-    await createNotification({
-      type: "CREATE_PRAYER",
-      title: "Lời cầu nguyện mới",
-      content: `${title} vừa được tạo`,
-      created_by: req.user?.id,
-      related_type: "prayers",
-      related_id: id,
-    });
-
     res.status(201).json({
       message: "Created successfully",
       id,
@@ -294,15 +283,6 @@ exports.remove = async (req, res) => {
       target_id: req.params.id,
       description: `Xóa lời cầu nguyện: ${title}`,
       ip_address: req.ip,
-    });
-
-    await createNotification({
-      type: "DELETE_PRAYER",
-      title: "Xóa lời cầu nguyện",
-      content: `${title} vừa bị xóa`,
-      created_by: req.user?.id,
-      related_type: "prayers",
-      related_id: req.params.id,
     });
 
     res.json({ message: "Deleted successfully" });

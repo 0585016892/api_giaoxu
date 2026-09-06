@@ -3,7 +3,6 @@ const fs = require("fs");
 const path = require("path");
 const slugify = require("slugify");
 const { writeLog } = require("../utils/activityLogger");
-const { createNotification } = require("../services/notificationService");
 /* ===============================
    HELPER: Parse JSON safe
 =================================*/
@@ -164,14 +163,6 @@ exports.createGroup = async (req, res) => {
       ip_address: req.ip,
     });
 
-    await createNotification({
-      type: "CREATE_GROUP",
-      title: "Hội đoàn mới",
-      content: `${name} vừa được tạo`,
-      created_by: req.user?.id,
-      related_type: "groups",
-      related_id: groupId,
-    });
     res.json({
       success: true,
       message: "Tạo hội đoàn thành công",
@@ -431,14 +422,6 @@ exports.updateGroup = async (req, res) => {
       ip_address: req.ip,
     });
 
-    await createNotification({
-      type: "UPDATE_GROUP",
-      title: "Cập nhật hội đoàn",
-      content: `${req.body.name} vừa được cập nhật`,
-      created_by: req.user?.id,
-      related_type: "groups",
-      related_id: id,
-    });
     res.json({
       success: true,
       message: "Cập nhật thành công",
@@ -516,14 +499,6 @@ exports.deleteGroup = async (req, res) => {
       ip_address: req.ip,
     });
 
-    await createNotification({
-      type: "DELETE_GROUP",
-      title: "Xóa hội đoàn",
-      content: `Một hội đoàn vừa bị xóa`,
-      created_by: req.user?.id,
-      related_type: "groups",
-      related_id: id,
-    });
     res.json({
       success: true,
       message: "Đã xóa sạch dữ liệu hội đoàn và ảnh liên quan",

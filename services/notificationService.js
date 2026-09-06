@@ -40,6 +40,55 @@ const normalizeIds = (ids = []) => {
 };
 
 // ============================================================
+// NOTIFICATION STATS SELECT
+// ============================================================
+
+const NOTIFICATION_STATS_SELECT = `
+  (
+    SELECT COUNT(*)
+    FROM notification_users nus
+    WHERE nus.notification_id = n.id
+      AND nus.is_deleted = 0
+  ) AS recipient_count,
+
+  (
+    SELECT COUNT(*)
+    FROM notification_users nus
+    WHERE nus.notification_id = n.id
+      AND nus.is_deleted = 0
+      AND nus.is_read = 1
+  ) AS read_count,
+
+  (
+    SELECT COUNT(*)
+    FROM notification_users nus
+    WHERE nus.notification_id = n.id
+      AND nus.is_deleted = 0
+      AND nus.is_read = 0
+  ) AS unread_count,
+
+  (
+    SELECT COALESCE(
+      ROUND(
+        (
+          SUM(
+            CASE
+              WHEN nus.is_read = 1 THEN 1
+              ELSE 0
+            END
+          ) / NULLIF(COUNT(*), 0)
+        ) * 100,
+        0
+      ),
+      0
+    )
+    FROM notification_users nus
+    WHERE nus.notification_id = n.id
+      AND nus.is_deleted = 0
+  ) AS read_percent
+`;
+
+// ============================================================
 // CREATE NOTIFICATION
 // ============================================================
 
@@ -143,9 +192,7 @@ const createNotification = async ({
     }
 
     // ========================================================
-    // IMPORTANT:
-    // NẾU KHÔNG CHỌN TARGET ROLE / USER
-    // MẶC ĐỊNH GỬI TOÀN BỘ USER CỦA GIÁO XỨ
+    // DEFAULT ALL USERS
     // ========================================================
 
     if (recipientIds.length === 0) {
@@ -163,7 +210,7 @@ const createNotification = async ({
     }
 
     // ========================================================
-    // KHÔNG CÓ NGƯỜI NHẬN
+    // NO RECIPIENT
     // ========================================================
 
     if (recipientIds.length === 0) {
@@ -195,20 +242,20 @@ const createNotification = async ({
 
     const [notificationResult] = await connection.query(
       `
-        INSERT INTO notifications
-        (
-          church_id,
-          type,
-          title,
-          content,
-          priority,
-          related_type,
-          related_id,
-          action_url,
-          created_by
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
+      INSERT INTO notifications
+      (
+        church_id,
+        type,
+        title,
+        content,
+        priority,
+        related_type,
+        related_id,
+        action_url,
+        created_by
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
       [
         church_id,
         type,
@@ -256,6 +303,26 @@ const createNotification = async ({
     }
 
     // ========================================================
+    // GET CREATOR NAME
+    // ========================================================
+
+    let createdByName = null;
+
+    if (created_by) {
+      const [[creator]] = await connection.query(
+        `
+        SELECT full_name
+        FROM admins
+        WHERE id = ?
+        LIMIT 1
+        `,
+        [created_by],
+      );
+
+      createdByName = creator?.full_name || null;
+    }
+
+    // ========================================================
     // COMMIT
     // ========================================================
 
@@ -288,6 +355,8 @@ const createNotification = async ({
 
       created_by,
 
+      created_by_name: createdByName,
+
       created_at: new Date(),
 
       is_read: 0,
@@ -295,14 +364,16 @@ const createNotification = async ({
       is_deleted: 0,
 
       recipient_count: validRecipientIds.length,
+
+      read_count: 0,
+
+      unread_count: validRecipientIds.length,
+
+      read_percent: 0,
     };
 
     // ========================================================
     // SOCKET.IO
-    //
-    // QUAN TRỌNG:
-    // GỬI TOÀN BỘ USER ĐANG ONLINE
-    // TRONG GIÁO XỨ
     // ========================================================
 
     try {
@@ -413,13 +484,20 @@ const getMyNotifications = async ({
       n.created_at,
       n.updated_at,
 
+      creator.full_name AS created_by_name,
+
       nu.is_read,
-      nu.read_at
+      nu.read_at,
+
+      ${NOTIFICATION_STATS_SELECT}
 
     FROM notification_users nu
 
     INNER JOIN notifications n
       ON n.id = nu.notification_id
+
+    LEFT JOIN admins creator
+      ON creator.id = n.created_by
 
     ${where}
 
@@ -447,11 +525,23 @@ const getMyNotifications = async ({
   const total = Number(count.total || 0);
 
   return {
-    data: rows,
+    data: rows.map((item) => ({
+      ...item,
+
+      recipient_count: Number(item.recipient_count || 0),
+
+      read_count: Number(item.read_count || 0),
+
+      unread_count: Number(item.unread_count || 0),
+
+      read_percent: Number(item.read_percent || 0),
+    })),
 
     pagination: {
       page,
+
       limit,
+
       total,
 
       totalPages: total > 0 ? Math.ceil(total / limit) : 0,
@@ -480,13 +570,20 @@ const getMyNotificationsToday = async ({ user_id, church_id }) => {
       n.created_at,
       n.updated_at,
 
+      creator.full_name AS created_by_name,
+
       nu.is_read,
-      nu.read_at
+      nu.read_at,
+
+      ${NOTIFICATION_STATS_SELECT}
 
     FROM notification_users nu
 
     INNER JOIN notifications n
       ON n.id = nu.notification_id
+
+    LEFT JOIN admins creator
+      ON creator.id = n.created_by
 
     WHERE nu.user_id = ?
       AND nu.is_deleted = 0
@@ -498,7 +595,17 @@ const getMyNotificationsToday = async ({ user_id, church_id }) => {
     [Number(user_id), Number(church_id)],
   );
 
-  return rows;
+  return rows.map((item) => ({
+    ...item,
+
+    recipient_count: Number(item.recipient_count || 0),
+
+    read_count: Number(item.read_count || 0),
+
+    unread_count: Number(item.unread_count || 0),
+
+    read_percent: Number(item.read_percent || 0),
+  }));
 };
 
 // ============================================================
@@ -526,13 +633,20 @@ const getMyNotificationById = async ({
       n.created_at,
       n.updated_at,
 
+      creator.full_name AS created_by_name,
+
       nu.is_read,
-      nu.read_at
+      nu.read_at,
+
+      ${NOTIFICATION_STATS_SELECT}
 
     FROM notification_users nu
 
     INNER JOIN notifications n
       ON n.id = nu.notification_id
+
+    LEFT JOIN admins creator
+      ON creator.id = n.created_by
 
     WHERE n.id = ?
       AND nu.user_id = ?
@@ -544,7 +658,21 @@ const getMyNotificationById = async ({
     [Number(notification_id), Number(user_id), Number(church_id)],
   );
 
-  return rows[0] || null;
+  if (!rows[0]) {
+    return null;
+  }
+
+  return {
+    ...rows[0],
+
+    recipient_count: Number(rows[0].recipient_count || 0),
+
+    read_count: Number(rows[0].read_count || 0),
+
+    unread_count: Number(rows[0].unread_count || 0),
+
+    read_percent: Number(rows[0].read_percent || 0),
+  };
 };
 
 // ============================================================
@@ -561,7 +689,13 @@ const markAsRead = async ({ notification_id, user_id, church_id }) => {
 
     SET
       nu.is_read = 1,
-      nu.read_at = NOW()
+
+      nu.read_at =
+        CASE
+          WHEN nu.is_read = 0
+          THEN NOW()
+          ELSE nu.read_at
+        END
 
     WHERE nu.notification_id = ?
       AND nu.user_id = ?
@@ -588,6 +722,7 @@ const markAllAsRead = async ({ user_id, church_id }) => {
 
     SET
       nu.is_read = 1,
+
       nu.read_at = NOW()
 
     WHERE nu.user_id = ?
@@ -619,6 +754,7 @@ const deleteMyNotification = async ({
 
     SET
       nu.is_deleted = 1,
+
       nu.deleted_at = NOW()
 
     WHERE nu.notification_id = ?
@@ -646,6 +782,7 @@ const deleteAllMyNotifications = async ({ user_id, church_id }) => {
 
     SET
       nu.is_deleted = 1,
+
       nu.deleted_at = NOW()
 
     WHERE nu.user_id = ?

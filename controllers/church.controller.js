@@ -43,8 +43,8 @@ exports.getAll = async (req, res) => {
       is_active,
     } = req.query;
 
-    page = parseInt(page);
-    limit = parseInt(limit);
+    page = parseInt(page, 10);
+    limit = parseInt(limit, 10);
 
     if (Number.isNaN(page) || page < 1) page = 1;
     if (Number.isNaN(limit) || limit < 1) limit = 10;
@@ -52,10 +52,12 @@ exports.getAll = async (req, res) => {
     const offset = (page - 1) * limit;
 
     let where = "WHERE 1=1";
-    let params = [];
+    const params = [];
 
+    // =====================================================
     // SEARCH
-    if (keyword) {
+    // =====================================================
+    if (keyword?.trim()) {
       where += `
         AND (
           c.name LIKE ?
@@ -65,39 +67,46 @@ exports.getAll = async (req, res) => {
         )
       `;
 
-      params.push(
-        `%${keyword}%`,
-        `%${keyword}%`,
-        `%${keyword}%`,
-        `%${keyword}%`,
-      );
+      const search = `%${keyword.trim()}%`;
+
+      params.push(search, search, search, search);
     }
 
+    // =====================================================
     // TYPE
+    // =====================================================
     if (type) {
       where += " AND c.type = ?";
       params.push(type);
     }
 
+    // =====================================================
     // DISTRICT
+    // =====================================================
     if (district) {
       where += " AND c.district = ?";
       params.push(district);
     }
 
+    // =====================================================
     // WARD
+    // =====================================================
     if (ward) {
       where += " AND c.ward = ?";
       params.push(ward);
     }
 
+    // =====================================================
     // ACTIVE
+    // =====================================================
     if (is_active !== undefined && is_active !== "") {
       where += " AND c.is_active = ?";
       params.push(is_active);
     }
 
+    // =====================================================
     // COUNT
+    // =====================================================
     const [[count]] = await db.query(
       `
       SELECT COUNT(*) AS total
@@ -107,11 +116,15 @@ exports.getAll = async (req, res) => {
       params,
     );
 
+    // =====================================================
     // DATA
+    // =====================================================
     const sqlData = `
       SELECT
         c.*,
-        COUNT(p.id) AS total_parishioners
+
+        COUNT(DISTINCT p.id) AS total_parishioners
+
       FROM churches c
 
       LEFT JOIN parishioners p
@@ -128,16 +141,144 @@ exports.getAll = async (req, res) => {
 
     const [rows] = await db.query(sqlData, [...params, limit, offset]);
 
+    // =====================================================
+    // PROCESS LICENSE
+    // =====================================================
+
+    const now = new Date();
+
+    const processedRows = await Promise.all(
+      rows.map(async (church) => {
+        let licenseStatus = church.license_status || "trial";
+
+        let isExpired = false;
+
+        let daysRemaining = null;
+
+        // =================================================
+        // ACTIVE
+        // =================================================
+        if (licenseStatus === "active") {
+          isExpired = false;
+          daysRemaining = null;
+        }
+
+        // =================================================
+        // TRIAL
+        // =================================================
+        else if (licenseStatus === "trial") {
+          if (church.trial_expires_at) {
+            const expiresAt = new Date(church.trial_expires_at);
+
+            if (expiresAt <= now) {
+              // ==========================================
+              // LAZY EXPIRE
+              // ==========================================
+
+              await db.query(
+                `
+                UPDATE churches
+                SET license_status = 'expired'
+                WHERE id = ?
+                  AND license_status = 'trial'
+                `,
+                [church.id],
+              );
+
+              licenseStatus = "expired";
+
+              isExpired = true;
+
+              daysRemaining = 0;
+            } else {
+              // ==========================================
+              // CALCULATE REMAINING DAYS
+              // ==========================================
+
+              const diffMs = expiresAt.getTime() - now.getTime();
+
+              daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+              isExpired = false;
+            }
+          } else {
+            // Trial nhưng không có ngày hết hạn
+            licenseStatus = "expired";
+
+            isExpired = true;
+
+            daysRemaining = 0;
+
+            await db.query(
+              `
+              UPDATE churches
+              SET license_status = 'expired'
+              WHERE id = ?
+                AND license_status = 'trial'
+              `,
+              [church.id],
+            );
+          }
+        }
+
+        // =================================================
+        // EXPIRED
+        // =================================================
+        else if (licenseStatus === "expired") {
+          isExpired = true;
+
+          daysRemaining = 0;
+        }
+
+        // =================================================
+        // RETURN CHURCH + LICENSE
+        // =================================================
+
+        return {
+          ...church,
+
+          total_parishioners: Number(church.total_parishioners || 0),
+
+          // =================================================
+          // LICENSE
+          // =================================================
+
+          license_status: licenseStatus,
+
+          trial_started_at: church.trial_started_at || null,
+
+          trial_expires_at: church.trial_expires_at || null,
+
+          activated_at: church.activated_at || null,
+
+          days_remaining: daysRemaining,
+
+          is_expired: isExpired,
+
+          is_trial: licenseStatus === "trial",
+
+          is_active_license: licenseStatus === "active",
+        };
+      }),
+    );
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
+
     return res.json({
       success: true,
 
-      data: rows,
+      data: processedRows,
 
       pagination: {
         total: Number(count.total),
+
         page,
+
         limit,
-        totalPages: Math.ceil(count.total / limit),
+
+        totalPages: Math.ceil(Number(count.total) / limit),
       },
     });
   } catch (err) {
@@ -145,7 +286,8 @@ exports.getAll = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: err.message,
+
+      message: err.message || "Không thể lấy danh sách giáo xứ",
     });
   }
 };

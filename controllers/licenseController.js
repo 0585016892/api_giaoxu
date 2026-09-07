@@ -185,12 +185,27 @@ exports.getMyLicense = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("❌ getMyLicense error:", error);
+    console.error("\n==========================================");
+    console.error("❌ GET MY LICENSE ERROR");
+    console.error("==========================================");
+
+    console.error("Message:", error.message);
+    console.error("Code:", error.code);
+    console.error("SQL State:", error.sqlState);
+    console.error("SQL Message:", error.sqlMessage);
+    console.error("Stack:", error.stack);
+
+    console.error("==========================================\n");
 
     return res.status(500).json({
       success: false,
       message: "Lỗi server khi lấy thông tin license",
-      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+
+      // Tạm thời trả ra để debug
+      error: error.message,
+      code: error.code,
+      sqlState: error.sqlState,
+      sqlMessage: error.sqlMessage,
     });
   }
 };

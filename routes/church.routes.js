@@ -3,10 +3,20 @@ const router = express.Router();
 
 const churchController = require("../controllers/church.controller");
 const upload = require("../middleware/uploadChurch");
+const { verifyToken } = require("../middleware/authMiddleware");
+const requireSystemAdmin = require("../middleware/requireSystemAdmin");
+
 // ================= CRUD =================
 router.get("/", churchController.getAll);
 router.get("/:id", churchController.getById);
+router.post(
+  "/:id/activate-license",
+  verifyToken,
+  requireSystemAdmin,
+  churchController.activateLicense,
+);
 router.post("/", upload.single("image"), churchController.create);
+
 router.put("/:id", upload.single("image"), churchController.update);
 router.delete("/:id", churchController.remove);
 

@@ -127,29 +127,281 @@ exports.getAll = async (req, res) => {
 // =========================
 exports.getById = async (req, res) => {
   try {
-    // ⚠️ Nếu trong DB dùng 'churches_id', hãy đổi p.church_id -> p.churches_id
-    const sql = `
-      SELECT 
-        c.*,
-        COUNT(p.id) AS total_parishioners,
-        SUM(CASE WHEN p.gender = 'NAM' OR p.gender = 'MALE' THEN 1 ELSE 0 END) AS total_male,
-        SUM(CASE WHEN p.gender = 'NỮ' OR p.gender = 'FEMALE' THEN 1 ELSE 0 END) AS total_female
-      FROM churches c
-      LEFT JOIN parishioners p ON p.churches_id = c.id
-      WHERE c.id = ?
-      GROUP BY c.id
-    `;
+    const churchId = Number(req.params.id);
 
-    const [rows] = await db.query(sql, [req.params.id]);
-
-    if (!rows.length) {
-      return res.status(404).json({ message: "Not found" });
+    // ==========================================
+    // 1. Validate ID
+    // ==========================================
+    if (!churchId || Number.isNaN(churchId)) {
+      return res.status(400).json({
+        success: false,
+        message: "ID giáo xứ không hợp lệ",
+      });
     }
 
-    res.json(rows[0]);
+    // ==========================================
+    // 2. Lấy thông tin giáo xứ
+    // + License
+    // + Thống kê giáo dân
+    // ==========================================
+    const sql = `
+      SELECT
+        c.id,
+        c.name,
+        c.type,
+        c.code,
+
+        c.address,
+        c.ward,
+        c.district,
+
+        c.phone,
+        c.email,
+        c.pastor_name,
+
+        c.latitude,
+        c.longitude,
+
+        c.description,
+        c.image,
+
+        c.is_active,
+
+        -- ========================================
+        -- LICENSE
+        -- ========================================
+        c.license_status,
+        c.trial_started_at,
+        c.trial_expires_at,
+        c.activated_at,
+
+        -- ========================================
+        -- SYSTEM
+        -- ========================================
+        c.created_at,
+        c.updated_at,
+
+        -- ========================================
+        -- PARISHIONERS STATISTICS
+        -- ========================================
+        COUNT(p.id) AS total_parishioners,
+
+        COALESCE(
+          SUM(
+            CASE
+              WHEN p.gender IN ('NAM', 'MALE')
+              THEN 1
+              ELSE 0
+            END
+          ),
+          0
+        ) AS total_male,
+
+        COALESCE(
+          SUM(
+            CASE
+              WHEN p.gender IN ('NỮ', 'FEMALE')
+              THEN 1
+              ELSE 0
+            END
+          ),
+          0
+        ) AS total_female
+
+      FROM churches c
+
+      LEFT JOIN parishioners p
+        ON p.churches_id = c.id
+
+      WHERE c.id = ?
+
+      GROUP BY
+        c.id,
+        c.name,
+        c.type,
+        c.code,
+        c.address,
+        c.ward,
+        c.district,
+        c.phone,
+        c.email,
+        c.pastor_name,
+        c.latitude,
+        c.longitude,
+        c.description,
+        c.image,
+        c.is_active,
+        c.license_status,
+        c.trial_started_at,
+        c.trial_expires_at,
+        c.activated_at,
+        c.created_at,
+        c.updated_at
+    `;
+
+    const [rows] = await db.query(sql, [churchId]);
+
+    // ==========================================
+    // 3. Không tìm thấy
+    // ==========================================
+    if (!rows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy giáo xứ",
+      });
+    }
+
+    const church = rows[0];
+
+    // ==========================================
+    // 4. Tính License
+    // ==========================================
+    let licenseStatus = church.license_status || "trial";
+
+    let daysRemaining = null;
+    let isExpired = false;
+
+    const now = new Date();
+
+    // ------------------------------------------
+    // ACTIVE
+    // ------------------------------------------
+
+    if (licenseStatus === "active") {
+      daysRemaining = null;
+      isExpired = false;
+    }
+
+    // ------------------------------------------
+    // TRIAL
+    // ------------------------------------------
+    else if (licenseStatus === "trial") {
+      if (!church.trial_expires_at) {
+        // Dữ liệu cũ chưa có ngày trial
+        daysRemaining = null;
+        isExpired = false;
+      } else {
+        const expiresAt = new Date(church.trial_expires_at);
+
+        if (expiresAt <= now) {
+          // Lazy update
+          await db.query(
+            `
+            UPDATE churches
+            SET license_status = 'expired'
+            WHERE id = ?
+              AND license_status = 'trial'
+            `,
+            [churchId],
+          );
+
+          licenseStatus = "expired";
+          daysRemaining = 0;
+          isExpired = true;
+        } else {
+          const diffMs = expiresAt.getTime() - now.getTime();
+
+          daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+          isExpired = false;
+        }
+      }
+    }
+
+    // ------------------------------------------
+    // EXPIRED
+    // ------------------------------------------
+    else if (licenseStatus === "expired") {
+      daysRemaining = 0;
+      isExpired = true;
+    }
+
+    // ==========================================
+    // 5. Chuẩn hóa response
+    // ==========================================
+
+    return res.status(200).json({
+      success: true,
+
+      church: {
+        id: Number(church.id),
+
+        name: church.name,
+        type: church.type,
+        code: church.code,
+
+        address: church.address,
+        ward: church.ward,
+        district: church.district,
+
+        phone: church.phone,
+        email: church.email,
+        pastor_name: church.pastor_name,
+
+        latitude: church.latitude !== null ? Number(church.latitude) : null,
+
+        longitude: church.longitude !== null ? Number(church.longitude) : null,
+
+        description: church.description,
+
+        image: church.image,
+
+        is_active: church.is_active === 1 || church.is_active === true,
+
+        // ======================================
+        // LICENSE
+        // ======================================
+
+        license_status: licenseStatus,
+
+        trial_started_at: church.trial_started_at,
+
+        trial_expires_at: church.trial_expires_at,
+
+        activated_at: church.activated_at,
+
+        days_remaining: daysRemaining,
+
+        is_expired: isExpired,
+
+        is_trial: licenseStatus === "trial",
+
+        is_active_license: licenseStatus === "active",
+
+        // ======================================
+        // STATISTICS
+        // ======================================
+
+        total_parishioners: Number(church.total_parishioners || 0),
+
+        total_male: Number(church.total_male || 0),
+
+        total_female: Number(church.total_female || 0),
+
+        // ======================================
+        // SYSTEM
+        // ======================================
+
+        created_at: church.created_at,
+        updated_at: church.updated_at,
+      },
+    });
   } catch (err) {
-    console.error("GET CHURCH BY ID ERROR:", err);
-    res.status(500).json({ message: err.message });
+    console.error("==========================================");
+    console.error("❌ GET CHURCH BY ID ERROR");
+    console.error("==========================================");
+    console.error("Message:", err.message);
+    console.error("Code:", err.code);
+    console.error("SQL State:", err.sqlState);
+    console.error("SQL Message:", err.sqlMessage);
+    console.error("Stack:", err.stack);
+    console.error("==========================================");
+
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi server khi lấy thông tin giáo xứ",
+      error: process.env.NODE_ENV === "development" ? err.message : undefined,
+    });
   }
 };
 

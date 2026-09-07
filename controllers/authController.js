@@ -272,3 +272,396 @@ exports.login = async (req, res) => {
     });
   }
 };
+exports.register = async (req, res) => {
+  console.log("===== FAITHEDU REGISTER REQUEST =====");
+
+  let connection;
+
+  try {
+    const {
+      email,
+      password,
+      full_name,
+      username,
+      phone,
+
+      church_name,
+      church_type,
+      address,
+      district,
+      ward,
+      pastor_name,
+    } = req.body;
+
+    // =====================================================
+    // 1. VALIDATE
+    // =====================================================
+
+    if (!email || !password || !full_name || !username || !church_name) {
+      return res.status(400).json({
+        success: false,
+        message: "Email, password, họ tên, username và tên giáo xứ là bắt buộc",
+      });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanUsername = username.trim();
+    const cleanFullName = full_name.trim();
+    const cleanChurchName = church_name.trim();
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Mật khẩu phải có ít nhất 6 ký tự",
+      });
+    }
+
+    // =====================================================
+    // 2. CHECK EMAIL
+    // =====================================================
+
+    const [emailRows] = await db.query(
+      `
+      SELECT id
+      FROM admins
+      WHERE email = ?
+      LIMIT 1
+      `,
+      [cleanEmail],
+    );
+
+    if (emailRows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: "Email đã được sử dụng",
+      });
+    }
+
+    // =====================================================
+    // 3. CHECK USERNAME
+    // =====================================================
+
+    const [usernameRows] = await db.query(
+      `
+      SELECT id
+      FROM admins
+      WHERE username = ?
+      LIMIT 1
+      `,
+      [cleanUsername],
+    );
+
+    if (usernameRows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: "Tên đăng nhập đã tồn tại",
+      });
+    }
+
+    // =====================================================
+    // 4. HASH PASSWORD
+    // =====================================================
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    // =====================================================
+    // 5. CONNECTION + TRANSACTION
+    // =====================================================
+
+    connection = await db.getConnection();
+
+    await connection.beginTransaction();
+
+    // =====================================================
+    // 6. TẠO MÃ GIÁO XỨ
+    // =====================================================
+
+    const churchCode = `FE${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
+    // =====================================================
+    // 7. TRIAL 30 NGÀY
+    // =====================================================
+
+    const trialStartedAt = new Date();
+
+    const trialExpiresAt = new Date(trialStartedAt);
+
+    trialExpiresAt.setDate(trialExpiresAt.getDate() + 30);
+
+    // =====================================================
+    // 8. TẠO CHURCH
+    // =====================================================
+
+    const [churchResult] = await connection.query(
+      `
+      INSERT INTO churches (
+        name,
+        type,
+        address,
+        is_active,
+        phone,
+        email,
+        pastor_name,
+        district,
+        ward,
+        code,
+        image,
+        license_status,
+        trial_started_at,
+        trial_expires_at
+      )
+      VALUES (
+        ?,
+        ?,
+        ?,
+        1,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        'trial',
+        ?,
+        ?
+      )
+      `,
+      [
+        cleanChurchName,
+        church_type || "GIAO_HO",
+        address || null,
+        phone || null,
+        cleanEmail,
+        pastor_name || null,
+        district || null,
+        ward || null,
+        churchCode,
+
+        // Vì churches.image đang NOT NULL
+        "/uploads/churches/default.jpg",
+
+        trialStartedAt,
+        trialExpiresAt,
+      ],
+    );
+
+    const churchId = churchResult.insertId;
+
+    console.log("✅ CHURCH CREATED");
+    console.log("Church ID:", churchId);
+    console.log("Church:", cleanChurchName);
+
+    // =====================================================
+    // 9. TẠO ADMIN CATECHIST
+    // =====================================================
+
+    const [adminResult] = await connection.query(
+      `
+      INSERT INTO admins (
+        church_id,
+        username,
+        password,
+        role,
+        account_type,
+        is_active,
+        full_name,
+        email,
+        phone
+      )
+      VALUES (
+        ?,
+        ?,
+        ?,
+        'admin_catechist',
+        'member',
+        1,
+        ?,
+        ?,
+        ?
+      )
+      `,
+      [
+        churchId,
+        cleanUsername,
+        hashedPassword,
+        cleanFullName,
+        cleanEmail,
+        phone || null,
+      ],
+    );
+
+    const adminId = adminResult.insertId;
+
+    console.log("✅ ADMIN CREATED");
+    console.log("Admin ID:", adminId);
+    console.log("Role:", "admin_catechist");
+
+    // =====================================================
+    // 10. COMMIT
+    // =====================================================
+
+    await connection.commit();
+
+    console.log("✅ REGISTER TRANSACTION COMMITTED");
+
+    // =====================================================
+    // 11. CREATE JWT
+    // =====================================================
+
+    const token = jwt.sign(
+      {
+        id: Number(adminId),
+
+        email: cleanEmail,
+
+        full_name: cleanFullName,
+
+        username: cleanUsername,
+
+        avatar: null,
+
+        role: "admin_catechist",
+
+        church_id: Number(churchId),
+
+        account_type: "member",
+
+        // Admin catechist chưa có catechist record
+        catechist_id: null,
+
+        teacher_id: null,
+      },
+
+      process.env.JWT_SECRET,
+
+      {
+        expiresIn: process.env.JWT_EXPIRES_IN || "1d",
+      },
+    );
+
+    // =====================================================
+    // 12. WRITE LOG
+    // =====================================================
+
+    try {
+      await writeLog({
+        admin_id: adminId,
+        action: "REGISTER",
+        target_type: "admin_catechist",
+        target_id: adminId,
+        description: `${cleanFullName} đăng ký FaithEdu - ${cleanChurchName}`,
+        ip_address: req.ip,
+      });
+    } catch (logError) {
+      console.error("⚠️ WRITE REGISTER LOG ERROR:", logError);
+    }
+
+    // =====================================================
+    // 13. RESPONSE
+    // =====================================================
+
+    console.log("========================================");
+    console.log("✅ FAITHEDU REGISTER SUCCESS");
+    console.log("Admin ID :", adminId);
+    console.log("Username :", cleanUsername);
+    console.log("Email    :", cleanEmail);
+    console.log("Role     :", "admin_catechist");
+    console.log("Church ID:", churchId);
+    console.log("Trial    :", trialStartedAt);
+    console.log("Expires  :", trialExpiresAt);
+    console.log("========================================");
+
+    return res.status(201).json({
+      success: true,
+
+      message: "Đăng ký FaithEdu thành công",
+
+      token,
+
+      admin: {
+        id: Number(adminId),
+
+        email: cleanEmail,
+
+        role: "admin_catechist",
+
+        church_id: Number(churchId),
+
+        full_name: cleanFullName,
+
+        username: cleanUsername,
+
+        account_type: "member",
+
+        avatar: null,
+
+        catechist_id: null,
+
+        catechist_code: null,
+
+        catechist_full_name: null,
+
+        teacher_id: null,
+
+        last_login: new Date(),
+      },
+
+      church: {
+        id: Number(churchId),
+
+        name: cleanChurchName,
+
+        code: churchCode,
+
+        license_status: "trial",
+
+        trial_started_at: trialStartedAt,
+
+        trial_expires_at: trialExpiresAt,
+
+        trial_days: 30,
+
+        activated_at: null,
+      },
+    });
+  } catch (err) {
+    // =====================================================
+    // ROLLBACK
+    // =====================================================
+
+    if (connection) {
+      try {
+        await connection.rollback();
+
+        console.log("↩️ REGISTER TRANSACTION ROLLBACK");
+      } catch (rollbackError) {
+        console.error("❌ ROLLBACK ERROR:", rollbackError);
+      }
+    }
+
+    console.error("========================================");
+    console.error("❌ FAITHEDU REGISTER ERROR");
+    console.error(err);
+    console.error("========================================");
+
+    // Duplicate do database
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        success: false,
+        message: "Email, username hoặc mã giáo xứ đã tồn tại",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Đăng ký FaithEdu thất bại",
+
+      error: process.env.NODE_ENV === "development" ? err.message : undefined,
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+};

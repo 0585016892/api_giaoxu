@@ -179,6 +179,10 @@ const safeRollback = async (connection, transactionStarted) => {
  */
 const getAttendance = async (req, res) => {
   try {
+    /* =====================================================
+       1. AUTH / CHURCH
+    ===================================================== */
+
     const churchId = getChurchId(req);
 
     if (!churchId) {
@@ -188,31 +192,56 @@ const getAttendance = async (req, res) => {
       });
     }
 
+    const safeChurchId = Number(churchId);
+
+    if (!Number.isInteger(safeChurchId) || safeChurchId <= 0) {
+      return res.status(403).json({
+        success: false,
+        message: "Giáo xứ không hợp lệ",
+      });
+    }
+
     /* =====================================================
-       QUERY PARAMS
+       2. QUERY PARAMS
     ===================================================== */
 
     const classId = toPositiveInt(req?.query?.class_id);
 
-    const date = req?.query?.date;
+    const date =
+      typeof req?.query?.date === "string" ? req.query.date.trim() : "";
 
-    const page = Math.max(1, Number.parseInt(req?.query?.page, 10) || 1);
+    let page = Number.parseInt(req?.query?.page, 10);
 
-    const limit = Math.min(
-      Math.max(1, Number.parseInt(req?.query?.limit, 10) || 10),
-      100,
-    );
+    let limit = Number.parseInt(req?.query?.limit, 10);
+
+    if (!Number.isInteger(page) || page < 1) {
+      page = 1;
+    }
+
+    if (!Number.isInteger(limit) || limit < 1) {
+      limit = 10;
+    }
+
+    // Không cho lấy quá nhiều bản ghi một lần
+    limit = Math.min(limit, 100);
 
     const search =
       typeof req?.query?.search === "string" ? req.query.search.trim() : "";
 
     const status =
-      typeof req?.query?.status === "string" ? req.query.status.trim() : "";
+      typeof req?.query?.status === "string"
+        ? req.query.status.trim().toLowerCase()
+        : "all";
 
-    const offset = (page - 1) * limit;
+    /*
+      Ép thành Number nguyên hoàn toàn trước khi đưa vào SQL.
+    */
+    const safePage = Math.trunc(page);
+    const safeLimit = Math.trunc(limit);
+    const safeOffset = Math.trunc((safePage - 1) * safeLimit);
 
     /* =====================================================
-       VALIDATE
+       3. VALIDATE
     ===================================================== */
 
     if (!classId) {
@@ -230,23 +259,23 @@ const getAttendance = async (req, res) => {
     }
 
     /* =====================================================
-       CHECK CLASS
+       4. CHECK CLASS
     ===================================================== */
 
     const [classRows] = await db.execute(
       `
-      SELECT
-        id,
-        name
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
+        SELECT
+          id,
+          name
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
       `,
-      [classId, churchId],
+      [classId, safeChurchId],
     );
 
-    if (!classRows.length) {
+    if (!classRows || classRows.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy lớp học",
@@ -254,16 +283,46 @@ const getAttendance = async (req, res) => {
     }
 
     /* =====================================================
-       BUILD SEARCH CONDITIONS
+       5. VALID STATUS
+    ===================================================== */
+
+    const validStatuses = [
+      "all",
+      "present",
+      "absent",
+      "late",
+      "excused",
+      "not_attended",
+      "unmarked",
+    ];
+
+    let normalizedStatus = status;
+
+    if (!validStatuses.includes(normalizedStatus)) {
+      normalizedStatus = "all";
+    }
+
+    /*
+      Frontend cũ của m có thể gửi "unmarked",
+      backend trước đây dùng "not_attended".
+
+      Chuẩn hóa về một giá trị.
+    */
+    if (normalizedStatus === "unmarked") {
+      normalizedStatus = "not_attended";
+    }
+
+    /* =====================================================
+       6. BUILD FILTER
     ===================================================== */
 
     const whereConditions = ["cs.class_id = ?", "s.church_id = ?"];
 
-    const whereParams = [classId, churchId];
+    const whereParams = [classId, safeChurchId];
 
-    /*
-      SEARCH NAME / CODE
-    */
+    /* -----------------------------------------------------
+       SEARCH
+    ----------------------------------------------------- */
 
     if (search) {
       whereConditions.push(`
@@ -278,73 +337,76 @@ const getAttendance = async (req, res) => {
       whereParams.push(keyword, keyword);
     }
 
-    /*
-      FILTER ATTENDANCE STATUS
+    /* -----------------------------------------------------
+       STATUS
+    ----------------------------------------------------- */
 
-      status:
-      - all
-      - present
-      - absent
-      - late
-      - excused
-      - not_attended
-    */
-
-    const validStatuses = [
-      "present",
-      "absent",
-      "late",
-      "excused",
-      "not_attended",
-    ];
-
-    if (status && status !== "all" && validStatuses.includes(status)) {
-      if (status === "not_attended") {
-        whereConditions.push("a.id IS NULL");
+    if (normalizedStatus !== "all") {
+      if (normalizedStatus === "not_attended") {
+        whereConditions.push(`
+          a.id IS NULL
+        `);
       } else {
-        whereConditions.push("a.status = ?");
+        whereConditions.push(`
+          a.status = ?
+        `);
 
-        whereParams.push(status);
+        whereParams.push(normalizedStatus);
       }
     }
 
-    const whereSQL = whereConditions.join(" AND ");
+    const whereSQL = whereConditions.join("\nAND ");
 
     /* =====================================================
-       COUNT TOTAL FILTERED STUDENTS
+       7. COUNT FILTERED STUDENTS
     ===================================================== */
 
     const [countRows] = await db.execute(
       `
-      SELECT
-        COUNT(*) AS total
+        SELECT
+          COUNT(*) AS total
 
-      FROM class_students cs
+        FROM class_students cs
 
-      INNER JOIN students s
-        ON s.id = cs.student_id
+        INNER JOIN students s
+          ON s.id = cs.student_id
 
-      LEFT JOIN attendances a
-        ON a.student_id = s.id
-       AND a.class_id = ?
-       AND a.church_id = ?
-       AND a.attendance_date = ?
+        LEFT JOIN attendances a
+          ON a.student_id = s.id
+          AND a.class_id = ?
+          AND a.church_id = ?
+          AND a.attendance_date = ?
 
-      WHERE ${whereSQL}
+        WHERE
+          ${whereSQL}
       `,
-      [classId, churchId, date, ...whereParams],
+      [classId, safeChurchId, date, ...whereParams],
     );
 
     const total = Number(countRows?.[0]?.total || 0);
 
-    const totalPages = total > 0 ? Math.ceil(total / limit) : 1;
+    const totalPages = total > 0 ? Math.ceil(total / safeLimit) : 1;
+
+    /*
+      Nếu page vượt quá số trang thì lấy page cuối.
+    */
+    const currentPage =
+      total > 0 && safePage > totalPages ? totalPages : safePage;
+
+    const currentOffset = Math.trunc((currentPage - 1) * safeLimit);
 
     /* =====================================================
-       GET PAGINATED STUDENTS
+       8. GET PAGINATED STUDENTS
+       
+       QUAN TRỌNG:
+       Không dùng LIMIT ? OFFSET ?
+       Vì mysql2 đang lỗi ER_WRONG_ARGUMENTS.
+
+       limit / offset đã được kiểm tra là integer
+       nên có thể đưa trực tiếp vào SQL.
     ===================================================== */
 
-    const [rows] = await db.execute(
-      `
+    const studentSQL = `
       SELECT
         s.id AS student_id,
         s.code,
@@ -365,103 +427,167 @@ const getAttendance = async (req, res) => {
 
       LEFT JOIN attendances a
         ON a.student_id = s.id
-       AND a.class_id = ?
-       AND a.church_id = ?
-       AND a.attendance_date = ?
+        AND a.class_id = ?
+        AND a.church_id = ?
+        AND a.attendance_date = ?
 
-      WHERE ${whereSQL}
+      WHERE
+        ${whereSQL}
 
       ORDER BY
         s.name ASC,
         s.id ASC
 
-      LIMIT ?
-      OFFSET ?
-      `,
-      [classId, churchId, date, ...whereParams, limit, offset],
-    );
+      LIMIT ${safeLimit}
+      OFFSET ${currentOffset}
+    `;
+
+    const [rows] = await db.execute(studentSQL, [
+      classId,
+      safeChurchId,
+      date,
+      ...whereParams,
+    ]);
 
     /* =====================================================
-       STATISTICS
-       Lấy toàn bộ thống kê, không phụ thuộc pagination
+       9. STATISTICS
+       
+       LUÔN TÍNH TOÀN BỘ HỌC SINH TRONG LỚP
+       Không phụ thuộc:
+       - search
+       - status filter
+       - page
+       - limit
     ===================================================== */
 
     const [statRows] = await db.execute(
       `
-      SELECT
-        COUNT(*) AS total,
+        SELECT
 
-        SUM(
-          CASE
-            WHEN a.status = 'present'
-            THEN 1
-            ELSE 0
-          END
-        ) AS present,
+          COUNT(*) AS total,
 
-        SUM(
-          CASE
-            WHEN a.status = 'absent'
-            THEN 1
-            ELSE 0
-          END
-        ) AS absent,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.status = 'present'
+                THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS present,
 
-        SUM(
-          CASE
-            WHEN a.status = 'late'
-            THEN 1
-            ELSE 0
-          END
-        ) AS late,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.status = 'absent'
+                THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS absent,
 
-        SUM(
-          CASE
-            WHEN a.status = 'excused'
-            THEN 1
-            ELSE 0
-          END
-        ) AS excused,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.status = 'late'
+                THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS late,
 
-        SUM(
-          CASE
-            WHEN a.id IS NULL
-            THEN 1
-            ELSE 0
-          END
-        ) AS not_attended
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.status = 'excused'
+                THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS excused,
 
-      FROM class_students cs
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.id IS NULL
+                THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS not_attended
 
-      INNER JOIN students s
-        ON s.id = cs.student_id
+        FROM class_students cs
 
-      LEFT JOIN attendances a
-        ON a.student_id = s.id
-       AND a.class_id = ?
-       AND a.church_id = ?
-       AND a.attendance_date = ?
+        INNER JOIN students s
+          ON s.id = cs.student_id
 
-      WHERE
-        cs.class_id = ?
-        AND s.church_id = ?
+        LEFT JOIN attendances a
+          ON a.student_id = s.id
+          AND a.class_id = ?
+          AND a.church_id = ?
+          AND a.attendance_date = ?
+
+        WHERE
+          cs.class_id = ?
+          AND s.church_id = ?
       `,
-      [classId, churchId, date, classId, churchId],
+      [classId, safeChurchId, date, classId, safeChurchId],
     );
 
     const stats = statRows?.[0] || {};
 
+    const totalStudents = Number(stats.total || 0);
+
+    const present = Number(stats.present || 0);
+
+    const absent = Number(stats.absent || 0);
+
+    const late = Number(stats.late || 0);
+
+    const excused = Number(stats.excused || 0);
+
+    const notAttended = Number(stats.not_attended || 0);
+
+    /*
+      present + late = đã tham dự
+    */
+    const attended = present + late;
+
+    const attendanceRate =
+      totalStudents > 0
+        ? Number(((attended / totalStudents) * 100).toFixed(2))
+        : 0;
+
     const statistics = {
-      total: Number(stats.total || 0),
-      present: Number(stats.present || 0),
-      absent: Number(stats.absent || 0),
-      late: Number(stats.late || 0),
-      excused: Number(stats.excused || 0),
-      not_attended: Number(stats.not_attended || 0),
+      total: totalStudents,
+
+      present,
+
+      absent,
+
+      late,
+
+      excused,
+
+      not_attended: notAttended,
+
+      // Alias để FE dễ dùng
+      notMarked: notAttended,
+
+      attended,
+
+      attendance_rate: attendanceRate,
+
+      rate: attendanceRate,
     };
 
     /* =====================================================
-       RESPONSE
+       10. RESPONSE
     ===================================================== */
 
     return res.json({
@@ -474,32 +600,52 @@ const getAttendance = async (req, res) => {
       statistics,
 
       pagination: {
-        page,
-        limit,
+        page: currentPage,
+
+        limit: safeLimit,
+
         total,
+
         totalPages,
-        hasNextPage: page < totalPages,
-        hasPrevPage: page > 1,
+
+        hasNextPage: currentPage < totalPages,
+
+        hasPrevPage: currentPage > 1,
       },
 
       filters: {
         search,
-        status: status || "all",
+
+        status:
+          normalizedStatus === "not_attended" ? "unmarked" : normalizedStatus,
       },
 
-      data: rows,
+      data: Array.isArray(rows) ? rows : [],
     });
   } catch (error) {
     console.error("GET ATTENDANCE ERROR:", error);
 
+    console.error("GET ATTENDANCE DETAIL:", {
+      message: error?.message,
+      code: error?.code,
+      errno: error?.errno,
+      sqlState: error?.sqlState,
+      sqlMessage: error?.sqlMessage,
+    });
+
     return res.status(500).json({
       success: false,
+
       message: "Không thể tải dữ liệu điểm danh",
-      ...(getErrorMessage(error) ? { error: getErrorMessage(error) } : {}),
+
+      ...(getErrorMessage(error)
+        ? {
+            error: getErrorMessage(error),
+          }
+        : {}),
     });
   }
 };
-
 /**
  * =========================================================
  * SAVE BULK ATTENDANCE

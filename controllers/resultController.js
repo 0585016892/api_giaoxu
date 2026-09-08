@@ -1184,6 +1184,10 @@ const getClassStatistics = async (req, res) => {
 
     const { classId } = req.params;
 
+    // =====================================================
+    // CHECK CLASS
+    // =====================================================
+
     const [classes] = await db.query(
       `
       SELECT
@@ -1204,6 +1208,10 @@ const getClassStatistics = async (req, res) => {
         message: "Không tìm thấy lớp",
       });
     }
+
+    // =====================================================
+    // STATISTICS - CHỈ LỚP ĐƯỢC CHỌN
+    // =====================================================
 
     const [statistics] = await db.query(
       `
@@ -1259,15 +1267,23 @@ const getClassStatistics = async (req, res) => {
       [churchId, churchId, classId],
     );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       class: classes[0],
-      data: statistics[0],
+      data: {
+        total_students: Number(statistics[0].total_students) || 0,
+        total_results: Number(statistics[0].total_results) || 0,
+        average_score: Number(statistics[0].average_score) || 0,
+        highest_score: Number(statistics[0].highest_score) || 0,
+        lowest_score: Number(statistics[0].lowest_score) || 0,
+        passed_students: Number(statistics[0].passed_students) || 0,
+        failed_students: Number(statistics[0].failed_students) || 0,
+      },
     });
   } catch (error) {
     console.error("GET CLASS STATISTICS ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Không thể lấy thống kê của lớp",
       error: error.message,

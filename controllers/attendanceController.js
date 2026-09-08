@@ -2169,7 +2169,332 @@ const scanQRCode = async (req, res) => {
  * EXPORT
  * =========================================================
  */
+/**
+ * =========================================================
+ * FINISH ATTENDANCE
+ * =========================================================
+ *
+ * POST /attendance/finish
+ *
+ * Body:
+ * {
+ *   "class_id": 17,
+ *   "attendance_date": "2026-09-08"
+ * }
+ *
+ * Khi kết thúc điểm danh:
+ * - Học sinh đã present / late / excused / absent -> giữ nguyên
+ * - Học sinh chưa có bản ghi -> tự động absent
+ *
+ * Quan trọng:
+ * - Xử lý TOÀN BỘ học sinh trong lớp
+ * - Không phụ thuộc pagination ở frontend
+ * =========================================================
+ */
+const finishAttendance = async (req, res) => {
+  let connection = null;
+  let transactionStarted = false;
 
+  try {
+    connection = await db.getConnection();
+
+    const churchId = getChurchId(req);
+    const teacherId = getTeacherId(req);
+
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được gán giáo xứ",
+      });
+    }
+
+    if (!teacherId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo lý viên",
+      });
+    }
+
+    const body = req?.body || {};
+
+    const classId = toPositiveInt(body.class_id);
+
+    const attendanceDate =
+      typeof body.attendance_date === "string"
+        ? body.attendance_date.trim()
+        : "";
+
+    /**
+     * =====================================================
+     * VALIDATE
+     * =====================================================
+     */
+
+    if (!classId) {
+      return res.status(400).json({
+        success: false,
+        message: "class_id không hợp lệ",
+      });
+    }
+
+    if (!isValidDate(attendanceDate)) {
+      return res.status(400).json({
+        success: false,
+        message: "attendance_date không hợp lệ",
+      });
+    }
+
+    /**
+     * =====================================================
+     * KIỂM TRA LỚP
+     * =====================================================
+     */
+
+    const [classRows] = await connection.execute(
+      `
+        SELECT
+          id,
+          name,
+          church_id
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
+      `,
+      [classId, churchId],
+    );
+
+    if (!classRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Lớp học không tồn tại hoặc không thuộc giáo xứ",
+      });
+    }
+
+    /**
+     * =====================================================
+     * TRANSACTION
+     * =====================================================
+     */
+
+    await connection.beginTransaction();
+    transactionStarted = true;
+
+    /**
+     * =====================================================
+     * LOCK CLASS
+     * =====================================================
+     *
+     * Tránh 2 thiết bị cùng lúc kết thúc điểm danh.
+     */
+
+    const [lockedClassRows] = await connection.execute(
+      `
+        SELECT
+          id,
+          name,
+          church_id
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [classId, churchId],
+    );
+
+    if (!lockedClassRows.length) {
+      await safeRollback(connection, transactionStarted);
+      transactionStarted = false;
+
+      return res.status(404).json({
+        success: false,
+        message: "Lớp học không còn tồn tại",
+      });
+    }
+
+    /**
+     * =====================================================
+     * LẤY TOÀN BỘ HỌC SINH TRONG LỚP
+     * =====================================================
+     */
+
+    const [students] = await connection.execute(
+      `
+        SELECT
+          s.id AS student_id,
+          s.code,
+          s.name
+        FROM class_students cs
+
+        INNER JOIN students s
+          ON s.id = cs.student_id
+
+        WHERE cs.class_id = ?
+          AND s.church_id = ?
+          AND s.status = 'active'
+
+        ORDER BY
+          s.name ASC,
+          s.id ASC
+      `,
+      [classId, churchId],
+    );
+
+    /**
+     * =====================================================
+     * KHÔNG CÓ HỌC SINH
+     * =====================================================
+     */
+
+    if (!students.length) {
+      await connection.commit();
+      transactionStarted = false;
+
+      return res.json({
+        success: true,
+        message: "Lớp không có học sinh cần điểm danh",
+        class_id: classId,
+        attendance_date: attendanceDate,
+        total_students: 0,
+        already_attended: 0,
+        marked_absent: 0,
+      });
+    }
+
+    /**
+     * =====================================================
+     * TÌM NHỮNG HỌC SINH ĐÃ CÓ ATTENDANCE
+     * =====================================================
+     */
+
+    const [existingAttendances] = await connection.execute(
+      `
+        SELECT
+          student_id,
+          status
+        FROM attendances
+        WHERE class_id = ?
+          AND church_id = ?
+          AND attendance_date = ?
+      `,
+      [classId, churchId, attendanceDate],
+    );
+
+    const attendedStudentIds = new Set(
+      existingAttendances.map((row) => Number(row.student_id)),
+    );
+
+    /**
+     * =====================================================
+     * XÁC ĐỊNH HỌC SINH CHƯA ĐIỂM DANH
+     * =====================================================
+     */
+
+    const unmarkedStudents = students.filter(
+      (student) => !attendedStudentIds.has(Number(student.student_id)),
+    );
+
+    /**
+     * =====================================================
+     * TẠO ABSENT CHO HỌC SINH CHƯA ĐIỂM DANH
+     * =====================================================
+     */
+
+    for (const student of unmarkedStudents) {
+      await connection.execute(
+        `
+          INSERT INTO attendances
+          (
+            church_id,
+            class_id,
+            student_id,
+            teacher_id,
+            attendance_date,
+            status,
+            check_in_time,
+            note
+          )
+          VALUES
+          (
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            'absent',
+            NULL,
+            NULL
+          )
+
+          ON DUPLICATE KEY UPDATE
+            id = id
+        `,
+        [churchId, classId, student.student_id, teacherId, attendanceDate],
+      );
+    }
+
+    /**
+     * =====================================================
+     * COMMIT
+     * =====================================================
+     */
+
+    await connection.commit();
+    transactionStarted = false;
+
+    /**
+     * =====================================================
+     * THỐNG KÊ KẾT QUẢ
+     * =====================================================
+     */
+
+    const totalStudents = students.length;
+
+    const alreadyAttended = attendedStudentIds.size;
+
+    const markedAbsent = unmarkedStudents.length;
+
+    return res.json({
+      success: true,
+
+      message:
+        markedAbsent > 0
+          ? `Đã kết thúc điểm danh. ${markedAbsent} học sinh chưa điểm danh được chuyển thành vắng.`
+          : "Đã kết thúc điểm danh. Tất cả học sinh đã được điểm danh.",
+
+      class_id: classId,
+
+      class_name: lockedClassRows[0].name,
+
+      attendance_date: attendanceDate,
+
+      total_students: totalStudents,
+
+      already_attended: alreadyAttended,
+
+      marked_absent: markedAbsent,
+    });
+  } catch (error) {
+    await safeRollback(connection, transactionStarted);
+
+    console.error("FINISH ATTENDANCE ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể kết thúc điểm danh",
+      ...(getErrorMessage(error)
+        ? {
+            error: getErrorMessage(error),
+          }
+        : {}),
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+};
 module.exports = {
   getAttendance,
   saveBulkAttendance,
@@ -2178,4 +2503,5 @@ module.exports = {
   getStudentAttendance,
   getClassStatistics,
   scanQRCode,
+  finishAttendance,
 };

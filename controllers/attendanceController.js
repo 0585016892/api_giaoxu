@@ -178,6 +178,7 @@ const safeRollback = async (connection, transactionStarted) => {
  * GET /attendance?class_id=17&date=2026-09-03
  */
 const getAttendance = async (req, res) => {
+  console.log("GET ATTENDANCE REQUEST:");
   try {
     /* =====================================================
        1. AUTH / CHURCH

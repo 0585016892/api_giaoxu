@@ -5,15 +5,54 @@ const notificationService = require("../services/notificationService");
 // ============================================================
 
 const getChurchId = (req) => {
-  return Number(req.user?.church_id || req.user?.parish_id || 0);
+  const churchId = req.user?.church_id ?? req.user?.parish_id ?? null;
+
+  if (
+    churchId === null ||
+    churchId === undefined ||
+    churchId === "" ||
+    Number.isNaN(Number(churchId))
+  ) {
+    return null;
+  }
+
+  const value = Number(churchId);
+
+  return Number.isInteger(value) && value > 0 ? value : null;
 };
 
 const getUserId = (req) => {
-  return Number(req.user?.id || 0);
+  const userId = Number(req.user?.id || 0);
+
+  return Number.isInteger(userId) && userId > 0 ? userId : 0;
 };
 
 const isValidId = (id) => {
-  return Number.isInteger(Number(id)) && Number(id) > 0;
+  const value = Number(id);
+
+  return Number.isInteger(value) && value > 0;
+};
+
+const isAdminCatechist = (req) => {
+  return req.user?.role === "admin_catechist";
+};
+
+const normalizeBoolean = (value) => {
+  if (value === true || value === 1 || value === "1" || value === "true") {
+    return true;
+  }
+
+  return false;
+};
+
+const normalizeArray = (value) => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item) && item > 0);
 };
 
 // ============================================================
@@ -24,14 +63,12 @@ const isValidId = (id) => {
 exports.getNotifications = async (req, res) => {
   try {
     const userId = getUserId(req);
-
     const churchId = getChurchId(req);
 
-    if (!userId || !churchId) {
+    if (!userId) {
       return res.status(401).json({
         success: false,
-
-        message: "Không xác định được người dùng hoặc giáo xứ",
+        message: "Không xác định được người dùng",
       });
     }
 
@@ -39,19 +76,14 @@ exports.getNotifications = async (req, res) => {
 
     const result = await notificationService.getMyNotifications({
       user_id: userId,
-
       church_id: churchId,
-
       page,
-
       limit,
-
-      unread_only,
+      unread_only: normalizeBoolean(unread_only),
     });
 
     return res.json({
       success: true,
-
       ...result,
     });
   } catch (error) {
@@ -59,7 +91,6 @@ exports.getNotifications = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-
       message: error.message || "Không thể tải thông báo",
     });
   }
@@ -73,26 +104,22 @@ exports.getNotifications = async (req, res) => {
 exports.getNotificationsToday = async (req, res) => {
   try {
     const userId = getUserId(req);
-
     const churchId = getChurchId(req);
 
-    if (!userId || !churchId) {
+    if (!userId) {
       return res.status(401).json({
         success: false,
-
-        message: "Không xác định được người dùng hoặc giáo xứ",
+        message: "Không xác định được người dùng",
       });
     }
 
     const data = await notificationService.getMyNotificationsToday({
       user_id: userId,
-
       church_id: churchId,
     });
 
     return res.json({
       success: true,
-
       data,
     });
   } catch (error) {
@@ -100,7 +127,6 @@ exports.getNotificationsToday = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-
       message: error.message || "Không thể tải thông báo hôm nay",
     });
   }
@@ -116,36 +142,37 @@ exports.getNotificationById = async (req, res) => {
     const notificationId = Number(req.params.id);
 
     const userId = getUserId(req);
-
     const churchId = getChurchId(req);
 
     if (!isValidId(notificationId)) {
       return res.status(400).json({
         success: false,
-
         message: "ID thông báo không hợp lệ",
+      });
+    }
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được người dùng",
       });
     }
 
     const data = await notificationService.getMyNotificationById({
       notification_id: notificationId,
-
       user_id: userId,
-
       church_id: churchId,
     });
 
     if (!data) {
       return res.status(404).json({
         success: false,
-
         message: "Không tìm thấy thông báo",
       });
     }
 
     return res.json({
       success: true,
-
       data,
     });
   } catch (error) {
@@ -153,28 +180,33 @@ exports.getNotificationById = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-
       message: error.message || "Không thể tải thông báo",
     });
   }
 };
 
 // ============================================================
-// CREATE
+// CREATE NOTIFICATION
 // POST /api/notifications
 // ============================================================
 
 exports.createNotification = async (req, res) => {
   try {
-    const churchId = getChurchId(req);
+    const currentChurchId = getChurchId(req);
     const createdBy = getUserId(req);
 
-    if (!churchId || !createdBy) {
+    if (!createdBy) {
       return res.status(401).json({
         success: false,
-        message: "Không xác định được người dùng hoặc giáo xứ",
+        message: "Không xác định được người dùng",
       });
     }
+
+    const adminCatechist = isAdminCatechist(req);
+
+    // ========================================================
+    // BODY
+    // ========================================================
 
     const {
       type = "announcement",
@@ -184,19 +216,111 @@ exports.createNotification = async (req, res) => {
       related_type = null,
       related_id = null,
       action_url = null,
-      user_ids = [],
       target_role = "all",
       send_email = false,
-    } = req.body;
+      user_ids = [],
+    } = req.body || {};
 
     // ========================================================
-    // QUYỀN GỬI EMAIL
-    // Chỉ admin_catechist được gửi Email
+    // VALIDATE TITLE
     // ========================================================
 
-    const isAdminCatechist = req.user?.role === "admin_catechist";
+    if (!title || !String(title).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng nhập tiêu đề thông báo",
+      });
+    }
 
-    if (Boolean(send_email) && !isAdminCatechist) {
+    // ========================================================
+    // CHURCH ID
+    //
+    // Không truyền church_id:
+    // => gửi trong giáo xứ hiện tại
+    //
+    // church_id = null:
+    // => gửi toàn hệ thống
+    //
+    // church_id = số:
+    // => gửi cho giáo xứ đó
+    // ========================================================
+
+    let churchId;
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "church_id")) {
+      const rawChurchId = req.body.church_id;
+
+      // ------------------------------------------------------
+      // GLOBAL NOTIFICATION
+      // church_id = null
+      // ------------------------------------------------------
+
+      if (
+        rawChurchId === null ||
+        rawChurchId === undefined ||
+        rawChurchId === ""
+      ) {
+        churchId = null;
+      } else {
+        const parsedChurchId = Number(rawChurchId);
+
+        if (!isValidId(parsedChurchId)) {
+          return res.status(400).json({
+            success: false,
+            message: "church_id không hợp lệ",
+          });
+        }
+
+        churchId = parsedChurchId;
+      }
+    } else {
+      // Không truyền => giáo xứ hiện tại
+      churchId = currentChurchId;
+    }
+
+    // ========================================================
+    // GLOBAL NOTIFICATION
+    // ========================================================
+
+    if (churchId === null && !adminCatechist) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Chỉ Quản trị viên Giáo lý mới có quyền gửi thông báo toàn hệ thống.",
+      });
+    }
+
+    // ========================================================
+    // NẾU GỬI CHO GIÁO XỨ CỤ THỂ
+    // ========================================================
+
+    if (churchId !== null) {
+      // Không có giáo xứ hiện tại
+      if (!currentChurchId) {
+        return res.status(403).json({
+          success: false,
+          message: "Tài khoản chưa được liên kết với giáo xứ.",
+        });
+      }
+
+      // User thường chỉ được gửi cho giáo xứ của mình
+      if (Number(churchId) !== Number(currentChurchId) && !adminCatechist) {
+        return res.status(403).json({
+          success: false,
+          message: "Bạn không có quyền gửi thông báo cho giáo xứ này.",
+        });
+      }
+    }
+
+    // ========================================================
+    // EMAIL
+    //
+    // CHỈ admin_catechist
+    // ========================================================
+
+    const shouldSendEmail = normalizeBoolean(send_email);
+
+    if (shouldSendEmail && !adminCatechist) {
       return res.status(403).json({
         success: false,
         message:
@@ -205,44 +329,88 @@ exports.createNotification = async (req, res) => {
     }
 
     // ========================================================
-    // CREATE NOTIFICATION
+    // USER IDS
+    // ========================================================
+
+    const normalizedUserIds = normalizeArray(user_ids);
+
+    // ========================================================
+    // TARGET ROLE
+    // ========================================================
+
+    const normalizedTargetRole =
+      target_role === null || target_role === undefined || target_role === ""
+        ? "all"
+        : String(target_role).trim();
+
+    const allowedRoles = ["all", "admin_catechist", "catechist", "teacher"];
+
+    if (!allowedRoles.includes(normalizedTargetRole)) {
+      return res.status(400).json({
+        success: false,
+        message: "target_role không hợp lệ.",
+      });
+    }
+
+    // ========================================================
+    // TẠO THÔNG BÁO
     // ========================================================
 
     const data = await notificationService.createNotification({
       church_id: churchId,
 
-      type,
+      type: String(type || "announcement").trim(),
 
-      title,
+      title: String(title).trim(),
 
-      content,
+      content:
+        content === null || content === undefined ? null : String(content),
 
-      priority,
+      priority: String(priority || "normal").trim(),
 
-      related_type,
+      related_type:
+        related_type === null || related_type === undefined
+          ? null
+          : String(related_type).trim(),
 
-      related_id,
+      related_id:
+        related_id === null || related_id === undefined || related_id === ""
+          ? null
+          : Number(related_id),
 
-      action_url,
+      action_url:
+        action_url === null || action_url === undefined
+          ? null
+          : String(action_url).trim(),
 
       created_by: createdBy,
 
-      user_ids,
+      user_ids: normalizedUserIds,
 
-      target_role,
+      target_role: normalizedTargetRole,
 
-      // Chỉ cho phép admin_catechist gửi email
-      send_email: isAdminCatechist ? Boolean(send_email) : false,
+      send_email: adminCatechist ? shouldSendEmail : false,
     });
+
+    // ========================================================
+    // MESSAGE
+    // ========================================================
+
+    let message;
+
+    if (churchId === null) {
+      message = shouldSendEmail
+        ? "Gửi thông báo và Email toàn hệ thống thành công"
+        : "Gửi thông báo toàn hệ thống thành công";
+    } else {
+      message = shouldSendEmail
+        ? "Gửi thông báo và Email thành công"
+        : "Gửi thông báo thành công";
+    }
 
     return res.status(201).json({
       success: true,
-
-      message:
-        send_email && isAdminCatechist
-          ? "Gửi thông báo và Email thành công"
-          : "Gửi thông báo thành công",
-
+      message,
       data,
     });
   } catch (error) {
@@ -250,7 +418,6 @@ exports.createNotification = async (req, res) => {
 
     return res.status(400).json({
       success: false,
-
       message: error.message || "Không thể gửi thông báo",
     });
   }
@@ -266,36 +433,37 @@ exports.markAsRead = async (req, res) => {
     const notificationId = Number(req.params.id);
 
     const userId = getUserId(req);
-
     const churchId = getChurchId(req);
 
     if (!isValidId(notificationId)) {
       return res.status(400).json({
         success: false,
-
         message: "ID thông báo không hợp lệ",
+      });
+    }
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được người dùng",
       });
     }
 
     const updated = await notificationService.markAsRead({
       notification_id: notificationId,
-
       user_id: userId,
-
       church_id: churchId,
     });
 
     if (!updated) {
       return res.status(404).json({
         success: false,
-
         message: "Không tìm thấy thông báo",
       });
     }
 
     return res.json({
       success: true,
-
       message: "Đã đánh dấu thông báo là đã đọc",
     });
   } catch (error) {
@@ -303,7 +471,6 @@ exports.markAsRead = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-
       message: error.message || "Không thể cập nhật thông báo",
     });
   }
@@ -317,20 +484,23 @@ exports.markAsRead = async (req, res) => {
 exports.markAllAsRead = async (req, res) => {
   try {
     const userId = getUserId(req);
-
     const churchId = getChurchId(req);
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được người dùng",
+      });
+    }
 
     const affectedRows = await notificationService.markAllAsRead({
       user_id: userId,
-
       church_id: churchId,
     });
 
     return res.json({
       success: true,
-
       message: "Đã đánh dấu tất cả thông báo là đã đọc",
-
       affectedRows,
     });
   } catch (error) {
@@ -338,7 +508,6 @@ exports.markAllAsRead = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-
       message: error.message || "Không thể cập nhật thông báo",
     });
   }
@@ -354,36 +523,37 @@ exports.deleteNotification = async (req, res) => {
     const notificationId = Number(req.params.id);
 
     const userId = getUserId(req);
-
     const churchId = getChurchId(req);
 
     if (!isValidId(notificationId)) {
       return res.status(400).json({
         success: false,
-
         message: "ID thông báo không hợp lệ",
+      });
+    }
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được người dùng",
       });
     }
 
     const deleted = await notificationService.deleteMyNotification({
       notification_id: notificationId,
-
       user_id: userId,
-
       church_id: churchId,
     });
 
     if (!deleted) {
       return res.status(404).json({
         success: false,
-
         message: "Không tìm thấy thông báo",
       });
     }
 
     return res.json({
       success: true,
-
       message: "Đã xóa thông báo",
     });
   } catch (error) {
@@ -391,7 +561,6 @@ exports.deleteNotification = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-
       message: error.message || "Không thể xóa thông báo",
     });
   }
@@ -405,20 +574,23 @@ exports.deleteNotification = async (req, res) => {
 exports.deleteAllNotifications = async (req, res) => {
   try {
     const userId = getUserId(req);
-
     const churchId = getChurchId(req);
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được người dùng",
+      });
+    }
 
     const affectedRows = await notificationService.deleteAllMyNotifications({
       user_id: userId,
-
       church_id: churchId,
     });
 
     return res.json({
       success: true,
-
       message: "Đã xóa tất cả thông báo",
-
       affectedRows,
     });
   } catch (error) {
@@ -426,8 +598,7 @@ exports.deleteAllNotifications = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-
-      message: error.message || "Không thể xóa thông báo",
+      message: error.message || "Không thể xóa tất cả thông báo",
     });
   }
 };
@@ -440,18 +611,22 @@ exports.deleteAllNotifications = async (req, res) => {
 exports.getNotificationStats = async (req, res) => {
   try {
     const userId = getUserId(req);
-
     const churchId = getChurchId(req);
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được người dùng",
+      });
+    }
 
     const data = await notificationService.getMyNotificationStats({
       user_id: userId,
-
       church_id: churchId,
     });
 
     return res.json({
       success: true,
-
       data,
     });
   } catch (error) {
@@ -459,7 +634,6 @@ exports.getNotificationStats = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-
       message: error.message || "Không thể lấy thống kê thông báo",
     });
   }
@@ -473,20 +647,24 @@ exports.getNotificationStats = async (req, res) => {
 exports.getUnreadCount = async (req, res) => {
   try {
     const userId = getUserId(req);
-
     const churchId = getChurchId(req);
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được người dùng",
+      });
+    }
 
     const unread = await notificationService.getUnreadCount({
       user_id: userId,
-
       church_id: churchId,
     });
 
     return res.json({
       success: true,
-
       data: {
-        unread,
+        unread: Number(unread || 0),
       },
     });
   } catch (error) {
@@ -494,7 +672,6 @@ exports.getUnreadCount = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-
       message: error.message || "Không thể lấy số thông báo chưa đọc",
     });
   }

@@ -7,21 +7,26 @@ const nodemailer = require("nodemailer");
 // =========================================================
 
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT || 465),
+  host: process.env.SMTP_HOST || "smtp.gmail.com",
 
-  secure: String(process.env.SMTP_SECURE || "true").toLowerCase() === "true",
+  // Gmail STARTTLS
+  port: Number(process.env.SMTP_PORT || 587),
+
+  // Port 587 KHÔNG dùng SSL trực tiếp
+  secure: false,
 
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
 
-  connectionTimeout: 15000,
-  greetingTimeout: 15000,
-  socketTimeout: 20000,
-});
+  // Bắt buộc nâng cấp kết nối lên TLS
+  requireTLS: true,
 
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 15000,
+});
 // =========================================================
 // VERIFY SMTP
 // =========================================================

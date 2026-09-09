@@ -8,7 +8,20 @@ const db = require("../config/db");
 
 const VALID_STATUS = ["present", "absent", "late", "excused"];
 
+const VALID_ATTENDANCE_TYPES = ["mass", "catechism"];
+
+const ATTENDANCE_TYPE_CONFIG = {
+  mass: {
+    label: "Thánh lễ",
+  },
+
+  catechism: {
+    label: "Học giáo lý",
+  },
+};
+
 const MAX_BULK_STUDENTS = 1000;
+
 const MAX_NOTE_LENGTH = 255;
 
 /**
@@ -45,17 +58,34 @@ const getTeacherId = (req) => {
 
 /**
  * =========================================================
+ * ATTENDANCE TYPE HELPERS
+ * =========================================================
+ */
+
+const normalizeAttendanceType = (value) => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const type = value.trim().toLowerCase();
+
+  if (!VALID_ATTENDANCE_TYPES.includes(type)) {
+    return null;
+  }
+
+  return type;
+};
+
+const getAttendanceTypeLabel = (type) => {
+  return ATTENDANCE_TYPE_CONFIG[type]?.label || type;
+};
+
+/**
+ * =========================================================
  * VALIDATORS
  * =========================================================
  */
 
-/**
- * Validate YYYY-MM-DD thật sự tồn tại.
- *
- * Ví dụ:
- * 2026-02-31 => false
- * 2026-02-28 => true
- */
 const isValidDate = (date) => {
   if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return false;
@@ -72,9 +102,6 @@ const isValidDate = (date) => {
   );
 };
 
-/**
- * Validate HH:mm:ss
- */
 const isValidTime = (time) => {
   if (typeof time !== "string" || !/^\d{2}:\d{2}:\d{2}$/.test(time)) {
     return false;
@@ -96,24 +123,23 @@ const isValidTime = (time) => {
  * =========================================================
  * ATTENDANCE TIME LOGIC
  * =========================================================
- *
- * Quy tắc:
+ */
+
+/**
+ * Giáo lý:
  *
  * check_in_time < start_time
- *      => present
+ * => present
  *
  * check_in_time >= start_time
- *      => late
+ * => late
  *
- * Ví dụ lớp bắt đầu 18:30:00
+ * Thánh lễ:
  *
- * 18:29:59 => present
- * 18:30:00 => late
- * 18:30:01 => late
- *
- * Nếu lớp chưa cấu hình start_time:
- *      => mặc định present
+ * Không dùng start_time của lớp.
+ * QR hoặc điểm danh có mặt => present.
  */
+
 const getAttendanceStatusByStartTime = (checkInTime, startTime) => {
   if (!isValidTime(checkInTime)) {
     return "late";
@@ -126,9 +152,39 @@ const getAttendanceStatusByStartTime = (checkInTime, startTime) => {
   return checkInTime < startTime ? "present" : "late";
 };
 
-/**
- * Lấy giờ hiện tại của server theo HH:mm:ss
- */
+const calculateFinalStatus = ({
+  attendanceType,
+  requestedStatus,
+  checkInTime,
+  classStartTime,
+}) => {
+  /**
+   * absent / excused giữ nguyên.
+   */
+
+  if (requestedStatus === "absent" || requestedStatus === "excused") {
+    return requestedStatus;
+  }
+
+  /**
+   * Thánh lễ:
+   * Có mặt là present.
+   *
+   * Không tự tính late vì chưa có mass_start_time riêng.
+   */
+
+  if (attendanceType === "mass") {
+    return "present";
+  }
+
+  /**
+   * Giáo lý:
+   * Tính theo start_time của lớp.
+   */
+
+  return getAttendanceStatusByStartTime(checkInTime, classStartTime);
+};
+
 const getCurrentTime = () => {
   return new Date().toTimeString().slice(0, 8);
 };
@@ -139,19 +195,6 @@ const getCurrentTime = () => {
  * =========================================================
  */
 
-/**
- * QR có thể là:
- *
- * 846cee63a74f11f19cdce0d55eb860a8
- *
- * hoặc:
- *
- * GLQR:846cee63a74f11f19cdce0d55eb860a8
- *
- * Token:
- * - hex
- * - 32 đến 64 ký tự
- */
 const normalizeQrToken = (value) => {
   if (typeof value !== "string") {
     return null;
@@ -174,9 +217,6 @@ const normalizeQrToken = (value) => {
   return token;
 };
 
-/**
- * Không log full QR token.
- */
 const maskQrToken = (token) => {
   if (!token || token.length < 10) {
     return "***";
@@ -219,20 +259,21 @@ const safeRollback = async (connection, transactionStarted) => {
  * GET /attendance
  *
  * Query:
+ *
  * ?class_id=17
- * &date=2026-09-08
+ * &date=2026-09-09
+ * &attendance_type=mass
  * &page=1
  * &limit=10
  * &search=
  * &status=all
  */
-const getAttendance = async (req, res) => {
-  console.log("GET ATTENDANCE REQUEST");
 
+const getAttendance = async (req, res) => {
   try {
     /**
      * =====================================================
-     * 1. AUTH
+     * AUTH
      * =====================================================
      */
 
@@ -245,18 +286,9 @@ const getAttendance = async (req, res) => {
       });
     }
 
-    const safeChurchId = Number(churchId);
-
-    if (!Number.isInteger(safeChurchId) || safeChurchId <= 0) {
-      return res.status(403).json({
-        success: false,
-        message: "Giáo xứ không hợp lệ",
-      });
-    }
-
     /**
      * =====================================================
-     * 2. QUERY PARAMS
+     * QUERY PARAMS
      * =====================================================
      */
 
@@ -265,9 +297,27 @@ const getAttendance = async (req, res) => {
     const date =
       typeof req?.query?.date === "string" ? req.query.date.trim() : "";
 
+    const attendanceType = normalizeAttendanceType(
+      req?.query?.attendance_type || "catechism",
+    );
+
     let page = Number.parseInt(req?.query?.page, 10);
 
     let limit = Number.parseInt(req?.query?.limit, 10);
+
+    const search =
+      typeof req?.query?.search === "string" ? req.query.search.trim() : "";
+
+    const status =
+      typeof req?.query?.status === "string"
+        ? req.query.status.trim().toLowerCase()
+        : "all";
+
+    /**
+     * =====================================================
+     * PAGINATION
+     * =====================================================
+     */
 
     if (!Number.isInteger(page) || page < 1) {
       page = 1;
@@ -279,20 +329,9 @@ const getAttendance = async (req, res) => {
 
     limit = Math.min(limit, 100);
 
-    const search =
-      typeof req?.query?.search === "string" ? req.query.search.trim() : "";
-
-    const status =
-      typeof req?.query?.status === "string"
-        ? req.query.status.trim().toLowerCase()
-        : "all";
-
-    const safePage = Math.trunc(page);
-    const safeLimit = Math.trunc(limit);
-
     /**
      * =====================================================
-     * 3. VALIDATE
+     * VALIDATE
      * =====================================================
      */
 
@@ -310,11 +349,16 @@ const getAttendance = async (req, res) => {
       });
     }
 
+    if (!attendanceType) {
+      return res.status(400).json({
+        success: false,
+        message: "attendance_type không hợp lệ",
+      });
+    }
+
     /**
      * =====================================================
-     * 4. CHECK CLASS
-     *
-     * LẤY LUÔN start_time
+     * CHECK CLASS
      * =====================================================
      */
 
@@ -324,12 +368,16 @@ const getAttendance = async (req, res) => {
           id,
           name,
           start_time
+
         FROM classes
-        WHERE id = ?
+
+        WHERE
+          id = ?
           AND church_id = ?
+
         LIMIT 1
       `,
-      [classId, safeChurchId],
+      [classId, churchId],
     );
 
     if (!classRows.length) {
@@ -343,7 +391,7 @@ const getAttendance = async (req, res) => {
 
     /**
      * =====================================================
-     * 5. VALID STATUS
+     * STATUS FILTER
      * =====================================================
      */
 
@@ -369,17 +417,13 @@ const getAttendance = async (req, res) => {
 
     /**
      * =====================================================
-     * 6. BUILD FILTER
+     * BUILD WHERE
      * =====================================================
      */
 
     const whereConditions = ["cs.class_id = ?", "s.church_id = ?"];
 
-    const whereParams = [classId, safeChurchId];
-
-    /**
-     * SEARCH
-     */
+    const whereParams = [classId, churchId];
 
     if (search) {
       whereConditions.push(`
@@ -394,19 +438,11 @@ const getAttendance = async (req, res) => {
       whereParams.push(keyword, keyword);
     }
 
-    /**
-     * STATUS
-     */
-
     if (normalizedStatus !== "all") {
       if (normalizedStatus === "not_attended") {
-        whereConditions.push(`
-          a.id IS NULL
-        `);
+        whereConditions.push("a.id IS NULL");
       } else {
-        whereConditions.push(`
-          a.status = ?
-        `);
+        whereConditions.push("a.status = ?");
 
         whereParams.push(normalizedStatus);
       }
@@ -416,7 +452,7 @@ const getAttendance = async (req, res) => {
 
     /**
      * =====================================================
-     * 7. COUNT
+     * COUNT
      * =====================================================
      */
 
@@ -435,25 +471,25 @@ const getAttendance = async (req, res) => {
           AND a.class_id = ?
           AND a.church_id = ?
           AND a.attendance_date = ?
+          AND a.attendance_type = ?
 
         WHERE
           ${whereSQL}
       `,
-      [classId, safeChurchId, date, ...whereParams],
+      [classId, churchId, date, attendanceType, ...whereParams],
     );
 
     const total = Number(countRows?.[0]?.total || 0);
 
-    const totalPages = total > 0 ? Math.ceil(total / safeLimit) : 1;
+    const totalPages = total > 0 ? Math.ceil(total / limit) : 1;
 
-    const currentPage =
-      total > 0 && safePage > totalPages ? totalPages : safePage;
+    const currentPage = total > 0 && page > totalPages ? totalPages : page;
 
-    const currentOffset = Math.trunc((currentPage - 1) * safeLimit);
+    const offset = (currentPage - 1) * limit;
 
     /**
      * =====================================================
-     * 8. GET STUDENTS
+     * GET STUDENTS
      * =====================================================
      */
 
@@ -465,6 +501,7 @@ const getAttendance = async (req, res) => {
         s.status AS student_status,
 
         a.id AS attendance_id,
+        a.attendance_type,
         a.status AS attendance_status,
         a.check_in_time,
         a.note,
@@ -481,6 +518,7 @@ const getAttendance = async (req, res) => {
         AND a.class_id = ?
         AND a.church_id = ?
         AND a.attendance_date = ?
+        AND a.attendance_type = ?
 
       WHERE
         ${whereSQL}
@@ -489,23 +527,21 @@ const getAttendance = async (req, res) => {
         s.name ASC,
         s.id ASC
 
-      LIMIT ${safeLimit}
-      OFFSET ${currentOffset}
+      LIMIT ${limit}
+      OFFSET ${offset}
     `;
 
     const [rows] = await db.execute(studentSQL, [
       classId,
-      safeChurchId,
+      churchId,
       date,
+      attendanceType,
       ...whereParams,
     ]);
 
     /**
      * =====================================================
-     * 9. STATISTICS
-     *
-     * Toàn bộ học sinh trong lớp.
-     * Không phụ thuộc pagination/search/status.
+     * STATISTICS
      * =====================================================
      */
 
@@ -580,12 +616,13 @@ const getAttendance = async (req, res) => {
           AND a.class_id = ?
           AND a.church_id = ?
           AND a.attendance_date = ?
+          AND a.attendance_type = ?
 
         WHERE
           cs.class_id = ?
           AND s.church_id = ?
       `,
-      [classId, safeChurchId, date, classId, safeChurchId],
+      [classId, churchId, date, attendanceType, classId, churchId],
     );
 
     const stats = statRows?.[0] || {};
@@ -609,34 +646,6 @@ const getAttendance = async (req, res) => {
         ? Number(((attended / totalStudents) * 100).toFixed(2))
         : 0;
 
-    const statistics = {
-      total: totalStudents,
-
-      present,
-
-      absent,
-
-      late,
-
-      excused,
-
-      not_attended: notAttended,
-
-      notMarked: notAttended,
-
-      attended,
-
-      attendance_rate: attendanceRate,
-
-      rate: attendanceRate,
-    };
-
-    /**
-     * =====================================================
-     * 10. RESPONSE
-     * =====================================================
-     */
-
     return res.json({
       success: true,
 
@@ -648,11 +657,26 @@ const getAttendance = async (req, res) => {
 
       date,
 
-      statistics,
+      attendance_type: attendanceType,
+
+      attendance_type_label: getAttendanceTypeLabel(attendanceType),
+
+      statistics: {
+        total: totalStudents,
+        present,
+        absent,
+        late,
+        excused,
+        not_attended: notAttended,
+        notMarked: notAttended,
+        attended,
+        attendance_rate: attendanceRate,
+        rate: attendanceRate,
+      },
 
       pagination: {
         page: currentPage,
-        limit: safeLimit,
+        limit,
         total,
         totalPages,
         hasNextPage: currentPage < totalPages,
@@ -664,24 +688,17 @@ const getAttendance = async (req, res) => {
 
         status:
           normalizedStatus === "not_attended" ? "unmarked" : normalizedStatus,
+
+        attendance_type: attendanceType,
       },
 
-      data: Array.isArray(rows) ? rows : [],
+      data: rows,
     });
   } catch (error) {
     console.error("GET ATTENDANCE ERROR:", error);
 
-    console.error("GET ATTENDANCE DETAIL:", {
-      message: error?.message,
-      code: error?.code,
-      errno: error?.errno,
-      sqlState: error?.sqlState,
-      sqlMessage: error?.sqlMessage,
-    });
-
     return res.status(500).json({
       success: false,
-
       message: "Không thể tải dữ liệu điểm danh",
 
       ...(getErrorMessage(error)
@@ -701,30 +718,18 @@ const getAttendance = async (req, res) => {
  * POST /attendance/bulk
  *
  * Body:
+ *
  * {
  *   class_id: 17,
- *   attendance_date: "2026-09-08",
- *   students: [
- *     {
- *       student_id: 1,
- *       status: "present",
- *       check_in_time: "18:29:59",
- *       note: null
- *     }
- *   ]
+ *   attendance_date: "2026-09-09",
+ *   attendance_type: "mass",
+ *   students: []
  * }
- *
- * BACKEND TỰ TÍNH:
- *
- * 18:29:59 < 18:30:00
- * => present
- *
- * 18:30:00 >= 18:30:00
- * => late
- * =========================================================
  */
+
 const saveBulkAttendance = async (req, res) => {
   let connection = null;
+
   let transactionStarted = false;
 
   try {
@@ -733,12 +738,6 @@ const saveBulkAttendance = async (req, res) => {
     const churchId = getChurchId(req);
 
     const teacherId = getTeacherId(req);
-
-    /**
-     * =====================================================
-     * AUTH
-     * =====================================================
-     */
 
     if (!churchId) {
       return res.status(403).json({
@@ -754,12 +753,6 @@ const saveBulkAttendance = async (req, res) => {
       });
     }
 
-    /**
-     * =====================================================
-     * BODY
-     * =====================================================
-     */
-
     const body = req?.body || {};
 
     const classId = toPositiveInt(body.class_id);
@@ -769,13 +762,11 @@ const saveBulkAttendance = async (req, res) => {
         ? body.attendance_date.trim()
         : "";
 
-    const students = body.students;
+    const attendanceType = normalizeAttendanceType(
+      body.attendance_type || "catechism",
+    );
 
-    /**
-     * =====================================================
-     * VALIDATE
-     * =====================================================
-     */
+    const students = body.students;
 
     if (!classId) {
       return res.status(400).json({
@@ -788,6 +779,13 @@ const saveBulkAttendance = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "attendance_date không hợp lệ",
+      });
+    }
+
+    if (!attendanceType) {
+      return res.status(400).json({
+        success: false,
+        message: "attendance_type không hợp lệ",
       });
     }
 
@@ -808,14 +806,12 @@ const saveBulkAttendance = async (req, res) => {
     if (students.length > MAX_BULK_STUDENTS) {
       return res.status(400).json({
         success: false,
-        message: `Không được gửi quá ${MAX_BULK_STUDENTS} học sinh trong một lần`,
+        message: `Không được gửi quá ${MAX_BULK_STUDENTS} học sinh`,
       });
     }
 
     /**
-     * =====================================================
-     * CHECK CLASS + START TIME
-     * =====================================================
+     * CHECK CLASS
      */
 
     const [classRows] = await connection.execute(
@@ -825,9 +821,13 @@ const saveBulkAttendance = async (req, res) => {
             name,
             church_id,
             start_time
+
           FROM classes
-          WHERE id = ?
+
+          WHERE
+            id = ?
             AND church_id = ?
+
           LIMIT 1
         `,
       [classId, churchId],
@@ -842,12 +842,8 @@ const saveBulkAttendance = async (req, res) => {
 
     const classInfo = classRows[0];
 
-    const classStartTime = classInfo.start_time;
-
     /**
-     * =====================================================
-     * VALIDATE PAYLOAD
-     * =====================================================
+     * NORMALIZE STUDENTS
      */
 
     const normalizedStudents = [];
@@ -876,7 +872,7 @@ const saveBulkAttendance = async (req, res) => {
       if (studentIdSet.has(studentId)) {
         return res.status(400).json({
           success: false,
-          message: `Học sinh ID ${studentId} bị trùng trong danh sách`,
+          message: `Học sinh ID ${studentId} bị trùng`,
         });
       }
 
@@ -890,10 +886,6 @@ const saveBulkAttendance = async (req, res) => {
           message: `Trạng thái điểm danh của học sinh ${studentId} không hợp lệ`,
         });
       }
-
-      /**
-       * CHECK IN TIME
-       */
 
       let checkInTime = null;
 
@@ -912,20 +904,12 @@ const saveBulkAttendance = async (req, res) => {
         checkInTime = item.check_in_time;
       }
 
-      /**
-       * Nếu present / late mà FE không
-       * gửi giờ thì backend lấy giờ hiện tại.
-       */
       if (
         (requestedStatus === "present" || requestedStatus === "late") &&
         !checkInTime
       ) {
         checkInTime = getCurrentTime();
       }
-
-      /**
-       * NOTE
-       */
 
       let note = null;
 
@@ -942,7 +926,7 @@ const saveBulkAttendance = async (req, res) => {
         if (note.length > MAX_NOTE_LENGTH) {
           return res.status(400).json({
             success: false,
-            message: `Ghi chú của học sinh ${studentId} không được quá ${MAX_NOTE_LENGTH} ký tự`,
+            message: `Ghi chú không được quá ${MAX_NOTE_LENGTH} ký tự`,
           });
         }
 
@@ -951,24 +935,12 @@ const saveBulkAttendance = async (req, res) => {
         }
       }
 
-      /**
-       * ===================================================
-       * TÍNH STATUS CUỐI CÙNG
-       * ===================================================
-       *
-       * Chỉ present / late mới phụ thuộc giờ.
-       *
-       * absent / excused giữ nguyên.
-       */
-
-      let finalStatus = requestedStatus;
-
-      if (requestedStatus === "present" || requestedStatus === "late") {
-        finalStatus = getAttendanceStatusByStartTime(
-          checkInTime,
-          classStartTime,
-        );
-      }
+      const finalStatus = calculateFinalStatus({
+        attendanceType,
+        requestedStatus,
+        checkInTime,
+        classStartTime: classInfo.start_time,
+      });
 
       normalizedStudents.push({
         studentId,
@@ -980,9 +952,7 @@ const saveBulkAttendance = async (req, res) => {
     }
 
     /**
-     * =====================================================
-     * KIỂM TRA MEMBERSHIP
-     * =====================================================
+     * CHECK STUDENT MEMBERSHIP
      */
 
     const studentIds = normalizedStudents.map((item) => item.studentId);
@@ -993,11 +963,12 @@ const saveBulkAttendance = async (req, res) => {
       `
           SELECT
             s.id
+
           FROM students s
 
           INNER JOIN class_students cs
             ON cs.student_id = s.id
-           AND cs.class_id = ?
+            AND cs.class_id = ?
 
           WHERE
             s.church_id = ?
@@ -1013,16 +984,15 @@ const saveBulkAttendance = async (req, res) => {
     if (invalidStudents.length) {
       return res.status(400).json({
         success: false,
-        message:
-          "Có học sinh không tồn tại, không thuộc giáo xứ hoặc chưa được xếp vào lớp",
+
+        message: "Có học sinh không thuộc lớp hoặc giáo xứ",
+
         invalid_student_ids: invalidStudents,
       });
     }
 
     /**
-     * =====================================================
      * BEGIN TRANSACTION
-     * =====================================================
      */
 
     await connection.beginTransaction();
@@ -1030,12 +1000,7 @@ const saveBulkAttendance = async (req, res) => {
     transactionStarted = true;
 
     /**
-     * =====================================================
      * LOCK CLASS
-     *
-     * Giúp tránh 2 thiết bị cùng lúc
-     * ghi attendance cho cùng lớp.
-     * =====================================================
      */
 
     const [lockedClassRows] = await connection.execute(
@@ -1043,12 +1008,16 @@ const saveBulkAttendance = async (req, res) => {
           SELECT
             id,
             name,
-            church_id,
             start_time
+
           FROM classes
-          WHERE id = ?
+
+          WHERE
+            id = ?
             AND church_id = ?
+
           LIMIT 1
+
           FOR UPDATE
         `,
       [classId, churchId],
@@ -1068,11 +1037,7 @@ const saveBulkAttendance = async (req, res) => {
     const lockedClass = lockedClassRows[0];
 
     /**
-     * =====================================================
-     * KIỂM TRA ĐÃ ĐIỂM DANH
-     *
-     * ĐÃ CÓ RECORD => KHÔNG CHO GHI ĐÈ
-     * =====================================================
+     * CHECK EXISTING
      */
 
     const [existingRows] = await connection.execute(
@@ -1081,18 +1046,23 @@ const saveBulkAttendance = async (req, res) => {
             id,
             student_id,
             attendance_date,
+            attendance_type,
             status,
             check_in_time,
             note
+
           FROM attendances
+
           WHERE
             class_id = ?
             AND church_id = ?
             AND attendance_date = ?
+            AND attendance_type = ?
             AND student_id IN (${placeholders})
+
           FOR UPDATE
         `,
-      [classId, churchId, attendanceDate, ...studentIds],
+      [classId, churchId, attendanceDate, attendanceType, ...studentIds],
     );
 
     if (existingRows.length) {
@@ -1104,25 +1074,19 @@ const saveBulkAttendance = async (req, res) => {
 
       return res.status(409).json({
         success: false,
+
         code: "ALREADY_ATTENDED",
 
-        message: "Có học sinh đã được điểm danh và không thể ghi đè trạng thái",
+        message: `Có học sinh đã được điểm danh ${getAttendanceTypeLabel(
+          attendanceType,
+        )}`,
 
-        attendance: {
-          id: existing.id,
-          student_id: existing.student_id,
-          attendance_date: existing.attendance_date,
-          status: existing.status,
-          check_in_time: existing.check_in_time,
-          note: existing.note,
-        },
+        attendance: existing,
       });
     }
 
     /**
-     * =====================================================
      * INSERT
-     * =====================================================
      */
 
     for (const item of normalizedStudents) {
@@ -1136,12 +1100,13 @@ const saveBulkAttendance = async (req, res) => {
               student_id,
               teacher_id,
               attendance_date,
+              attendance_type,
               status,
               check_in_time,
               note
             )
             VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?)
+            (?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           [
             churchId,
@@ -1149,17 +1114,13 @@ const saveBulkAttendance = async (req, res) => {
             item.studentId,
             teacherId,
             attendanceDate,
+            attendanceType,
             item.finalStatus,
             item.checkInTime,
             item.note,
           ],
         );
       } catch (insertError) {
-        /**
-         * Nếu xảy ra race condition
-         * với thiết bị khác.
-         */
-
         if (insertError?.code === "ER_DUP_ENTRY") {
           await safeRollback(connection, transactionStarted);
 
@@ -1168,7 +1129,7 @@ const saveBulkAttendance = async (req, res) => {
           return res.status(409).json({
             success: false,
             code: "ALREADY_ATTENDED",
-            message: "Học sinh vừa được điểm danh bởi một thiết bị khác",
+            message: "Học sinh vừa được điểm danh bởi thiết bị khác",
           });
         }
 
@@ -1176,26 +1137,16 @@ const saveBulkAttendance = async (req, res) => {
       }
     }
 
-    /**
-     * =====================================================
-     * COMMIT
-     * =====================================================
-     */
-
     await connection.commit();
 
     transactionStarted = false;
 
-    /**
-     * =====================================================
-     * RESPONSE
-     * =====================================================
-     */
-
     return res.status(201).json({
       success: true,
 
-      message: "Lưu điểm danh thành công",
+      message: `Lưu điểm danh ${getAttendanceTypeLabel(
+        attendanceType,
+      )} thành công`,
 
       count: normalizedStudents.length,
 
@@ -1207,9 +1158,15 @@ const saveBulkAttendance = async (req, res) => {
 
       attendance_date: attendanceDate,
 
+      attendance_type: attendanceType,
+
+      attendance_type_label: getAttendanceTypeLabel(attendanceType),
+
       data: normalizedStudents.map((item) => ({
         student_id: item.studentId,
+
         status: item.finalStatus,
+
         check_in_time: item.checkInTime,
       })),
     });
@@ -1239,20 +1196,11 @@ const saveBulkAttendance = async (req, res) => {
  * =========================================================
  * UPDATE ATTENDANCE
  * =========================================================
- *
- * PUT /attendance/:id
- *
- * QUAN TRỌNG:
- *
- * Nếu attendance đã có status hợp lệ:
- * => KHÔNG CHO UPDATE.
- *
- * Backend vẫn kiểm tra start_time nếu
- * bản ghi cũ somehow chưa có status.
- * =========================================================
  */
+
 const updateAttendance = async (req, res) => {
   let connection = null;
+
   let transactionStarted = false;
 
   try {
@@ -1261,12 +1209,6 @@ const updateAttendance = async (req, res) => {
     const churchId = getChurchId(req);
 
     const teacherId = getTeacherId(req);
-
-    /**
-     * =====================================================
-     * AUTH
-     * =====================================================
-     */
 
     if (!churchId) {
       return res.status(403).json({
@@ -1295,12 +1237,6 @@ const updateAttendance = async (req, res) => {
       });
     }
 
-    /**
-     * =====================================================
-     * CHECK TIME
-     * =====================================================
-     */
-
     let checkInTime = null;
 
     if (
@@ -1318,23 +1254,12 @@ const updateAttendance = async (req, res) => {
       checkInTime = body.check_in_time;
     }
 
-    /**
-     * Nếu present / late nhưng không
-     * truyền giờ => lấy giờ hiện tại.
-     */
-
     if (
       (requestedStatus === "present" || requestedStatus === "late") &&
       !checkInTime
     ) {
       checkInTime = getCurrentTime();
     }
-
-    /**
-     * =====================================================
-     * NOTE
-     * =====================================================
-     */
 
     let note = null;
 
@@ -1360,21 +1285,9 @@ const updateAttendance = async (req, res) => {
       }
     }
 
-    /**
-     * =====================================================
-     * TRANSACTION
-     * =====================================================
-     */
-
     await connection.beginTransaction();
 
     transactionStarted = true;
-
-    /**
-     * =====================================================
-     * LOCK ATTENDANCE + CLASS
-     * =====================================================
-     */
 
     const [existingRows] = await connection.execute(
       `
@@ -1383,6 +1296,7 @@ const updateAttendance = async (req, res) => {
             a.church_id,
             a.class_id,
             a.student_id,
+            a.attendance_type,
             a.status,
             a.check_in_time,
             a.attendance_date,
@@ -1394,7 +1308,7 @@ const updateAttendance = async (req, res) => {
 
           INNER JOIN classes c
             ON c.id = a.class_id
-           AND c.church_id = a.church_id
+            AND c.church_id = a.church_id
 
           WHERE
             a.id = ?
@@ -1421,17 +1335,8 @@ const updateAttendance = async (req, res) => {
     const existing = existingRows[0];
 
     /**
-     * =====================================================
-     * IMMUTABLE ATTENDANCE
-     *
-     * Đã có status hợp lệ:
-     * present
-     * absent
-     * late
-     * excused
-     *
-     * => KHÔNG CHO ĐỔI.
-     * =====================================================
+     * Giữ nguyên nguyên tắc cũ:
+     * attendance đã xác nhận thì không update.
      */
 
     if (VALID_STATUS.includes(existing.status)) {
@@ -1454,6 +1359,8 @@ const updateAttendance = async (req, res) => {
 
           attendance_date: existing.attendance_date,
 
+          attendance_type: existing.attendance_type,
+
           status: existing.status,
 
           check_in_time: existing.check_in_time,
@@ -1461,39 +1368,27 @@ const updateAttendance = async (req, res) => {
       });
     }
 
-    /**
-     * =====================================================
-     * TÍNH STATUS
-     *
-     * Trường hợp database có bản ghi
-     * nhưng status chưa hợp lệ/null.
-     * =====================================================
-     */
+    const finalStatus = calculateFinalStatus({
+      attendanceType: existing.attendance_type,
 
-    let finalStatus = requestedStatus;
+      requestedStatus,
 
-    if (requestedStatus === "present" || requestedStatus === "late") {
-      finalStatus = getAttendanceStatusByStartTime(
-        checkInTime,
-        existing.start_time,
-      );
-    }
+      checkInTime,
 
-    /**
-     * =====================================================
-     * UPDATE
-     * =====================================================
-     */
+      classStartTime: existing.start_time,
+    });
 
     await connection.execute(
       `
         UPDATE attendances
+
         SET
           teacher_id = ?,
           status = ?,
           check_in_time = ?,
           note = ?,
           updated_at = CURRENT_TIMESTAMP
+
         WHERE
           id = ?
           AND church_id = ?
@@ -1508,12 +1403,6 @@ const updateAttendance = async (req, res) => {
       ],
     );
 
-    /**
-     * =====================================================
-     * COMMIT
-     * =====================================================
-     */
-
     await connection.commit();
 
     transactionStarted = false;
@@ -1525,6 +1414,8 @@ const updateAttendance = async (req, res) => {
 
       attendance: {
         id: attendanceId,
+
+        attendance_type: existing.attendance_type,
 
         status: finalStatus,
 
@@ -1557,18 +1448,11 @@ const updateAttendance = async (req, res) => {
  * =========================================================
  * DELETE ATTENDANCE
  * =========================================================
- *
- * DELETE /attendance/:id
- *
- * Để đảm bảo nguyên tắc:
- *
- * "Đã điểm danh thì không được thay đổi"
- *
- * => Không cho xóa bản ghi attendance hợp lệ.
- * =========================================================
  */
+
 const deleteAttendance = async (req, res) => {
   let connection = null;
+
   let transactionStarted = false;
 
   try {
@@ -1602,13 +1486,18 @@ const deleteAttendance = async (req, res) => {
             id,
             student_id,
             attendance_date,
+            attendance_type,
             status,
             check_in_time
+
           FROM attendances
+
           WHERE
             id = ?
             AND church_id = ?
+
           LIMIT 1
+
           FOR UPDATE
         `,
       [attendanceId, churchId],
@@ -1627,10 +1516,6 @@ const deleteAttendance = async (req, res) => {
 
     const attendance = rows[0];
 
-    /**
-     * Không cho xóa attendance hợp lệ.
-     */
-
     if (VALID_STATUS.includes(attendance.status)) {
       await safeRollback(connection, transactionStarted);
 
@@ -1643,28 +1528,14 @@ const deleteAttendance = async (req, res) => {
 
         message: "Bản ghi điểm danh đã được xác nhận và không thể xóa",
 
-        attendance: {
-          id: attendance.id,
-
-          student_id: attendance.student_id,
-
-          attendance_date: attendance.attendance_date,
-
-          status: attendance.status,
-
-          check_in_time: attendance.check_in_time,
-        },
+        attendance,
       });
     }
-
-    /**
-     * Trường hợp record chưa có status hợp lệ
-     * mới cho xóa.
-     */
 
     await connection.execute(
       `
         DELETE FROM attendances
+
         WHERE
           id = ?
           AND church_id = ?
@@ -1709,9 +1580,10 @@ const deleteAttendance = async (req, res) => {
  *
  * GET /attendance/student/:studentId
  *
- * ?month=9&year=2026
- * =========================================================
+ * ?month=9
+ * &year=2026
  */
+
 const getStudentAttendance = async (req, res) => {
   try {
     const churchId = getChurchId(req);
@@ -1761,9 +1633,7 @@ const getStudentAttendance = async (req, res) => {
     }
 
     /**
-     * =====================================================
      * CHECK STUDENT
-     * =====================================================
      */
 
     const [studentRows] = await db.execute(
@@ -1773,10 +1643,13 @@ const getStudentAttendance = async (req, res) => {
             code,
             name,
             status
+
           FROM students
+
           WHERE
             id = ?
             AND church_id = ?
+
           LIMIT 1
         `,
       [studentId, churchId],
@@ -1790,9 +1663,7 @@ const getStudentAttendance = async (req, res) => {
     }
 
     /**
-     * =====================================================
      * HISTORY
-     * =====================================================
      */
 
     const [rows] = await db.execute(
@@ -1800,10 +1671,12 @@ const getStudentAttendance = async (req, res) => {
           SELECT
             a.id,
             a.class_id,
+
             c.name AS class_name,
             c.start_time,
 
             a.attendance_date,
+            a.attendance_type,
             a.status,
             a.check_in_time,
             a.note,
@@ -1815,7 +1688,7 @@ const getStudentAttendance = async (req, res) => {
 
           LEFT JOIN classes c
             ON c.id = a.class_id
-           AND c.church_id = a.church_id
+            AND c.church_id = a.church_id
 
           WHERE
             a.student_id = ?
@@ -1831,27 +1704,56 @@ const getStudentAttendance = async (req, res) => {
     );
 
     /**
-     * =====================================================
      * STATISTICS
-     * =====================================================
      */
 
     const statistics = {
       total: rows.length,
 
-      present: 0,
+      mass: {
+        total: 0,
+        present: 0,
+        absent: 0,
+        late: 0,
+        excused: 0,
+      },
 
-      absent: 0,
-
-      late: 0,
-
-      excused: 0,
+      catechism: {
+        total: 0,
+        present: 0,
+        absent: 0,
+        late: 0,
+        excused: 0,
+      },
     };
 
     for (const row of rows) {
-      if (Object.prototype.hasOwnProperty.call(statistics, row.status)) {
-        statistics[row.status]++;
+      const type = row.attendance_type;
+
+      if (!statistics[type]) {
+        continue;
       }
+
+      statistics[type].total++;
+
+      if (Object.prototype.hasOwnProperty.call(statistics[type], row.status)) {
+        statistics[type][row.status]++;
+      }
+    }
+
+    /**
+     * ATTENDANCE RATE
+     */
+
+    for (const type of ["mass", "catechism"]) {
+      const stat = statistics[type];
+
+      const attended = stat.present + stat.late;
+
+      stat.attended = attended;
+
+      stat.attendance_rate =
+        stat.total > 0 ? Number(((attended / stat.total) * 100).toFixed(2)) : 0;
     }
 
     return res.json({
@@ -1892,8 +1794,8 @@ const getStudentAttendance = async (req, res) => {
  *
  * ?from=2026-09-01
  * &to=2026-09-30
- * =========================================================
  */
+
 const getClassStatistics = async (req, res) => {
   try {
     const churchId = getChurchId(req);
@@ -1914,15 +1816,9 @@ const getClassStatistics = async (req, res) => {
       });
     }
 
-    let fromDate = req?.query?.from;
+    const fromDate = req?.query?.from;
 
-    let toDate = req?.query?.to;
-
-    /**
-     * =====================================================
-     * DATE VALIDATION
-     * =====================================================
-     */
+    const toDate = req?.query?.to;
 
     if (fromDate && !isValidDate(fromDate)) {
       return res.status(400).json({
@@ -1946,9 +1842,7 @@ const getClassStatistics = async (req, res) => {
     }
 
     /**
-     * =====================================================
      * CHECK CLASS
-     * =====================================================
      */
 
     const [classRows] = await db.execute(
@@ -1957,10 +1851,13 @@ const getClassStatistics = async (req, res) => {
             id,
             name,
             start_time
+
           FROM classes
+
           WHERE
             id = ?
             AND church_id = ?
+
           LIMIT 1
         `,
       [classId, churchId],
@@ -1974,9 +1871,7 @@ const getClassStatistics = async (req, res) => {
     }
 
     /**
-     * =====================================================
      * QUERY
-     * =====================================================
      */
 
     let query = `
@@ -1987,52 +1882,95 @@ const getClassStatistics = async (req, res) => {
 
         COUNT(
           CASE
-            WHEN a.status = 'present'
+            WHEN a.attendance_type = 'mass'
+            AND a.status = 'present'
             THEN 1
           END
-        ) AS present_count,
+        ) AS mass_present_count,
 
         COUNT(
           CASE
-            WHEN a.status = 'absent'
+            WHEN a.attendance_type = 'mass'
+            AND a.status = 'absent'
             THEN 1
           END
-        ) AS absent_count,
+        ) AS mass_absent_count,
 
         COUNT(
           CASE
-            WHEN a.status = 'late'
+            WHEN a.attendance_type = 'mass'
+            AND a.status = 'late'
             THEN 1
           END
-        ) AS late_count,
+        ) AS mass_late_count,
 
         COUNT(
           CASE
-            WHEN a.status = 'excused'
+            WHEN a.attendance_type = 'mass'
+            AND a.status = 'excused'
             THEN 1
           END
-        ) AS excused_count,
+        ) AS mass_excused_count,
 
-        COUNT(a.id)
-          AS total_attendance
+        COUNT(
+          CASE
+            WHEN a.attendance_type = 'catechism'
+            AND a.status = 'present'
+            THEN 1
+          END
+        ) AS catechism_present_count,
+
+        COUNT(
+          CASE
+            WHEN a.attendance_type = 'catechism'
+            AND a.status = 'absent'
+            THEN 1
+          END
+        ) AS catechism_absent_count,
+
+        COUNT(
+          CASE
+            WHEN a.attendance_type = 'catechism'
+            AND a.status = 'late'
+            THEN 1
+          END
+        ) AS catechism_late_count,
+
+        COUNT(
+          CASE
+            WHEN a.attendance_type = 'catechism'
+            AND a.status = 'excused'
+            THEN 1
+          END
+        ) AS catechism_excused_count,
+
+        COUNT(
+          CASE
+            WHEN a.attendance_type = 'mass'
+            THEN 1
+          END
+        ) AS mass_total,
+
+        COUNT(
+          CASE
+            WHEN a.attendance_type = 'catechism'
+            THEN 1
+          END
+        ) AS catechism_total
 
       FROM class_students cs
 
       INNER JOIN students s
         ON s.id = cs.student_id
-       AND s.church_id = ?
+        AND s.church_id = ?
 
       LEFT JOIN attendances a
         ON a.student_id = s.id
-       AND a.class_id = ?
-       AND a.church_id = ?
+        AND a.class_id = ?
+        AND a.church_id = ?
     `;
 
     const params = [churchId, classId, churchId];
-
-    /**
-     * DATE FILTER
-     */
 
     if (fromDate && toDate) {
       query += `
@@ -2074,42 +2012,50 @@ const getClassStatistics = async (req, res) => {
     const [rows] = await db.execute(query, params);
 
     /**
-     * =====================================================
      * SUMMARY
-     * =====================================================
      */
 
     const summary = {
       students: rows.length,
 
-      present: 0,
+      mass: {
+        total: 0,
+        present: 0,
+        absent: 0,
+        late: 0,
+        excused: 0,
+      },
 
-      absent: 0,
-
-      late: 0,
-
-      excused: 0,
-
-      total_attendance: 0,
+      catechism: {
+        total: 0,
+        present: 0,
+        absent: 0,
+        late: 0,
+        excused: 0,
+      },
     };
 
     for (const row of rows) {
-      summary.present += Number(row.present_count || 0);
+      summary.mass.total += Number(row.mass_total || 0);
 
-      summary.absent += Number(row.absent_count || 0);
+      summary.mass.present += Number(row.mass_present_count || 0);
 
-      summary.late += Number(row.late_count || 0);
+      summary.mass.absent += Number(row.mass_absent_count || 0);
 
-      summary.excused += Number(row.excused_count || 0);
+      summary.mass.late += Number(row.mass_late_count || 0);
 
-      summary.total_attendance += Number(row.total_attendance || 0);
+      summary.mass.excused += Number(row.mass_excused_count || 0);
+
+      summary.catechism.total += Number(row.catechism_total || 0);
+
+      summary.catechism.present += Number(row.catechism_present_count || 0);
+
+      summary.catechism.absent += Number(row.catechism_absent_count || 0);
+
+      summary.catechism.late += Number(row.catechism_late_count || 0);
+
+      summary.catechism.excused += Number(row.catechism_excused_count || 0);
     }
-
-    /**
-     * =====================================================
-     * RESPONSE
-     * =====================================================
-     */
 
     return res.json({
       success: true,
@@ -2147,60 +2093,26 @@ const getClassStatistics = async (req, res) => {
  *
  * POST /attendance/scan-qr
  *
- * Body:
  * {
  *   qr_token: "...",
- *   class_id: 17
+ *   class_id: 17,
+ *   attendance_type: "mass"
  * }
- *
- * QR chỉ điểm danh ngày hiện tại.
- *
- * Backend dùng:
- *   CURDATE()
- *   giờ server hiện tại
- *
- * Sau đó so sánh:
- *
- * check_in_time < classes.start_time
- *     => present
- *
- * check_in_time >= classes.start_time
- *     => late
- * =========================================================
  */
+
 const scanQRCode = async (req, res) => {
   let connection = null;
+
   let transactionStarted = false;
 
   let maskedToken = "***";
 
   try {
-    console.log("\n======================================================");
-
-    console.log("[QR] 🚀 BẮT ĐẦU QUÉT QR");
-
-    console.log("[QR] Time:", new Date().toISOString());
-
     connection = await db.getConnection();
-
-    console.log("[QR] ✅ DB connection OK");
 
     const churchId = getChurchId(req);
 
     const teacherId = getTeacherId(req);
-
-    console.log("[QR] AUTH:", {
-      churchId,
-      teacherId,
-      userId: req?.user?.id,
-      role: req?.user?.role,
-    });
-
-    /**
-     * ======================================================
-     * AUTH
-     * ======================================================
-     */
 
     if (!churchId) {
       return res.status(403).json({
@@ -2216,40 +2128,17 @@ const scanQRCode = async (req, res) => {
       });
     }
 
-    /**
-     * ======================================================
-     * BODY
-     * ======================================================
-     */
-
     const body = req?.body || {};
 
     const classId = toPositiveInt(body.class_id);
 
-    /**
-     * ======================================================
-     * QR TOKEN
-     * ======================================================
-     */
+    const attendanceType = normalizeAttendanceType(
+      body.attendance_type || "catechism",
+    );
 
     const qrToken = normalizeQrToken(body.qr_token);
 
     maskedToken = maskQrToken(qrToken);
-
-    console.log("[QR] BODY:", {
-      class_id: body.class_id,
-
-      qr_token_exists: !!body.qr_token,
-
-      qr_token_length:
-        typeof body.qr_token === "string" ? body.qr_token.length : null,
-    });
-
-    console.log("[QR] TOKEN:", {
-      maskedToken,
-      valid: !!qrToken,
-      length: qrToken?.length || 0,
-    });
 
     if (!classId) {
       return res.status(400).json({
@@ -2258,17 +2147,22 @@ const scanQRCode = async (req, res) => {
       });
     }
 
+    if (!attendanceType) {
+      return res.status(400).json({
+        success: false,
+        message: "attendance_type không hợp lệ",
+      });
+    }
+
     if (!qrToken) {
       return res.status(400).json({
         success: false,
-        message: "Mã QR không hợp lệ hoặc đã bị hỏng",
+        message: "Mã QR không hợp lệ",
       });
     }
 
     /**
-     * ======================================================
      * CHECK CLASS
-     * ======================================================
      */
 
     const [classRows] = await connection.execute(
@@ -2278,10 +2172,13 @@ const scanQRCode = async (req, res) => {
             name,
             church_id,
             start_time
+
           FROM classes
+
           WHERE
             id = ?
             AND church_id = ?
+
           LIMIT 1
         `,
       [classId, churchId],
@@ -2294,20 +2191,12 @@ const scanQRCode = async (req, res) => {
       });
     }
 
-    /**
-     * ======================================================
-     * BEGIN TRANSACTION
-     * ======================================================
-     */
-
     await connection.beginTransaction();
 
     transactionStarted = true;
 
     /**
-     * ======================================================
      * LOCK CLASS
-     * ======================================================
      */
 
     const [lockedClassRows] = await connection.execute(
@@ -2317,11 +2206,15 @@ const scanQRCode = async (req, res) => {
             name,
             church_id,
             start_time
+
           FROM classes
+
           WHERE
             id = ?
             AND church_id = ?
+
           LIMIT 1
+
           FOR UPDATE
         `,
       [classId, churchId],
@@ -2341,9 +2234,7 @@ const scanQRCode = async (req, res) => {
     const lockedClass = lockedClassRows[0];
 
     /**
-     * ======================================================
-     * TÌM STUDENT
-     * ======================================================
+     * FIND STUDENT
      */
 
     const [studentRows] = await connection.execute(
@@ -2355,11 +2246,15 @@ const scanQRCode = async (req, res) => {
             status,
             church_id,
             qr_token
+
           FROM students
+
           WHERE
             qr_token = ?
             AND church_id = ?
+
           LIMIT 1
+
           FOR UPDATE
         `,
       [qrToken, churchId],
@@ -2370,10 +2265,6 @@ const scanQRCode = async (req, res) => {
 
       transactionStarted = false;
 
-      console.warn(
-        `[QR] ❌ QR KHÔNG TỒN TẠI | token=${maskedToken} | church=${churchId} | class=${classId}`,
-      );
-
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy học sinh với mã QR này",
@@ -2382,29 +2273,6 @@ const scanQRCode = async (req, res) => {
 
     const student = studentRows[0];
 
-    /**
-     * ======================================================
-     * CHECK CHURCH
-     * ======================================================
-     */
-
-    if (Number(student.church_id) !== Number(churchId)) {
-      await safeRollback(connection, transactionStarted);
-
-      transactionStarted = false;
-
-      return res.status(403).json({
-        success: false,
-        message: "Học sinh không thuộc giáo xứ hiện tại",
-      });
-    }
-
-    /**
-     * ======================================================
-     * CHECK STUDENT STATUS
-     * ======================================================
-     */
-
     if (student.status !== "active") {
       await safeRollback(connection, transactionStarted);
 
@@ -2412,24 +2280,12 @@ const scanQRCode = async (req, res) => {
 
       return res.status(400).json({
         success: false,
-        message: "Học sinh hiện không ở trạng thái hoạt động",
-
-        student: {
-          id: student.id,
-
-          code: student.code,
-
-          name: student.name,
-
-          status: student.status,
-        },
+        message: "Học sinh hiện không hoạt động",
       });
     }
 
     /**
-     * ======================================================
      * CHECK MEMBERSHIP
-     * ======================================================
      */
 
     const [membershipRows] = await connection.execute(
@@ -2437,10 +2293,13 @@ const scanQRCode = async (req, res) => {
           SELECT
             class_id,
             student_id
+
           FROM class_students
+
           WHERE
             class_id = ?
             AND student_id = ?
+
           LIMIT 1
         `,
       [classId, student.id],
@@ -2458,24 +2317,14 @@ const scanQRCode = async (req, res) => {
 
         student: {
           id: student.id,
-
           code: student.code,
-
           name: student.name,
-        },
-
-        class: {
-          id: classId,
-
-          name: lockedClass.name,
         },
       });
     }
 
     /**
-     * ======================================================
-     * KIỂM TRA ĐÃ ĐIỂM DANH HÔM NAY
-     * ======================================================
+     * CHECK EXISTING
      */
 
     const [existingAttendanceRows] = await connection.execute(
@@ -2483,6 +2332,7 @@ const scanQRCode = async (req, res) => {
           SELECT
             id,
             attendance_date,
+            attendance_type,
             status,
             check_in_time,
             teacher_id,
@@ -2494,14 +2344,14 @@ const scanQRCode = async (req, res) => {
             student_id = ?
             AND class_id = ?
             AND church_id = ?
-            AND attendance_date =
-              CURDATE()
+            AND attendance_date = CURDATE()
+            AND attendance_type = ?
 
           LIMIT 1
 
           FOR UPDATE
         `,
-      [student.id, classId, churchId],
+      [student.id, classId, churchId, attendanceType],
     );
 
     if (existingAttendanceRows.length) {
@@ -2511,74 +2361,43 @@ const scanQRCode = async (req, res) => {
 
       transactionStarted = false;
 
-      console.warn("[QR] ⚠️ ĐÃ ĐIỂM DANH:", {
-        attendanceId: existing.id,
-
-        studentId: student.id,
-
-        date: existing.attendance_date,
-
-        time: existing.check_in_time,
-
-        status: existing.status,
-      });
-
       return res.status(409).json({
         success: false,
 
         code: "ALREADY_ATTENDED",
 
-        message: "Học sinh này đã được điểm danh hôm nay",
+        message: `Học sinh này đã được điểm danh ${getAttendanceTypeLabel(
+          attendanceType,
+        )} hôm nay`,
 
         student: {
           id: student.id,
-
           code: student.code,
-
           name: student.name,
         },
 
-        attendance: {
-          id: existing.id,
-
-          attendance_date: existing.attendance_date,
-
-          status: existing.status,
-
-          check_in_time: existing.check_in_time,
-        },
+        attendance: existing,
       });
     }
 
     /**
-     * ======================================================
-     * LẤY GIỜ HIỆN TẠI
-     * ======================================================
+     * TIME
      */
 
     const checkInTime = getCurrentTime();
 
-    /**
-     * ======================================================
-     * TÍNH STATUS THEO START_TIME
-     * ======================================================
-     */
+    const finalStatus = calculateFinalStatus({
+      attendanceType,
 
-    const finalStatus = getAttendanceStatusByStartTime(
-      checkInTime,
-      lockedClass.start_time,
-    );
+      requestedStatus: "present",
 
-    console.log("[QR] TIME CHECK:", {
       checkInTime,
-      startTime: lockedClass.start_time,
-      finalStatus,
+
+      classStartTime: lockedClass.start_time,
     });
 
     /**
-     * ======================================================
      * INSERT
-     * ======================================================
      */
 
     let insertResult;
@@ -2593,6 +2412,7 @@ const scanQRCode = async (req, res) => {
               student_id,
               teacher_id,
               attendance_date,
+              attendance_type,
               status,
               check_in_time,
               note
@@ -2606,19 +2426,23 @@ const scanQRCode = async (req, res) => {
               CURDATE(),
               ?,
               ?,
+              ?,
               NULL
             )
           `,
-        [churchId, classId, student.id, teacherId, finalStatus, checkInTime],
+        [
+          churchId,
+          classId,
+          student.id,
+          teacherId,
+          attendanceType,
+          finalStatus,
+          checkInTime,
+        ],
       );
 
       insertResult = result;
     } catch (insertError) {
-      /**
-       * Race condition:
-       * thiết bị khác vừa điểm danh.
-       */
-
       if (insertError?.code === "ER_DUP_ENTRY") {
         await safeRollback(connection, transactionStarted);
 
@@ -2629,7 +2453,7 @@ const scanQRCode = async (req, res) => {
 
           code: "ALREADY_ATTENDED",
 
-          message: "Học sinh này vừa được điểm danh bởi một thiết bị khác",
+          message: "Học sinh vừa được điểm danh bởi thiết bị khác",
         });
       }
 
@@ -2637,9 +2461,7 @@ const scanQRCode = async (req, res) => {
     }
 
     /**
-     * ======================================================
      * GET SAVED RECORD
-     * ======================================================
      */
 
     const [savedRows] = await connection.execute(
@@ -2647,119 +2469,71 @@ const scanQRCode = async (req, res) => {
           SELECT
             id,
             attendance_date,
+            attendance_type,
             check_in_time,
             status,
             student_id,
             class_id,
             teacher_id
+
           FROM attendances
+
           WHERE
             id = ?
             AND church_id = ?
+
           LIMIT 1
         `,
       [insertResult.insertId, churchId],
     );
 
     if (!savedRows.length) {
-      throw new Error("Không tìm thấy bản ghi điểm danh sau khi insert");
+      throw new Error("Không tìm thấy bản ghi sau khi insert");
     }
 
     const savedAttendance = savedRows[0];
 
-    /**
-     * ======================================================
-     * COMMIT
-     * ======================================================
-     */
-
     await connection.commit();
 
     transactionStarted = false;
-
-    console.log(
-      `[QR] ✅ ĐIỂM DANH THÀNH CÔNG
-token=${maskedToken}
-student=${student.id}
-code=${student.code}
-name="${student.name}"
-class=${classId}
-className="${lockedClass.name}"
-church=${churchId}
-teacher=${teacherId}
-attendance=${savedAttendance.id}
-date=${savedAttendance.attendance_date}
-time=${savedAttendance.check_in_time}
-status=${savedAttendance.status}`,
-    );
 
     return res.status(201).json({
       success: true,
 
       code: "ATTENDANCE_SUCCESS",
 
-      message: "Điểm danh thành công",
+      message: `Điểm danh ${getAttendanceTypeLabel(attendanceType)} thành công`,
+
+      attendance_type: attendanceType,
+
+      attendance_type_label: getAttendanceTypeLabel(attendanceType),
 
       student: {
         id: student.id,
-
         code: student.code,
-
         name: student.name,
       },
 
       class: {
         id: classId,
-
         name: lockedClass.name,
-
         start_time: lockedClass.start_time,
       },
 
-      attendance: {
-        id: savedAttendance.id,
-
-        attendance_date: savedAttendance.attendance_date,
-
-        check_in_time: savedAttendance.check_in_time,
-
-        status: savedAttendance.status,
-      },
+      attendance: savedAttendance,
     });
   } catch (error) {
     await safeRollback(connection, transactionStarted);
 
-    console.error("\n======================================================");
-
-    console.error("[QR] 💥 SCAN QR ERROR");
-
-    console.error("[QR] token:", maskedToken);
-
-    console.error("[QR] message:", error?.message);
-
-    console.error("[QR] code:", error?.code);
-
-    console.error("[QR] sqlState:", error?.sqlState);
-
-    console.error("[QR] errno:", error?.errno);
-
-    console.error("[QR] stack:", error?.stack);
-
-    console.error("======================================================\n");
-
-    if (error?.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({
-        success: false,
-
-        code: "ALREADY_ATTENDED",
-
-        message: "Học sinh này đã được điểm danh hôm nay",
-      });
-    }
+    console.error("[QR] SCAN ERROR:", {
+      token: maskedToken,
+      message: error?.message,
+      code: error?.code,
+      sqlMessage: error?.sqlMessage,
+    });
 
     return res.status(500).json({
       success: false,
-
       message: "Có lỗi xảy ra khi quét mã QR",
 
       ...(getErrorMessage(error)
@@ -2771,8 +2545,6 @@ status=${savedAttendance.status}`,
   } finally {
     if (connection) {
       connection.release();
-
-      console.log("[QR] 🔓 DB connection released");
     }
   }
 };
@@ -2784,29 +2556,16 @@ status=${savedAttendance.status}`,
  *
  * POST /attendance/finish
  *
- * Body:
  * {
  *   class_id: 17,
- *   attendance_date: "2026-09-08"
+ *   attendance_date: "2026-09-09",
+ *   attendance_type: "mass"
  * }
- *
- * Khi kết thúc:
- *
- * Đã có attendance:
- *   present -> giữ
- *   late    -> giữ
- *   absent  -> giữ
- *   excused -> giữ
- *
- * Chưa có attendance:
- *   => absent
- *
- * Xử lý toàn bộ học sinh,
- * không phụ thuộc pagination FE.
- * =========================================================
  */
+
 const finishAttendance = async (req, res) => {
   let connection = null;
+
   let transactionStarted = false;
 
   try {
@@ -2815,12 +2574,6 @@ const finishAttendance = async (req, res) => {
     const churchId = getChurchId(req);
 
     const teacherId = getTeacherId(req);
-
-    /**
-     * =====================================================
-     * AUTH
-     * =====================================================
-     */
 
     if (!churchId) {
       return res.status(403).json({
@@ -2836,12 +2589,6 @@ const finishAttendance = async (req, res) => {
       });
     }
 
-    /**
-     * =====================================================
-     * BODY
-     * =====================================================
-     */
-
     const body = req?.body || {};
 
     const classId = toPositiveInt(body.class_id);
@@ -2851,11 +2598,9 @@ const finishAttendance = async (req, res) => {
         ? body.attendance_date.trim()
         : "";
 
-    /**
-     * =====================================================
-     * VALIDATE
-     * =====================================================
-     */
+    const attendanceType = normalizeAttendanceType(
+      body.attendance_type || "catechism",
+    );
 
     if (!classId) {
       return res.status(400).json({
@@ -2871,10 +2616,15 @@ const finishAttendance = async (req, res) => {
       });
     }
 
+    if (!attendanceType) {
+      return res.status(400).json({
+        success: false,
+        message: "attendance_type không hợp lệ",
+      });
+    }
+
     /**
-     * =====================================================
      * CHECK CLASS
-     * =====================================================
      */
 
     const [classRows] = await connection.execute(
@@ -2884,10 +2634,13 @@ const finishAttendance = async (req, res) => {
             name,
             church_id,
             start_time
+
           FROM classes
+
           WHERE
             id = ?
             AND church_id = ?
+
           LIMIT 1
         `,
       [classId, churchId],
@@ -2900,20 +2653,12 @@ const finishAttendance = async (req, res) => {
       });
     }
 
-    /**
-     * =====================================================
-     * BEGIN TRANSACTION
-     * =====================================================
-     */
-
     await connection.beginTransaction();
 
     transactionStarted = true;
 
     /**
-     * =====================================================
      * LOCK CLASS
-     * =====================================================
      */
 
     const [lockedClassRows] = await connection.execute(
@@ -2923,11 +2668,15 @@ const finishAttendance = async (req, res) => {
             name,
             church_id,
             start_time
+
           FROM classes
+
           WHERE
             id = ?
             AND church_id = ?
+
           LIMIT 1
+
           FOR UPDATE
         `,
       [classId, churchId],
@@ -2947,9 +2696,7 @@ const finishAttendance = async (req, res) => {
     const lockedClass = lockedClassRows[0];
 
     /**
-     * =====================================================
      * GET ACTIVE STUDENTS
-     * =====================================================
      */
 
     const [students] = await connection.execute(
@@ -2976,12 +2723,6 @@ const finishAttendance = async (req, res) => {
       [classId, churchId],
     );
 
-    /**
-     * =====================================================
-     * NO STUDENTS
-     * =====================================================
-     */
-
     if (!students.length) {
       await connection.commit();
 
@@ -2998,6 +2739,8 @@ const finishAttendance = async (req, res) => {
 
         attendance_date: attendanceDate,
 
+        attendance_type: attendanceType,
+
         total_students: 0,
 
         already_attended: 0,
@@ -3007,9 +2750,7 @@ const finishAttendance = async (req, res) => {
     }
 
     /**
-     * =====================================================
      * GET EXISTING ATTENDANCE
-     * =====================================================
      */
 
     const [existingAttendances] = await connection.execute(
@@ -3018,14 +2759,18 @@ const finishAttendance = async (req, res) => {
             id,
             student_id,
             status
+
           FROM attendances
+
           WHERE
             class_id = ?
             AND church_id = ?
             AND attendance_date = ?
+            AND attendance_type = ?
+
           FOR UPDATE
         `,
-      [classId, churchId, attendanceDate],
+      [classId, churchId, attendanceDate, attendanceType],
     );
 
     const attendedStudentIds = new Set(
@@ -3033,9 +2778,7 @@ const finishAttendance = async (req, res) => {
     );
 
     /**
-     * =====================================================
-     * UNMARKED STUDENTS
-     * =====================================================
+     * UNMARKED
      */
 
     const unmarkedStudents = students.filter(
@@ -3043,9 +2786,7 @@ const finishAttendance = async (req, res) => {
     );
 
     /**
-     * =====================================================
      * INSERT ABSENT
-     * =====================================================
      */
 
     for (const student of unmarkedStudents) {
@@ -3059,6 +2800,7 @@ const finishAttendance = async (req, res) => {
               student_id,
               teacher_id,
               attendance_date,
+              attendance_type,
               status,
               check_in_time,
               note
@@ -3070,19 +2812,22 @@ const finishAttendance = async (req, res) => {
               ?,
               ?,
               ?,
+              ?,
               'absent',
               NULL,
               NULL
             )
           `,
-          [churchId, classId, student.student_id, teacherId, attendanceDate],
+          [
+            churchId,
+            classId,
+            student.student_id,
+            teacherId,
+            attendanceDate,
+            attendanceType,
+          ],
         );
       } catch (insertError) {
-        /**
-         * Nếu duplicate do race condition
-         * thì giữ bản ghi đã tồn tại.
-         */
-
         if (insertError?.code === "ER_DUP_ENTRY") {
           continue;
         }
@@ -3091,35 +2836,21 @@ const finishAttendance = async (req, res) => {
       }
     }
 
-    /**
-     * =====================================================
-     * COMMIT
-     * =====================================================
-     */
-
     await connection.commit();
 
     transactionStarted = false;
-
-    const totalStudents = students.length;
-
-    const alreadyAttended = attendedStudentIds.size;
-
-    const markedAbsent = unmarkedStudents.length;
-
-    /**
-     * =====================================================
-     * RESPONSE
-     * =====================================================
-     */
 
     return res.json({
       success: true,
 
       message:
-        markedAbsent > 0
-          ? `Đã kết thúc điểm danh. ${markedAbsent} học sinh chưa điểm danh được chuyển thành vắng.`
-          : "Đã kết thúc điểm danh. Tất cả học sinh đã được điểm danh.",
+        unmarkedStudents.length > 0
+          ? `Đã kết thúc điểm danh ${getAttendanceTypeLabel(attendanceType)}. ${
+              unmarkedStudents.length
+            } học sinh chưa điểm danh được chuyển thành vắng.`
+          : `Đã kết thúc điểm danh ${getAttendanceTypeLabel(
+              attendanceType,
+            )}. Tất cả học sinh đã được điểm danh.`,
 
       class_id: classId,
 
@@ -3129,11 +2860,15 @@ const finishAttendance = async (req, res) => {
 
       attendance_date: attendanceDate,
 
-      total_students: totalStudents,
+      attendance_type: attendanceType,
 
-      already_attended: alreadyAttended,
+      attendance_type_label: getAttendanceTypeLabel(attendanceType),
 
-      marked_absent: markedAbsent,
+      total_students: students.length,
+
+      already_attended: attendedStudentIds.size,
+
+      marked_absent: unmarkedStudents.length,
     });
   } catch (error) {
     await safeRollback(connection, transactionStarted);
@@ -3166,11 +2901,18 @@ const finishAttendance = async (req, res) => {
 
 module.exports = {
   getAttendance,
+
   saveBulkAttendance,
+
   updateAttendance,
+
   deleteAttendance,
+
   getStudentAttendance,
+
   getClassStatistics,
+
   scanQRCode,
+
   finishAttendance,
 };

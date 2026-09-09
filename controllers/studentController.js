@@ -1061,23 +1061,24 @@ exports.importStudentsExcel = async (req, res) => {
 
   try {
     // =========================================================
-    // 0. GET CONNECTION
+    // 0. GET DATABASE CONNECTION
     // =========================================================
 
     connection = await db.getConnection();
 
-    console.log("\n");
+    console.log("");
     console.log("============================================================");
-    console.log("                IMPORT STUDENTS EXCEL");
+    console.log("              IMPORT STUDENTS EXCEL");
     console.log("============================================================");
 
     // =========================================================
-    // 1. CHURCH
+    // 1. GET CHURCH
     // =========================================================
+
+    console.log("[1/15] CHECK CHURCH");
 
     const churchId = getChurchId(req);
 
-    console.log("[1/15] CHURCH");
     console.log("CHURCH ID:", churchId);
 
     if (!churchId) {
@@ -1107,7 +1108,7 @@ exports.importStudentsExcel = async (req, res) => {
     console.log("[2/15] CHECK FILE");
 
     if (!req.file) {
-      console.error("❌ NO FILE");
+      console.error("❌ NO EXCEL FILE");
 
       return res.status(400).json({
         success: false,
@@ -1115,17 +1116,29 @@ exports.importStudentsExcel = async (req, res) => {
       });
     }
 
-    console.log("FILE NAME:", req.file.originalname);
-    console.log("FILE SIZE:", req.file.size);
+    const originalFileName = String(req.file.originalname || "");
 
-    const fileName = String(req.file.originalname || "").toLowerCase();
+    const fileName = originalFileName.toLowerCase();
+
+    console.log("FILE NAME:", originalFileName);
+
+    console.log("FILE SIZE:", req.file.size, "bytes");
 
     if (!fileName.endsWith(".xlsx") && !fileName.endsWith(".xls")) {
-      console.error("❌ INVALID FILE EXTENSION");
+      console.error("❌ INVALID EXCEL EXTENSION");
 
       return res.status(400).json({
         success: false,
         message: "Chỉ hỗ trợ file Excel .xlsx hoặc .xls",
+      });
+    }
+
+    if (!req.file.buffer || !Buffer.isBuffer(req.file.buffer)) {
+      console.error("❌ FILE BUFFER NOT FOUND");
+
+      return res.status(400).json({
+        success: false,
+        message: "Không đọc được dữ liệu file Excel",
       });
     }
 
@@ -1144,7 +1157,9 @@ exports.importStudentsExcel = async (req, res) => {
       });
     } catch (excelError) {
       console.error("❌ EXCEL READ ERROR");
+
       console.error("MESSAGE:", excelError.message);
+
       console.error("STACK:", excelError.stack);
 
       return res.status(400).json({
@@ -1160,7 +1175,7 @@ exports.importStudentsExcel = async (req, res) => {
     const sheetName = workbook.SheetNames?.[0];
 
     if (!sheetName) {
-      console.error("❌ EXCEL HAS NO SHEET");
+      console.error("❌ NO SHEET FOUND");
 
       return res.status(400).json({
         success: false,
@@ -1186,10 +1201,10 @@ exports.importStudentsExcel = async (req, res) => {
       raw: false,
     });
 
-    console.log("TOTAL ROWS:", rows.length);
+    console.log("TOTAL DATA ROWS:", rows.length);
 
     if (!rows.length) {
-      console.error("❌ EXCEL EMPTY");
+      console.error("❌ EXCEL HAS NO DATA");
 
       return res.status(400).json({
         success: false,
@@ -1204,11 +1219,12 @@ exports.importStudentsExcel = async (req, res) => {
     console.log("[4/15] CHECK LIMIT");
 
     if (rows.length > 1000) {
-      console.error("❌ TOO MANY ROWS:", rows.length);
+      console.error("❌ TOO MANY STUDENTS:", rows.length);
 
       return res.status(400).json({
         success: false,
         message: "Mỗi lần chỉ được import tối đa 1000 học sinh",
+        total: rows.length,
       });
     }
 
@@ -1259,9 +1275,14 @@ exports.importStudentsExcel = async (req, res) => {
     const actualHeaders = Object.keys(rows[0] || {});
 
     console.log("EXPECTED HEADERS:", requiredHeaders.length);
+
     console.log("ACTUAL HEADERS:", actualHeaders.length);
 
     console.log("HEADERS:", actualHeaders);
+
+    // ---------------------------------------------------------
+    // Missing headers
+    // ---------------------------------------------------------
 
     const missingHeaders = requiredHeaders.filter(
       (header) => !actualHeaders.includes(header),
@@ -1272,14 +1293,14 @@ exports.importStudentsExcel = async (req, res) => {
 
       return res.status(400).json({
         success: false,
-        message: "File Excel thiếu cột bắt buộc",
+        message: "File Excel thiếu cột",
         missing_headers: missingHeaders,
         expected_headers: requiredHeaders,
         actual_headers: actualHeaders,
       });
     }
 
-    console.log("✅ HEADER VALID");
+    console.log("✅ ALL REQUIRED HEADERS VALID");
 
     // =========================================================
     // 6. DATE PARSER
@@ -1288,6 +1309,10 @@ exports.importStudentsExcel = async (req, res) => {
     console.log("[6/15] INITIALIZE DATE PARSER");
 
     const parseDate = (value) => {
+      // -------------------------------------------------------
+      // Empty
+      // -------------------------------------------------------
+
       if (value === null || value === undefined || value === "") {
         return null;
       }
@@ -1329,10 +1354,9 @@ exports.importStudentsExcel = async (req, res) => {
           return null;
         }
 
-        return `${year}-${String(month).padStart(
-          2,
-          "0",
-        )}-${String(day).padStart(2, "0")}`;
+        return `${year}-${String(month).padStart(2, "0")}-${String(
+          day,
+        ).padStart(2, "0")}`;
       }
 
       // -------------------------------------------------------
@@ -1352,10 +1376,9 @@ exports.importStudentsExcel = async (req, res) => {
           return null;
         }
 
-        return `${year}-${String(month).padStart(
-          2,
-          "0",
-        )}-${String(day).padStart(2, "0")}`;
+        return `${year}-${String(month).padStart(2, "0")}-${String(
+          day,
+        ).padStart(2, "0")}`;
       }
 
       // -------------------------------------------------------
@@ -1404,6 +1427,12 @@ exports.importStudentsExcel = async (req, res) => {
       "dropped",
     ];
 
+    console.log("ALLOWED GENDER:", allowedGender);
+
+    console.log("ALLOWED CATECHISM STATUS:", allowedCatechismStatus);
+
+    console.log("ALLOWED STATUS:", allowedStatus);
+
     // =========================================================
     // 8. START TRANSACTION
     // =========================================================
@@ -1447,7 +1476,7 @@ exports.importStudentsExcel = async (req, res) => {
       ),
     ];
 
-    console.log("CLASS IDS IN FILE:", classIds);
+    console.log("CLASS IDS:", classIds);
 
     if (classIds.length > 0) {
       const placeholders = classIds.map(() => "?").join(",");
@@ -1463,8 +1492,7 @@ exports.importStudentsExcel = async (req, res) => {
           AND id IN (${placeholders})
       `;
 
-      console.log("CLASS SQL:");
-      console.log(classSql);
+      console.log("LOADING CLASSES...");
 
       const [classRows] = await connection.execute(classSql, [
         numericChurchId,
@@ -1484,13 +1512,15 @@ exports.importStudentsExcel = async (req, res) => {
 
     console.log("[10/15] GET LAST STUDENT ID");
 
-    const [lastStudentRows] = await connection.execute(`
-        SELECT id
-        FROM students
-        ORDER BY id DESC
-        LIMIT 1
-        FOR UPDATE
-      `);
+    const [lastStudentRows] = await connection.execute(
+      `
+          SELECT id
+          FROM students
+          ORDER BY id DESC
+          LIMIT 1
+          FOR UPDATE
+        `,
+    );
 
     let nextStudentId = lastStudentRows.length
       ? Number(lastStudentRows[0].id) + 1
@@ -1499,7 +1529,7 @@ exports.importStudentsExcel = async (req, res) => {
     console.log("NEXT STUDENT ID:", nextStudentId);
 
     // =========================================================
-    // 11. USED CODES
+    // 11. CODE CACHE
     // =========================================================
 
     console.log("[11/15] PREPARE CODE CACHE");
@@ -1507,7 +1537,7 @@ exports.importStudentsExcel = async (req, res) => {
     const usedCodes = new Set();
 
     // =========================================================
-    // 12. IMPORT EACH ROW
+    // 12. IMPORT ROWS
     // =========================================================
 
     console.log("[12/15] IMPORT ROWS");
@@ -1515,10 +1545,11 @@ exports.importStudentsExcel = async (req, res) => {
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index];
 
-      // Excel row = header + index
+      // Header = row 1
+      // Data starts = row 2
       const excelRow = index + 2;
 
-      console.log("\n");
+      console.log("");
       console.log(
         "------------------------------------------------------------",
       );
@@ -1549,6 +1580,7 @@ exports.importStudentsExcel = async (req, res) => {
         // =====================================================
 
         let classId = null;
+
         let classInfo = null;
 
         const rawClassId =
@@ -1573,7 +1605,9 @@ exports.importStudentsExcel = async (req, res) => {
             );
           }
 
-          console.log("CLASS:", classInfo.name);
+          console.log("CLASS NAME:", classInfo.name);
+
+          console.log("CLASS CODE:", classInfo.code);
         } else {
           console.log("CLASS: Không gán lớp");
         }
@@ -1655,6 +1689,10 @@ exports.importStudentsExcel = async (req, res) => {
         const codeWasGenerated = !code;
 
         if (!code) {
+          // ---------------------------------------------------
+          // AUTO GENERATE
+          // ---------------------------------------------------
+
           do {
             code = `HS${String(nextStudentId).padStart(6, "0")}`;
 
@@ -1662,7 +1700,9 @@ exports.importStudentsExcel = async (req, res) => {
           } while (usedCodes.has(code));
         }
 
-        console.log("CODE:", code, codeWasGenerated ? "(AUTO)" : "(EXCEL)");
+        console.log("CODE:", code);
+
+        console.log("CODE SOURCE:", codeWasGenerated ? "AUTO" : "EXCEL");
 
         if (code.length > 100) {
           throw new Error("Mã học sinh không được vượt quá 100 ký tự");
@@ -1677,19 +1717,19 @@ exports.importStudentsExcel = async (req, res) => {
         }
 
         // =====================================================
-        // CHECK DATABASE
+        // CHECK CODE DATABASE
         // =====================================================
 
         console.log("CHECK CODE DATABASE...");
 
         const [existingCodeRows] = await connection.execute(
           `
-          SELECT id
-          FROM students
-          WHERE church_id = ?
-            AND code = ?
-          LIMIT 1
-          `,
+              SELECT id
+              FROM students
+              WHERE church_id = ?
+                AND code = ?
+              LIMIT 1
+            `,
           [numericChurchId, code],
         );
 
@@ -1698,6 +1738,8 @@ exports.importStudentsExcel = async (req, res) => {
         }
 
         usedCodes.add(code);
+
+        console.log("✅ CODE AVAILABLE");
 
         // =====================================================
         // QR TOKEN
@@ -1764,7 +1806,7 @@ exports.importStudentsExcel = async (req, res) => {
         }
 
         // =====================================================
-        // PREPARE VALUES
+        // PREPARE PARAMS
         // =====================================================
 
         const params = [
@@ -1886,7 +1928,7 @@ exports.importStudentsExcel = async (req, res) => {
         ];
 
         // =====================================================
-        // SQL
+        // INSERT SQL
         // =====================================================
 
         const sql = `
@@ -1929,28 +1971,47 @@ exports.importStudentsExcel = async (req, res) => {
             status
           )
           VALUES (
-            ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?,
-            ?, ?,
-            ?, ?,
-            ?, ?,
-            ?, ?, ?,
-            ?, ?,
-            ?, ?, ?,
             ?,
             ?,
-            ?, ?,
-            ?, ?,
-            ?, ?, ?,
-            ?, ?,
             ?,
-            ?, ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
             ?
           )
         `;
 
         // =====================================================
-        // SQL PLACEHOLDER VALIDATION
+        // VALIDATE SQL
         // =====================================================
 
         const placeholderCount = (sql.match(/\?/g) || []).length;
@@ -1959,11 +2020,9 @@ exports.importStudentsExcel = async (req, res) => {
 
         console.log("SQL PARAMS:", params.length);
 
-        if (placeholderCount !== params.length) {
-          throw new Error(
-            `SQL placeholder mismatch: ${placeholderCount} placeholders nhưng ${params.length} params`,
-          );
-        }
+        // -----------------------------------------------------
+        // MUST BE 36
+        // -----------------------------------------------------
 
         if (placeholderCount !== 36) {
           throw new Error(
@@ -1971,21 +2030,39 @@ exports.importStudentsExcel = async (req, res) => {
           );
         }
 
+        if (params.length !== 36) {
+          throw new Error(
+            `INSERT students phải có đúng 36 params, hiện tại có ${params.length}`,
+          );
+        }
+
+        if (placeholderCount !== params.length) {
+          throw new Error(
+            `SQL placeholder mismatch: ${placeholderCount} placeholders nhưng ${params.length} params`,
+          );
+        }
+
+        console.log("✅ SQL VALID: 36 COLUMNS / 36 PLACEHOLDERS / 36 PARAMS");
+
         // =====================================================
-        // PARAM TYPE LOG
+        // PARAM VALIDATION
         // =====================================================
 
-        console.log(
-          "PARAM TYPES:",
-          params.map((value, i) => ({
-            index: i + 1,
-            type: value === null ? "NULL" : typeof value,
-            hasValue: value !== null && value !== undefined && value !== "",
-          })),
-        );
+        const paramTypes = params.map((value, index) => ({
+          index: index + 1,
+          type:
+            value === null
+              ? "NULL"
+              : Array.isArray(value)
+                ? "ARRAY"
+                : typeof value,
+          hasValue: value !== null && value !== undefined && value !== "",
+        }));
+
+        console.log("PARAM TYPES:", paramTypes);
 
         // =====================================================
-        // INSERT
+        // INSERT STUDENT
         // =====================================================
 
         console.log("EXECUTING INSERT students...");
@@ -2004,22 +2081,23 @@ exports.importStudentsExcel = async (req, res) => {
         }
 
         // =====================================================
-        // INSERT CLASS
+        // INSERT CLASS STUDENT
         // =====================================================
 
         if (classId) {
-          console.log(
-            `INSERT class_students: class=${classId}, student=${studentId}`,
-          );
+          console.log("INSERT class_students:", {
+            classId,
+            studentId,
+          });
 
           const [classResult] = await connection.execute(
             `
-              INSERT INTO class_students (
-                class_id,
-                student_id
-              )
-              VALUES (?, ?)
-            `,
+                INSERT INTO class_students (
+                  class_id,
+                  student_id
+                )
+                VALUES (?, ?)
+              `,
             [classId, studentId],
           );
 
@@ -2027,6 +2105,10 @@ exports.importStudentsExcel = async (req, res) => {
             affectedRows: classResult.affectedRows,
             insertId: classResult.insertId,
           });
+
+          if (classResult.affectedRows !== 1) {
+            throw new Error("Không thể gán học sinh vào lớp");
+          }
         } else {
           console.log("CLASS STUDENT: SKIPPED");
         }
@@ -2051,35 +2133,61 @@ exports.importStudentsExcel = async (req, res) => {
         // ROW ERROR
         // =====================================================
 
-        console.error(`❌ ROW ${excelRow} IMPORT ERROR`);
+        console.error("");
+        console.error(
+          "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+        );
+
+        console.error(`❌ IMPORT ERROR - EXCEL ROW ${excelRow}`);
+
+        console.error(
+          "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+        );
 
         console.error("MESSAGE:", error.message);
 
         console.error("CODE:", error.code);
 
+        console.error("ERRNO:", error.errno);
+
         console.error("SQL MESSAGE:", error.sqlMessage);
 
         console.error("SQL STATE:", error.sqlState);
 
-        console.error("ERROR NUMBER:", error.errno);
-
         console.error("STACK:", error.stack);
 
-        errorRows.push({
-          row: excelRow,
+        console.error("ROW DATA:", {
           name: row.name || null,
           code: row.code || null,
           class_id: row.class_id || null,
+          gender: row.gender || null,
+          date_of_birth: row.date_of_birth || null,
+          catechism_status: row.catechism_status || null,
+          status: row.status || null,
+        });
+
+        errorRows.push({
+          row: excelRow,
+
+          name: row.name || null,
+
+          code: row.code || null,
+
+          class_id: row.class_id || null,
+
           error: error.message,
+
           mysql_code: error.code || null,
+
           mysql_errno: error.errno || null,
+
           mysql_sql_state: error.sqlState || null,
         });
       }
     }
 
     // =========================================================
-    // 13. ROLLBACK IF ERROR
+    // 13. CHECK RESULT
     // =========================================================
 
     console.log("[13/15] CHECK IMPORT RESULT");
@@ -2090,12 +2198,19 @@ exports.importStudentsExcel = async (req, res) => {
 
     console.log("FAILED:", errorRows.length);
 
+    // =========================================================
+    // ROLLBACK IF ANY ERROR
+    // =========================================================
+
     if (errorRows.length > 0) {
+      console.error("");
       console.error(
         "============================================================",
       );
 
-      console.error("❌ IMPORT FAILED - ROLLBACK ALL");
+      console.error("❌ IMPORT FAILED");
+
+      console.error("❌ ROLLBACK ALL DATA");
 
       console.error(
         "============================================================",
@@ -2105,9 +2220,9 @@ exports.importStudentsExcel = async (req, res) => {
 
       transactionStarted = false;
 
-      console.error("ROLLBACK: SUCCESS");
+      console.error("✅ ROLLBACK SUCCESS");
 
-      console.error("ERROR ROWS:", JSON.stringify(errorRows, null, 2));
+      console.error("FAILED ROWS:", JSON.stringify(errorRows, null, 2));
 
       console.error("DURATION:", `${Date.now() - startedAt} ms`);
 
@@ -2123,6 +2238,8 @@ exports.importStudentsExcel = async (req, res) => {
         failed_count: errorRows.length,
 
         errors: errorRows,
+
+        duration_ms: Date.now() - startedAt,
       });
     }
 
@@ -2130,7 +2247,7 @@ exports.importStudentsExcel = async (req, res) => {
     // 14. COMMIT
     // =========================================================
 
-    console.log("[14/15] COMMIT");
+    console.log("[14/15] COMMIT TRANSACTION");
 
     await connection.commit();
 
@@ -2144,13 +2261,20 @@ exports.importStudentsExcel = async (req, res) => {
 
     console.log("[15/15] FINAL RESPONSE");
 
+    const duration = Date.now() - startedAt;
+
+    console.log("");
     console.log("============================================================");
 
-    console.log(`✅ IMPORT SUCCESS: ${successRows.length} STUDENTS`);
+    console.log("✅ IMPORT STUDENTS SUCCESS");
 
-    console.log(`TOTAL: ${rows.length}`);
+    console.log("TOTAL:", rows.length);
 
-    console.log(`DURATION: ${Date.now() - startedAt} ms`);
+    console.log("SUCCESS:", successRows.length);
+
+    console.log("FAILED:", 0);
+
+    console.log("DURATION:", `${duration} ms`);
 
     console.log("============================================================");
 
@@ -2167,13 +2291,14 @@ exports.importStudentsExcel = async (req, res) => {
 
       data: successRows,
 
-      duration_ms: Date.now() - startedAt,
+      duration_ms: duration,
     });
   } catch (error) {
     // =========================================================
     // GLOBAL ERROR
     // =========================================================
 
+    console.error("");
     console.error(
       "============================================================",
     );
@@ -2214,7 +2339,9 @@ exports.importStudentsExcel = async (req, res) => {
       }
     }
 
-    console.error("DURATION:", `${Date.now() - startedAt} ms`);
+    const duration = Date.now() - startedAt;
+
+    console.error("DURATION:", `${duration} ms`);
 
     console.error(
       "============================================================",
@@ -2235,6 +2362,8 @@ exports.importStudentsExcel = async (req, res) => {
 
       mysql_sql_state:
         process.env.NODE_ENV === "development" ? error.sqlState : undefined,
+
+      duration_ms: duration,
     });
   } finally {
     // =========================================================
@@ -2242,17 +2371,22 @@ exports.importStudentsExcel = async (req, res) => {
     // =========================================================
 
     if (connection) {
-      connection.release();
+      try {
+        connection.release();
 
-      console.log("🔓 DATABASE CONNECTION RELEASED");
+        console.log("🔓 DATABASE CONNECTION RELEASED");
+      } catch (releaseError) {
+        console.error("❌ CONNECTION RELEASE ERROR:", releaseError.message);
+      }
     }
 
     console.log("============================================================");
+
     console.log("IMPORT REQUEST FINISHED");
+
     console.log("============================================================");
   }
 };
-
 // =====================================================
 // DELETE /api/students/:id
 // XÓA HỌC SINH

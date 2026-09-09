@@ -10,6 +10,7 @@ router.get("/exam", reportController.getExamResultStats);
 router.get("/parishioners", reportController.getParishionerStats);
 router.get("/liturgical", reportController.getLiturgicalStats);
 router.get("/visitors", reportController.getVisitorStats);
+router.get("/stats", reportController.getStats);
 
 // 2. API Xuất báo cáo CSV / Excel (Tải về trực tiếp)
 router.get("/export/:type", reportController.exportReport);

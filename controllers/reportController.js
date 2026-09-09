@@ -100,12 +100,10 @@ exports.getChurchStats = async (req, res) => {
     });
   } catch (err) {
     console.error("CHURCH STATS ERROR:", err);
-    return res
-      .status(500)
-      .json({
-        success: false,
-        message: "Lỗi máy chủ khi lấy thống kê giáo xứ",
-      });
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi máy chủ khi lấy thống kê giáo xứ",
+    });
   }
 };
 
@@ -186,12 +184,10 @@ exports.getDocumentStats = async (req, res) => {
     });
   } catch (err) {
     console.error("DOCUMENT STATS ERROR:", err);
-    return res
-      .status(500)
-      .json({
-        success: false,
-        message: "Lỗi máy chủ khi lấy thống kê tài liệu",
-      });
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi máy chủ khi lấy thống kê tài liệu",
+    });
   }
 };
 
@@ -262,12 +258,10 @@ exports.getEventStats = async (req, res) => {
     });
   } catch (err) {
     console.error("EVENT STATS ERROR:", err);
-    return res
-      .status(500)
-      .json({
-        success: false,
-        message: "Lỗi máy chủ khi lấy thống kê sự kiện",
-      });
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi máy chủ khi lấy thống kê sự kiện",
+    });
   }
 };
 
@@ -589,6 +583,332 @@ exports.getVisitorStats = async (req, res) => {
     return res
       .status(500)
       .json({ success: false, message: "Lỗi thống kê lượt truy cập" });
+  }
+};
+// controllers/reportController.js
+
+exports.getStats = async (req, res) => {
+  try {
+    // =====================================================
+    // 1. TỔNG QUAN TOÀN HỆ THỐNG
+    // =====================================================
+
+    const [overviewRows] = await db.query(`
+      SELECT
+        (
+          SELECT COUNT(*)
+          FROM churches
+          WHERE is_active = 1
+        ) AS total_churches,
+
+        (
+          SELECT COUNT(*)
+          FROM students
+        ) AS total_students,
+
+        (
+          SELECT COUNT(*)
+          FROM students
+          WHERE status = 'active'
+        ) AS active_students,
+
+        (
+          SELECT COUNT(*)
+          FROM students
+          WHERE status = 'inactive'
+        ) AS inactive_students,
+
+        (
+          SELECT COUNT(*)
+          FROM students
+          WHERE status = 'graduated'
+        ) AS graduated_students,
+
+        (
+          SELECT COUNT(*)
+          FROM students
+          WHERE status = 'transferred'
+        ) AS transferred_students,
+
+        (
+          SELECT COUNT(*)
+          FROM catechists
+        ) AS total_catechists,
+
+        (
+          SELECT COUNT(*)
+          FROM catechists
+          WHERE status = 'active'
+        ) AS active_catechists,
+
+        (
+          SELECT COUNT(*)
+          FROM catechists
+          WHERE status = 'inactive'
+        ) AS inactive_catechists,
+
+        (
+          SELECT COUNT(*)
+          FROM classes
+        ) AS total_classes,
+
+        (
+          SELECT COUNT(*)
+          FROM classes
+          WHERE status = 'active'
+        ) AS active_classes,
+
+        (
+          SELECT COUNT(*)
+          FROM class_students
+        ) AS total_class_students,
+
+        (
+          SELECT COUNT(*)
+          FROM class_students
+          WHERE status = 'studying'
+        ) AS studying_class_students,
+
+        (
+          SELECT COUNT(*)
+          FROM catechist_classes
+        ) AS total_catechist_classes,
+
+        (
+          SELECT COUNT(*)
+          FROM catechist_classes
+          WHERE status = 'teaching'
+        ) AS teaching_catechist_classes
+    `);
+
+    // =====================================================
+    // 2. THỐNG KÊ THEO GIÁO XỨ / GIÁO HỌ
+    // =====================================================
+    //
+    // Mỗi bảng được GROUP riêng trước khi JOIN
+    // => tránh COUNT bị nhân bản.
+    //
+    // =====================================================
+
+    const [churchRows] = await db.query(`
+      SELECT
+        c.id AS church_id,
+        c.name AS church_name,
+        c.type AS church_type,
+        c.is_active,
+        c.license_status,
+
+        COALESCE(s.student_count, 0) AS student_count,
+        COALESCE(s.active_students, 0) AS active_students,
+
+        COALESCE(ct.catechist_count, 0) AS catechist_count,
+        COALESCE(ct.active_catechists, 0) AS active_catechists,
+
+        COALESCE(cl.class_count, 0) AS class_count,
+        COALESCE(cl.active_classes, 0) AS active_classes,
+
+        COALESCE(cs.class_student_count, 0) AS class_student_count,
+        COALESCE(cs.studying_students, 0) AS studying_students,
+
+        COALESCE(cc.catechist_class_count, 0) AS catechist_class_count,
+        COALESCE(cc.teaching_assignments, 0) AS teaching_assignments
+
+      FROM churches c
+
+      -- ============================================
+      -- HỌC SINH
+      -- ============================================
+      LEFT JOIN (
+        SELECT
+          church_id,
+          COUNT(*) AS student_count,
+          SUM(status = 'active') AS active_students
+        FROM students
+        GROUP BY church_id
+      ) s
+        ON s.church_id = c.id
+
+      -- ============================================
+      -- GIÁO LÝ VIÊN
+      -- ============================================
+      LEFT JOIN (
+        SELECT
+          church_id,
+          COUNT(*) AS catechist_count,
+          SUM(status = 'active') AS active_catechists
+        FROM catechists
+        GROUP BY church_id
+      ) ct
+        ON ct.church_id = c.id
+
+      -- ============================================
+      -- LỚP
+      -- ============================================
+      LEFT JOIN (
+        SELECT
+          church_id,
+          COUNT(*) AS class_count,
+          SUM(status = 'active') AS active_classes
+        FROM classes
+        GROUP BY church_id
+      ) cl
+        ON cl.church_id = c.id
+
+      -- ============================================
+      -- HỌC SINH TRONG LỚP
+      -- ============================================
+      LEFT JOIN (
+        SELECT
+          cl.church_id,
+          COUNT(cs.id) AS class_student_count,
+          SUM(cs.status = 'studying') AS studying_students
+        FROM class_students cs
+        INNER JOIN classes cl
+          ON cl.id = cs.class_id
+        GROUP BY cl.church_id
+      ) cs
+        ON cs.church_id = c.id
+
+      -- ============================================
+      -- PHÂN CÔNG GIÁO LÝ VIÊN
+      -- ============================================
+      LEFT JOIN (
+        SELECT
+          cl.church_id,
+          COUNT(cc.id) AS catechist_class_count,
+          SUM(cc.status = 'teaching') AS teaching_assignments
+        FROM catechist_classes cc
+        INNER JOIN classes cl
+          ON cl.id = cc.class_id
+        GROUP BY cl.church_id
+      ) cc
+        ON cc.church_id = c.id
+
+      ORDER BY student_count DESC, c.name ASC
+    `);
+
+    // =====================================================
+    // 3. THỐNG KÊ GIỚI TÍNH
+    // =====================================================
+
+    const [genderRows] = await db.query(`
+      SELECT
+        gender,
+        COUNT(*) AS total
+      FROM students
+      GROUP BY gender
+    `);
+
+    // =====================================================
+    // 4. TRẠNG THÁI HỌC SINH
+    // =====================================================
+
+    const [studentStatusRows] = await db.query(`
+      SELECT
+        status,
+        COUNT(*) AS total
+      FROM students
+      GROUP BY status
+    `);
+
+    // =====================================================
+    // 5. TRẠNG THÁI GIÁO LÝ
+    // =====================================================
+
+    const [catechismStatusRows] = await db.query(`
+      SELECT
+        catechism_status,
+        COUNT(*) AS total
+      FROM students
+      GROUP BY catechism_status
+    `);
+
+    // =====================================================
+    // 6. RESPONSE
+    // =====================================================
+
+    const overview = overviewRows[0] || {};
+
+    return res.json({
+      success: true,
+
+      data: {
+        overview: {
+          total_churches: Number(overview.total_churches || 0),
+
+          total_students: Number(overview.total_students || 0),
+          active_students: Number(overview.active_students || 0),
+          inactive_students: Number(overview.inactive_students || 0),
+          graduated_students: Number(overview.graduated_students || 0),
+          transferred_students: Number(overview.transferred_students || 0),
+
+          total_catechists: Number(overview.total_catechists || 0),
+          active_catechists: Number(overview.active_catechists || 0),
+          inactive_catechists: Number(overview.inactive_catechists || 0),
+
+          total_classes: Number(overview.total_classes || 0),
+          active_classes: Number(overview.active_classes || 0),
+
+          total_class_students: Number(overview.total_class_students || 0),
+          studying_class_students: Number(
+            overview.studying_class_students || 0,
+          ),
+
+          total_catechist_classes: Number(
+            overview.total_catechist_classes || 0,
+          ),
+          teaching_assignments: Number(
+            overview.teaching_catechist_classes || 0,
+          ),
+        },
+
+        churches: churchRows.map((item) => ({
+          church_id: item.church_id,
+          church_name: item.church_name,
+          church_type: item.church_type,
+          is_active: Boolean(item.is_active),
+          license_status: item.license_status,
+
+          students: Number(item.student_count || 0),
+          active_students: Number(item.active_students || 0),
+
+          catechists: Number(item.catechist_count || 0),
+          active_catechists: Number(item.active_catechists || 0),
+
+          classes: Number(item.class_count || 0),
+          active_classes: Number(item.active_classes || 0),
+
+          class_students: Number(item.class_student_count || 0),
+          studying_students: Number(item.studying_students || 0),
+
+          catechist_classes: Number(item.catechist_class_count || 0),
+          teaching_assignments: Number(item.teaching_assignments || 0),
+        })),
+
+        gender: genderRows.map((item) => ({
+          gender: item.gender,
+          total: Number(item.total || 0),
+        })),
+
+        student_status: studentStatusRows.map((item) => ({
+          status: item.status,
+          total: Number(item.total || 0),
+        })),
+
+        catechism_status: catechismStatusRows.map((item) => ({
+          status: item.catechism_status,
+          total: Number(item.total || 0),
+        })),
+      },
+    });
+  } catch (error) {
+    console.error("❌ getStats error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể lấy dữ liệu thống kê",
+      error: error.message,
+    });
   }
 };
 

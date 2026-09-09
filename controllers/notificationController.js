@@ -192,7 +192,10 @@ exports.getNotificationById = async (req, res) => {
 
 exports.createNotification = async (req, res) => {
   try {
-    const currentChurchId = getChurchId(req);
+    // ========================================================
+    // 1. USER INFO
+    // ========================================================
+
     const createdBy = getUserId(req);
 
     if (!createdBy) {
@@ -202,10 +205,12 @@ exports.createNotification = async (req, res) => {
       });
     }
 
+    const currentChurchId = getChurchId(req);
+
     const adminCatechist = isAdminCatechist(req);
 
     // ========================================================
-    // BODY
+    // 2. BODY
     // ========================================================
 
     const {
@@ -222,7 +227,7 @@ exports.createNotification = async (req, res) => {
     } = req.body || {};
 
     // ========================================================
-    // VALIDATE TITLE
+    // 3. VALIDATE TITLE
     // ========================================================
 
     if (!title || !String(title).trim()) {
@@ -233,35 +238,87 @@ exports.createNotification = async (req, res) => {
     }
 
     // ========================================================
-    // CHURCH ID
+    // 4. XÁC ĐỊNH PHẠM VI THÔNG BÁO
+    // ========================================================
     //
-    // Không truyền church_id:
-    // => gửi trong giáo xứ hiện tại
+    // ADMIN_CATECHIST
+    // ----------------
+    // Luôn luôn:
     //
-    // church_id = null:
-    // => gửi toàn hệ thống
+    // church_id = NULL
     //
-    // church_id = số:
-    // => gửi cho giáo xứ đó
+    // => TOÀN HỆ THỐNG
+    //
+    // Không quan tâm:
+    // - req.user.church_id
+    // - req.body.church_id
+    //
+    // Nếu frontend có gửi church_id thì BACKEND BỎ QUA.
+    //
+    //
+    // CATECHIST / TEACHER
+    // -------------------
+    // Luôn:
+    //
+    // church_id = req.user.church_id
+    //
+    // Không được gửi:
+    // - global
+    // - giáo xứ khác
+    //
     // ========================================================
 
-    let churchId;
+    let churchId = null;
 
-    if (Object.prototype.hasOwnProperty.call(req.body || {}, "church_id")) {
-      const rawChurchId = req.body.church_id;
+    // --------------------------------------------------------
+    // ADMIN_CATECHIST
+    // --------------------------------------------------------
+
+    if (adminCatechist) {
+      // LUÔN GLOBAL
+      churchId = null;
+    }
+
+    // --------------------------------------------------------
+    // CATECHIST / TEACHER
+    // --------------------------------------------------------
+    else {
+      // Bắt buộc phải có giáo xứ
+      if (!currentChurchId) {
+        return res.status(403).json({
+          success: false,
+          message: "Tài khoản chưa được liên kết với giáo xứ.",
+        });
+      }
+
+      // Luôn lấy church_id từ tài khoản
+      // Không lấy từ req.body
+      churchId = currentChurchId;
 
       // ------------------------------------------------------
-      // GLOBAL NOTIFICATION
-      // church_id = null
+      // NẾU FRONTEND CỐ TÌNH GỬI church_id
       // ------------------------------------------------------
 
-      if (
-        rawChurchId === null ||
-        rawChurchId === undefined ||
-        rawChurchId === ""
-      ) {
-        churchId = null;
-      } else {
+      const hasChurchId = Object.prototype.hasOwnProperty.call(
+        req.body || {},
+        "church_id",
+      );
+
+      if (hasChurchId) {
+        const rawChurchId = req.body.church_id;
+
+        // User thường không được gửi null / empty
+        if (
+          rawChurchId === null ||
+          rawChurchId === undefined ||
+          rawChurchId === ""
+        ) {
+          return res.status(403).json({
+            success: false,
+            message: "Bạn không có quyền gửi thông báo toàn hệ thống.",
+          });
+        }
+
         const parsedChurchId = Number(rawChurchId);
 
         if (!isValidId(parsedChurchId)) {
@@ -271,51 +328,22 @@ exports.createNotification = async (req, res) => {
           });
         }
 
-        churchId = parsedChurchId;
-      }
-    } else {
-      // Không truyền => giáo xứ hiện tại
-      churchId = currentChurchId;
-    }
-
-    // ========================================================
-    // GLOBAL NOTIFICATION
-    // ========================================================
-
-    if (churchId === null && !adminCatechist) {
-      return res.status(403).json({
-        success: false,
-        message:
-          "Chỉ Quản trị viên Giáo lý mới có quyền gửi thông báo toàn hệ thống.",
-      });
-    }
-
-    // ========================================================
-    // NẾU GỬI CHO GIÁO XỨ CỤ THỂ
-    // ========================================================
-
-    if (churchId !== null) {
-      // Không có giáo xứ hiện tại
-      if (!currentChurchId) {
-        return res.status(403).json({
-          success: false,
-          message: "Tài khoản chưa được liên kết với giáo xứ.",
-        });
-      }
-
-      // User thường chỉ được gửi cho giáo xứ của mình
-      if (Number(churchId) !== Number(currentChurchId) && !adminCatechist) {
-        return res.status(403).json({
-          success: false,
-          message: "Bạn không có quyền gửi thông báo cho giáo xứ này.",
-        });
+        // Không được gửi sang giáo xứ khác
+        if (Number(parsedChurchId) !== Number(currentChurchId)) {
+          return res.status(403).json({
+            success: false,
+            message: "Bạn không có quyền gửi thông báo cho giáo xứ này.",
+          });
+        }
       }
     }
 
     // ========================================================
-    // EMAIL
+    // 5. EMAIL
+    // ========================================================
     //
-    // CHỈ admin_catechist
+    // Chỉ admin_catechist được gửi Email
+    //
     // ========================================================
 
     const shouldSendEmail = normalizeBoolean(send_email);
@@ -329,13 +357,13 @@ exports.createNotification = async (req, res) => {
     }
 
     // ========================================================
-    // USER IDS
+    // 6. USER IDS
     // ========================================================
 
     const normalizedUserIds = normalizeArray(user_ids);
 
     // ========================================================
-    // TARGET ROLE
+    // 7. TARGET ROLE
     // ========================================================
 
     const normalizedTargetRole =
@@ -353,10 +381,36 @@ exports.createNotification = async (req, res) => {
     }
 
     // ========================================================
-    // TẠO THÔNG BÁO
+    // 8. RELATED ID
+    // ========================================================
+
+    let normalizedRelatedId = null;
+
+    if (related_id !== null && related_id !== undefined && related_id !== "") {
+      const parsedRelatedId = Number(related_id);
+
+      if (!Number.isInteger(parsedRelatedId) || parsedRelatedId <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "related_id không hợp lệ",
+        });
+      }
+
+      normalizedRelatedId = parsedRelatedId;
+    }
+
+    // ========================================================
+    // 9. CREATE NOTIFICATION
     // ========================================================
 
     const data = await notificationService.createNotification({
+      // ====================================================
+      // QUAN TRỌNG
+      //
+      // admin_catechist => null
+      // catechist/teacher => church hiện tại
+      // ====================================================
+
       church_id: churchId,
 
       type: String(type || "announcement").trim(),
@@ -364,22 +418,23 @@ exports.createNotification = async (req, res) => {
       title: String(title).trim(),
 
       content:
-        content === null || content === undefined ? null : String(content),
+        content === null || content === undefined || content === ""
+          ? null
+          : String(content).trim(),
 
       priority: String(priority || "normal").trim(),
 
       related_type:
-        related_type === null || related_type === undefined
+        related_type === null ||
+        related_type === undefined ||
+        related_type === ""
           ? null
           : String(related_type).trim(),
 
-      related_id:
-        related_id === null || related_id === undefined || related_id === ""
-          ? null
-          : Number(related_id),
+      related_id: normalizedRelatedId,
 
       action_url:
-        action_url === null || action_url === undefined
+        action_url === null || action_url === undefined || action_url === ""
           ? null
           : String(action_url).trim(),
 
@@ -389,28 +444,48 @@ exports.createNotification = async (req, res) => {
 
       target_role: normalizedTargetRole,
 
+      // Chỉ admin_catechist được phép email
       send_email: adminCatechist ? shouldSendEmail : false,
     });
 
     // ========================================================
-    // MESSAGE
+    // 10. SUCCESS MESSAGE
     // ========================================================
 
     let message;
 
+    // --------------------------------------------------------
+    // GLOBAL
+    // --------------------------------------------------------
+
     if (churchId === null) {
-      message = shouldSendEmail
-        ? "Gửi thông báo và Email toàn hệ thống thành công"
-        : "Gửi thông báo toàn hệ thống thành công";
-    } else {
-      message = shouldSendEmail
-        ? "Gửi thông báo và Email thành công"
-        : "Gửi thông báo thành công";
+      if (shouldSendEmail) {
+        message = "Gửi thông báo và Email toàn hệ thống thành công";
+      } else {
+        message = "Gửi thông báo toàn hệ thống thành công";
+      }
     }
+
+    // --------------------------------------------------------
+    // CHURCH
+    // --------------------------------------------------------
+    else {
+      if (shouldSendEmail) {
+        message = "Gửi thông báo và Email thành công";
+      } else {
+        message = "Gửi thông báo thành công";
+      }
+    }
+
+    // ========================================================
+    // 11. RESPONSE
+    // ========================================================
 
     return res.status(201).json({
       success: true,
+
       message,
+
       data,
     });
   } catch (error) {

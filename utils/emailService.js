@@ -334,17 +334,28 @@ const sendNotificationEmails = async ({
   content,
   priority = "normal",
 }) => {
-  const validRecipients = recipients.filter(
-    (item) => item && item.email && String(item.email).trim(),
-  );
+  const validRecipients = [];
+  const invalidRecipients = [];
 
-  if (validRecipients.length === 0) {
-    return {
-      total: 0,
-      success: 0,
-      failed: 0,
-      results: [],
-    };
+  for (const recipient of recipients) {
+    const email = String(recipient?.email || "").trim();
+
+    // Email không đúng format → bỏ qua
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      invalidRecipients.push({
+        id: recipient?.id,
+        email,
+      });
+
+      console.log(`⚠️ Bỏ qua email không hợp lệ: ${email}`);
+
+      continue;
+    }
+
+    validRecipients.push({
+      ...recipient,
+      email,
+    });
   }
 
   let success = 0;
@@ -352,10 +363,11 @@ const sendNotificationEmails = async ({
 
   const results = [];
 
-  // Gửi tuần tự để không spam SMTP server
   for (const recipient of validRecipients) {
     try {
-      const result = await sendNotificationEmail({
+      console.log(`📧 Đang gửi: ${recipient.email}`);
+
+      await sendNotificationEmail({
         to: recipient.email,
         recipientName: recipient.full_name,
         title,
@@ -369,15 +381,11 @@ const sendNotificationEmails = async ({
         user_id: recipient.id,
         email: recipient.email,
         success: true,
-        messageId: result.messageId,
       });
+
+      console.log(`✅ Gửi thành công: ${recipient.email}`);
     } catch (error) {
       failed++;
-
-      console.error(
-        `❌ SEND EMAIL FAILED [${recipient.email}]:`,
-        error?.message || error,
-      );
 
       results.push({
         user_id: recipient.id,
@@ -385,14 +393,24 @@ const sendNotificationEmails = async ({
         success: false,
         error: error?.message || "Unknown error",
       });
+
+      // ❗ Lỗi email này chỉ bỏ qua
+      // Không throw
+      console.error(
+        `⚠️ Bỏ qua email lỗi: ${recipient.email}`,
+        error?.message || error,
+      );
     }
   }
 
   return {
-    total: validRecipients.length,
+    total: recipients.length,
+    valid: validRecipients.length,
+    invalid: invalidRecipients.length,
     success,
     failed,
     results,
+    invalidRecipients,
   };
 };
 

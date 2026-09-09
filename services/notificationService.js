@@ -433,38 +433,33 @@ const createNotification = async ({
     };
 
     if (send_email && emailRecipients.length > 0) {
-      try {
-        console.log(
-          `📧 Bắt đầu gửi Email cho ${emailRecipients.length} người...`,
-        );
+      console.log(
+        `📧 Bắt đầu gửi Email cho ${emailRecipients.length} người...`,
+      );
 
-        emailResult = await sendNotificationEmails({
-          recipients: emailRecipients,
+      // KHÔNG await
+      // Email lỗi/timeout không được phép làm request notification timeout
+      sendNotificationEmails({
+        recipients: emailRecipients,
+        title: String(title).trim(),
+        content: content ? String(content).trim() : "",
+        priority,
+      })
+        .then((result) => {
+          console.log("📧 ====================================");
+          console.log(`📧 Email Total: ${result.total}`);
+          console.log(`📧 Email Success: ${result.success}`);
+          console.log(`📧 Email Failed: ${result.failed}`);
+          console.log("📧 ====================================");
 
-          title: String(title).trim(),
-
-          content: content ? String(content).trim() : "",
-
-          priority,
+          if (result.invalid > 0) {
+            console.log(`⚠️ Email không hợp lệ: ${result.invalid}`);
+          }
+        })
+        .catch((error) => {
+          console.error("❌ EMAIL BACKGROUND ERROR:", error?.message || error);
         });
-
-        console.log("📧 ====================================");
-
-        console.log(`📧 Email Total: ${emailResult.total}`);
-
-        console.log(`📧 Email Success: ${emailResult.success}`);
-
-        console.log(`📧 Email Failed: ${emailResult.failed}`);
-
-        console.log("📧 ====================================");
-      } catch (emailError) {
-        console.error(
-          "❌ EMAIL SERVICE ERROR:",
-          emailError?.message || emailError,
-        );
-      }
     }
-
     // ========================================================
     // EMAIL REQUESTED BUT NO EMAIL
     // ========================================================

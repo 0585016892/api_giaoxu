@@ -16,5 +16,10 @@ router.get(
   authorize("admin"),
   activityLogController.getLogById,
 );
-
+router.delete(
+  "/",
+  verifyToken,
+  authorize("admin"),
+  activityLogController.deleteLogs,
+);
 module.exports = router;

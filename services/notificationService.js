@@ -1,6 +1,6 @@
 const db = require("../config/db");
 const { getIO } = require("../socket/socket");
-
+const { sendNotificationEmails } = require("../utils/emailService");
 // ============================================================
 // CONSTANTS
 // ============================================================
@@ -91,29 +91,19 @@ const NOTIFICATION_STATS_SELECT = `
 // ============================================================
 // CREATE NOTIFICATION
 // ============================================================
-
 const createNotification = async ({
   church_id,
-
   type = "system",
-
   title,
-
   content = null,
-
   priority = "normal",
-
   related_type = null,
-
   related_id = null,
-
   action_url = null,
-
   created_by = null,
-
   user_ids = [],
-
   target_role = null,
+  send_email = false,
 }) => {
   const connection = await db.getConnection();
 
@@ -127,6 +117,8 @@ const createNotification = async ({
     church_id = Number(church_id);
 
     created_by = created_by ? Number(created_by) : null;
+
+    send_email = Boolean(send_email);
 
     // ========================================================
     // VALIDATE
@@ -225,7 +217,10 @@ const createNotification = async ({
 
     const [validUsers] = await connection.query(
       `
-      SELECT id
+      SELECT
+        id,
+        full_name,
+        email
       FROM admins
       WHERE id IN (${placeholders})
         AND church_id = ?
@@ -237,34 +232,64 @@ const createNotification = async ({
     const validRecipientIds = validUsers.map((user) => Number(user.id));
 
     // ========================================================
+    // NO VALID RECIPIENT
+    // ========================================================
+
+    if (validRecipientIds.length === 0) {
+      throw new Error("Không tìm thấy người dùng hợp lệ để nhận thông báo");
+    }
+
+    // ========================================================
+    // EMAIL RECIPIENTS
+    // ========================================================
+
+    const emailRecipients = send_email
+      ? validUsers
+          .filter((user) => user.email && String(user.email).trim())
+          .map((user) => ({
+            id: Number(user.id),
+            full_name: user.full_name,
+            email: String(user.email).trim(),
+          }))
+      : [];
+
+    // ========================================================
     // INSERT NOTIFICATION
     // ========================================================
 
     const [notificationResult] = await connection.query(
       `
-      INSERT INTO notifications
-      (
-        church_id,
-        type,
-        title,
-        content,
-        priority,
-        related_type,
-        related_id,
-        action_url,
-        created_by
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
+        INSERT INTO notifications
+        (
+          church_id,
+          type,
+          title,
+          content,
+          priority,
+          related_type,
+          related_id,
+          action_url,
+          created_by
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
       [
         church_id,
+
         type,
+
         String(title).trim(),
+
         content ? String(content).trim() : null,
+
         priority,
+
         related_type,
+
         related_id,
+
         action_url,
+
         created_by,
       ],
     );
@@ -311,11 +336,11 @@ const createNotification = async ({
     if (created_by) {
       const [[creator]] = await connection.query(
         `
-        SELECT full_name
-        FROM admins
-        WHERE id = ?
-        LIMIT 1
-        `,
+          SELECT full_name
+          FROM admins
+          WHERE id = ?
+          LIMIT 1
+          `,
         [created_by],
       );
 
@@ -397,6 +422,58 @@ const createNotification = async ({
     }
 
     // ========================================================
+    // SEND EMAIL
+    // ========================================================
+
+    let emailResult = {
+      total: 0,
+      success: 0,
+      failed: 0,
+      results: [],
+    };
+
+    if (send_email && emailRecipients.length > 0) {
+      try {
+        console.log(
+          `📧 Bắt đầu gửi Email cho ${emailRecipients.length} người...`,
+        );
+
+        emailResult = await sendNotificationEmails({
+          recipients: emailRecipients,
+
+          title: String(title).trim(),
+
+          content: content ? String(content).trim() : "",
+
+          priority,
+        });
+
+        console.log("📧 ====================================");
+
+        console.log(`📧 Email Total: ${emailResult.total}`);
+
+        console.log(`📧 Email Success: ${emailResult.success}`);
+
+        console.log(`📧 Email Failed: ${emailResult.failed}`);
+
+        console.log("📧 ====================================");
+      } catch (emailError) {
+        console.error(
+          "❌ EMAIL SERVICE ERROR:",
+          emailError?.message || emailError,
+        );
+      }
+    }
+
+    // ========================================================
+    // EMAIL REQUESTED BUT NO EMAIL
+    // ========================================================
+
+    if (send_email && emailRecipients.length === 0) {
+      console.log("⚠️ Không có người nhận nào có Email hợp lệ.");
+    }
+
+    // ========================================================
     // RETURN
     // ========================================================
 
@@ -404,6 +481,14 @@ const createNotification = async ({
       ...notificationData,
 
       user_ids: validRecipientIds,
+
+      email_enabled: send_email,
+
+      email_recipient_count: emailResult.total,
+
+      email_success_count: emailResult.success,
+
+      email_failed_count: emailResult.failed,
     };
   } catch (error) {
     // ========================================================

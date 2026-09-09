@@ -167,36 +167,46 @@ exports.getNotificationById = async (req, res) => {
 exports.createNotification = async (req, res) => {
   try {
     const churchId = getChurchId(req);
-
     const createdBy = getUserId(req);
 
     if (!churchId || !createdBy) {
       return res.status(401).json({
         success: false,
-
         message: "Không xác định được người dùng hoặc giáo xứ",
       });
     }
 
     const {
       type = "announcement",
-
       title,
-
       content = null,
-
       priority = "normal",
-
       related_type = null,
-
       related_id = null,
-
       action_url = null,
-
       user_ids = [],
-
       target_role = "all",
+      send_email = false,
     } = req.body;
+
+    // ========================================================
+    // QUYỀN GỬI EMAIL
+    // Chỉ admin_catechist được gửi Email
+    // ========================================================
+
+    const isAdminCatechist = req.user?.role === "admin_catechist";
+
+    if (Boolean(send_email) && !isAdminCatechist) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Chỉ Quản trị viên Giáo lý mới có quyền gửi thông báo qua Email.",
+      });
+    }
+
+    // ========================================================
+    // CREATE NOTIFICATION
+    // ========================================================
 
     const data = await notificationService.createNotification({
       church_id: churchId,
@@ -220,12 +230,18 @@ exports.createNotification = async (req, res) => {
       user_ids,
 
       target_role,
+
+      // Chỉ cho phép admin_catechist gửi email
+      send_email: isAdminCatechist ? Boolean(send_email) : false,
     });
 
     return res.status(201).json({
       success: true,
 
-      message: "Gửi thông báo thành công",
+      message:
+        send_email && isAdminCatechist
+          ? "Gửi thông báo và Email thành công"
+          : "Gửi thông báo thành công",
 
       data,
     });

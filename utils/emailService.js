@@ -8,20 +8,14 @@ const nodemailer = require("nodemailer");
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || "smtp.gmail.com",
-
-  // Gmail STARTTLS
-  port: Number(process.env.SMTP_PORT || 587),
-
-  // Port 587 KHÔNG dùng SSL trực tiếp
+  port: 587,
   secure: false,
+  requireTLS: true,
 
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
-
-  // Bắt buộc nâng cấp kết nối lên TLS
-  requireTLS: true,
 
   connectionTimeout: 10000,
   greetingTimeout: 10000,

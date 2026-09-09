@@ -66,88 +66,261 @@ const checkStudentBelongsToChurch = async (studentId, churchId) => {
 // LẤY DANH SÁCH HỌC SINH
 // =====================================================
 exports.getStudents = async (req, res) => {
-  try {
-    const churchId = getChurchId(req);
-    const { class_id } = req.query;
+  const startedAt = Date.now();
 
-    console.log("========== GET STUDENTS ==========");
-    console.log("USER:", req.user);
+  try {
+    // =========================================================
+    // 1. GET CHURCH
+    // =========================================================
+
+    const churchId = getChurchId(req);
+
+    const rawClassId = req.query.class_id;
+
+    console.log("");
+    console.log("============================================================");
+    console.log("                    GET STUDENTS");
+    console.log("============================================================");
+
     console.log("CHURCH ID:", churchId);
-    console.log("CLASS ID:", class_id);
+    console.log("RAW CLASS ID:", rawClassId);
+
+    // =========================================================
+    // 2. VALIDATE CHURCH
+    // =========================================================
 
     if (!churchId) {
+      console.error("❌ ACCOUNT HAS NO CHURCH");
+
       return res.status(403).json({
         success: false,
         message: "Tài khoản chưa được gán giáo xứ",
       });
     }
 
-    let sql = `
-      SELECT DISTINCT
-        s.*,
-        c.id AS class_id,
-        c.name AS class_name,
-        c.code AS class_code,
-        cs.status AS class_student_status,
-        cs.joined_at
-      FROM students s
-      INNER JOIN class_students cs
-        ON cs.student_id = s.id
-      INNER JOIN classes c
-        ON c.id = cs.class_id
-      WHERE c.church_id = ?
-    `;
+    const numericChurchId = Number(churchId);
 
-    const params = [churchId];
+    if (!Number.isInteger(numericChurchId) || numericChurchId <= 0) {
+      console.error("❌ INVALID CHURCH ID:", churchId);
 
-    // ============================================
-    // LỌC THEO LỚP NẾU CÓ class_id
-    // ============================================
-    if (class_id !== undefined && class_id !== null && class_id !== "") {
-      const classIdNumber = Number(class_id);
+      return res.status(400).json({
+        success: false,
+        message: "Church ID không hợp lệ",
+      });
+    }
 
-      if (!Number.isInteger(classIdNumber) || classIdNumber <= 0) {
+    // =========================================================
+    // 3. VALIDATE CLASS ID
+    // =========================================================
+
+    let classId = null;
+
+    if (
+      rawClassId !== undefined &&
+      rawClassId !== null &&
+      String(rawClassId).trim() !== ""
+    ) {
+      classId = Number(String(rawClassId).trim());
+
+      if (!Number.isInteger(classId) || classId <= 0) {
+        console.error("❌ INVALID CLASS ID:", rawClassId);
+
         return res.status(400).json({
           success: false,
           message: "class_id không hợp lệ",
         });
       }
-
-      sql += `
-        AND c.id = ?
-      `;
-
-      params.push(classIdNumber);
     }
 
-    sql += `
-      ORDER BY s.created_at DESC
+    console.log("NORMALIZED CLASS ID:", classId);
+
+    // =========================================================
+    // 4. SQL
+    // =========================================================
+    //
+    // LEFT JOIN:
+    // - Có lớp  -> lấy thông tin lớp
+    // - Không lớp -> class_id/name/code = NULL
+    //
+    // WHERE s.church_id:
+    // - Đảm bảo học sinh thuộc đúng giáo xứ
+    //
+    // Nếu có class_id:
+    // - lọc trực tiếp cs.class_id
+    //
+    // =========================================================
+
+    let sql = `
+      SELECT
+        s.*,
+
+        cs.class_id AS class_id,
+        c.name AS class_name,
+        c.code AS class_code,
+
+        cs.status AS class_student_status,
+        cs.joined_at
+
+      FROM students s
+
+      LEFT JOIN class_students cs
+        ON cs.student_id = s.id
+
+      LEFT JOIN classes c
+        ON c.id = cs.class_id
+        AND c.church_id = s.church_id
+
+      WHERE s.church_id = ?
     `;
 
-    console.log("SQL:", sql);
+    const params = [numericChurchId];
+
+    // =========================================================
+    // 5. FILTER CLASS
+    // =========================================================
+
+    if (classId !== null) {
+      sql += `
+        AND cs.class_id = ?
+      `;
+
+      params.push(classId);
+    }
+
+    // =========================================================
+    // 6. ORDER
+    // =========================================================
+
+    sql += `
+      ORDER BY
+        s.created_at DESC,
+        s.id DESC
+    `;
+
+    // =========================================================
+    // 7. LOG
+    // =========================================================
+
+    console.log("");
+    console.log("---------------- SQL ----------------");
+
+    console.log(sql);
+
+    console.log("--------------------------------------");
+
     console.log("PARAMS:", params);
+
+    console.log("PARAM COUNT:", params.length);
+
+    // =========================================================
+    // 8. EXECUTE
+    // =========================================================
+
+    console.log("EXECUTING QUERY...");
 
     const [rows] = await db.query(sql, params);
 
-    console.log("TOTAL STUDENTS:", rows.length);
+    // =========================================================
+    // 9. RESULT
+    // =========================================================
 
-    return res.json({
+    console.log("✅ QUERY SUCCESS");
+
+    console.log("TOTAL:", rows.length);
+
+    // =========================================================
+    // 10. COUNT CÓ / KHÔNG CÓ LỚP
+    // =========================================================
+
+    let assignedCount = 0;
+    let unassignedCount = 0;
+
+    for (const student of rows) {
+      if (student.class_id) {
+        assignedCount++;
+      } else {
+        unassignedCount++;
+      }
+    }
+
+    console.log("ASSIGNED:", assignedCount);
+
+    console.log("UNASSIGNED:", unassignedCount);
+
+    // =========================================================
+    // 11. FINAL RESPONSE
+    // =========================================================
+
+    const duration = Date.now() - startedAt;
+
+    console.log("DURATION:", `${duration} ms`);
+
+    console.log("============================================================");
+
+    return res.status(200).json({
       success: true,
-      church_id: Number(churchId),
-      class_id: class_id ? Number(class_id) : null,
+
+      church_id: numericChurchId,
+
+      class_id: classId,
+
       total: rows.length,
+
+      assigned_count: assignedCount,
+
+      unassigned_count: unassignedCount,
+
       data: rows,
+
+      duration_ms: duration,
     });
   } catch (error) {
-    console.error("========== GET STUDENTS ERROR ==========");
-    console.error("Message:", error.message);
-    console.error("Code:", error.code);
-    console.error("SQL:", error.sqlMessage);
+    // =========================================================
+    // ERROR
+    // =========================================================
+
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+
+    console.error("❌ GET STUDENTS ERROR");
+
+    console.error(
+      "============================================================",
+    );
+
+    console.error("MESSAGE:", error.message);
+
+    console.error("CODE:", error.code);
+
+    console.error("ERRNO:", error.errno);
+
+    console.error("SQL MESSAGE:", error.sqlMessage);
+
+    console.error("SQL STATE:", error.sqlState);
+
+    console.error("STACK:", error.stack);
+
+    console.error(
+      "============================================================",
+    );
 
     return res.status(500).json({
       success: false,
+
       message: "Không thể lấy danh sách học sinh",
+
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
+
+      mysql_code:
+        process.env.NODE_ENV === "development" ? error.code : undefined,
+
+      mysql_errno:
+        process.env.NODE_ENV === "development" ? error.errno : undefined,
+
+      mysql_sql_state:
+        process.env.NODE_ENV === "development" ? error.sqlState : undefined,
     });
   }
 };

@@ -1,5 +1,5 @@
 const db = require("../config/db");
-
+const { writeLog } = require("../utils/activityLogger");
 // =========================
 // LẤY DANH SÁCH LỚP
 // =========================
@@ -579,7 +579,23 @@ exports.createClass = async (req, res) => {
         status || "active",
       ],
     );
+    // ==========================================
+    // ACTIVITY LOG
+    // ==========================================
 
+    await writeLog({
+      admin_id: req.user?.id || null,
+
+      action: "CREATE_CLASS",
+
+      target_type: "classes",
+
+      target_id: result.insertId,
+
+      description: `Tạo lớp "${name.trim()}" (${code}), loại ${category || "Giáo lý Thiếu Nhi"}, thuộc giáo xứ #${church_id}`,
+
+      ip_address: req.ip,
+    });
     // ==========================================
     // RESPONSE
     // ==========================================
@@ -708,7 +724,23 @@ exports.updateClass = async (req, res) => {
         church_id,
       ],
     );
+    // ==========================================
+    // ACTIVITY LOG
+    // ==========================================
 
+    await writeLog({
+      admin_id: req.user?.id || null,
+
+      action: "UPDATE_CLASS",
+
+      target_type: "classes",
+
+      target_id: Number(id),
+
+      description: `Cập nhật lớp "${name.trim()}" (${classRows[0].code}), thuộc giáo xứ #${church_id}`,
+
+      ip_address: req.ip,
+    });
     return res.status(200).json({
       success: true,
       message: "Cập nhật lớp học thành công",
@@ -730,11 +762,16 @@ exports.updateClass = async (req, res) => {
 // =========================
 // XÓA LỚP
 // =========================
+
 exports.deleteClass = async (req, res) => {
   try {
     const { id } = req.params;
 
     const church_id = req.user?.church_id;
+
+    // ==========================================
+    // KIỂM TRA GIÁO XỨ
+    // ==========================================
 
     if (!church_id) {
       return res.status(403).json({
@@ -744,7 +781,49 @@ exports.deleteClass = async (req, res) => {
     }
 
     // ==========================================
-    // XÓA CHỈ TRONG GIÁO XỨ
+    // VALIDATE ID
+    // ==========================================
+
+    const classId = Number(id);
+
+    if (!Number.isInteger(classId) || classId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "ID lớp học không hợp lệ",
+      });
+    }
+
+    // ==========================================
+    // KIỂM TRA LỚP CÓ THUỘC GIÁO XỨ KHÔNG
+    // ==========================================
+
+    const [classRows] = await db.query(
+      `
+      SELECT
+        id,
+        name,
+        code,
+        category,
+        church_id
+      FROM classes
+      WHERE id = ?
+        AND church_id = ?
+      LIMIT 1
+      `,
+      [classId, church_id],
+    );
+
+    if (!classRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy lớp học trong giáo xứ của bạn",
+      });
+    }
+
+    const classData = classRows[0];
+
+    // ==========================================
+    // XÓA LỚP
     // ==========================================
 
     const [result] = await db.query(
@@ -753,22 +832,76 @@ exports.deleteClass = async (req, res) => {
       WHERE id = ?
         AND church_id = ?
       `,
-      [id, church_id],
+      [classId, church_id],
     );
 
     if (!result.affectedRows) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy lớp học trong giáo xứ của bạn",
+        message: "Không thể xóa lớp học",
       });
     }
 
+    // ==========================================
+    // ACTIVITY LOG
+    // Không để lỗi log làm API xóa lớp thất bại
+    // ==========================================
+
+    try {
+      await writeLog({
+        admin_id: req.user?.id || null,
+        action: "DELETE_CLASS",
+        target_type: "classes",
+        target_id: classId,
+        description: `Xóa lớp "${classData.name}" (${classData.code}), loại ${
+          classData.category || "—"
+        }, thuộc giáo xứ #${church_id}`,
+        ip_address: req.ip,
+      });
+    } catch (logError) {
+      console.error("⚠️ Activity log deleteClass error:", logError);
+    }
+
+    // ==========================================
+    // RESPONSE
+    // ==========================================
+
     return res.status(200).json({
       success: true,
-      message: "Đã xóa lớp học",
+      message: `Đã xóa lớp "${classData.name}"`,
+      data: {
+        id: classData.id,
+        name: classData.name,
+        code: classData.code,
+        category: classData.category,
+      },
     });
   } catch (error) {
     console.error("❌ deleteClass error:", error);
+
+    // ==========================================
+    // FOREIGN KEY
+    // ==========================================
+
+    if (error.code === "ER_ROW_IS_REFERENCED_2") {
+      return res.status(409).json({
+        success: false,
+        message:
+          "Không thể xóa lớp vì lớp đang có dữ liệu liên quan. Vui lòng xử lý học sinh, điểm hoặc dữ liệu liên quan trước.",
+      });
+    }
+
+    // Một số MySQL version có thể trả về ER_ROW_IS_REFERENCED
+    if (error.code === "ER_ROW_IS_REFERENCED") {
+      return res.status(409).json({
+        success: false,
+        message: "Không thể xóa lớp vì đang có dữ liệu liên quan.",
+      });
+    }
+
+    // ==========================================
+    // SERVER ERROR
+    // ==========================================
 
     return res.status(500).json({
       success: false,

@@ -1,6 +1,7 @@
 const db = require("../config/db");
 const XLSX = require("xlsx");
 const crypto = require("crypto");
+const { writeLog } = require("../utils/activityLogger");
 
 // =====================================================
 // HELPER: LẤY CHURCH ID TỪ TOKEN
@@ -40,19 +41,24 @@ const checkClassBelongsToChurch = async (classId, churchId) => {
 
 // =====================================================
 // HELPER: KIỂM TRA HỌC SINH THUỘC GIÁO XỨ
+//
+// QUAN TRỌNG:
+// Không kiểm tra qua class_students.
+//
+// Vì học sinh có thể:
+// - Đã có lớp
+// - Chưa có lớp
+//
+// students.church_id mới là nguồn xác định giáo xứ.
 // =====================================================
 
 const checkStudentBelongsToChurch = async (studentId, churchId) => {
   const [rows] = await db.query(
     `
-      SELECT s.id
-      FROM students s
-      INNER JOIN class_students cs
-        ON cs.student_id = s.id
-      INNER JOIN classes c
-        ON c.id = cs.class_id
-      WHERE s.id = ?
-        AND c.church_id = ?
+      SELECT id
+      FROM students
+      WHERE id = ?
+        AND church_id = ?
       LIMIT 1
     `,
     [studentId, churchId],
@@ -65,6 +71,7 @@ const checkStudentBelongsToChurch = async (studentId, churchId) => {
 // GET /api/students
 // LẤY DANH SÁCH HỌC SINH
 // =====================================================
+
 exports.getStudents = async (req, res) => {
   const startedAt = Date.now();
 
@@ -136,18 +143,13 @@ exports.getStudents = async (req, res) => {
 
     // =========================================================
     // 4. SQL
-    // =========================================================
     //
     // LEFT JOIN:
-    // - Có lớp  -> lấy thông tin lớp
+    // - Có lớp -> lấy thông tin lớp
     // - Không lớp -> class_id/name/code = NULL
     //
-    // WHERE s.church_id:
-    // - Đảm bảo học sinh thuộc đúng giáo xứ
-    //
-    // Nếu có class_id:
-    // - lọc trực tiếp cs.class_id
-    //
+    // students.church_id:
+    // - Xác định học sinh thuộc giáo xứ
     // =========================================================
 
     let sql = `
@@ -203,13 +205,10 @@ exports.getStudents = async (req, res) => {
 
     console.log("");
     console.log("---------------- SQL ----------------");
-
     console.log(sql);
-
     console.log("--------------------------------------");
 
     console.log("PARAMS:", params);
-
     console.log("PARAM COUNT:", params.length);
 
     // =========================================================
@@ -225,7 +224,6 @@ exports.getStudents = async (req, res) => {
     // =========================================================
 
     console.log("✅ QUERY SUCCESS");
-
     console.log("TOTAL:", rows.length);
 
     // =========================================================
@@ -244,7 +242,6 @@ exports.getStudents = async (req, res) => {
     }
 
     console.log("ASSIGNED:", assignedCount);
-
     console.log("UNASSIGNED:", unassignedCount);
 
     // =========================================================
@@ -275,31 +272,20 @@ exports.getStudents = async (req, res) => {
       duration_ms: duration,
     });
   } catch (error) {
-    // =========================================================
-    // ERROR
-    // =========================================================
-
     console.error("");
     console.error(
       "============================================================",
     );
-
     console.error("❌ GET STUDENTS ERROR");
-
     console.error(
       "============================================================",
     );
 
     console.error("MESSAGE:", error.message);
-
     console.error("CODE:", error.code);
-
     console.error("ERRNO:", error.errno);
-
     console.error("SQL MESSAGE:", error.sqlMessage);
-
     console.error("SQL STATE:", error.sqlState);
-
     console.error("STACK:", error.stack);
 
     console.error(
@@ -324,15 +310,30 @@ exports.getStudents = async (req, res) => {
     });
   }
 };
+
 // =====================================================
 // GET /api/students/:id
 // CHI TIẾT HỌC SINH
+//
+// HỖ TRỢ:
+// - Học sinh có lớp
+// - Học sinh chưa có lớp
 // =====================================================
 
 exports.getStudentById = async (req, res) => {
   try {
     const { id } = req.params;
+
     const churchId = getChurchId(req);
+
+    const studentId = Number(id);
+
+    if (!Number.isInteger(studentId) || studentId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "ID học sinh không hợp lệ",
+      });
+    }
 
     if (!churchId) {
       return res.status(403).json({
@@ -345,21 +346,29 @@ exports.getStudentById = async (req, res) => {
       `
         SELECT
           s.*,
+
           c.id AS class_id,
           c.name AS class_name,
           c.code AS class_code,
+
           cs.status AS class_student_status,
           cs.joined_at
+
         FROM students s
-        INNER JOIN class_students cs
+
+        LEFT JOIN class_students cs
           ON cs.student_id = s.id
-        INNER JOIN classes c
+
+        LEFT JOIN classes c
           ON c.id = cs.class_id
+          AND c.church_id = s.church_id
+
         WHERE s.id = ?
-          AND c.church_id = ?
+          AND s.church_id = ?
+
         LIMIT 1
       `,
-      [id, churchId],
+      [studentId, churchId],
     );
 
     if (!rows.length) {
@@ -371,7 +380,9 @@ exports.getStudentById = async (req, res) => {
 
     return res.json({
       success: true,
+
       church_id: Number(churchId),
+
       data: rows[0],
     });
   } catch (error) {
@@ -382,7 +393,9 @@ exports.getStudentById = async (req, res) => {
 
     return res.status(500).json({
       success: false,
+
       message: "Không thể lấy thông tin học sinh",
+
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
@@ -396,6 +409,7 @@ exports.getStudentById = async (req, res) => {
 exports.getStudentsByTeacher = async (req, res) => {
   try {
     const adminId = req.user?.id;
+
     const churchId = req.user?.church_id;
 
     if (!adminId) {
@@ -423,15 +437,20 @@ exports.getStudentsByTeacher = async (req, res) => {
           a.username,
           a.role,
           a.church_id,
+
           ct.id AS catechist_id,
           ct.catechist_code,
           ct.full_name
+
         FROM admins a
+
         LEFT JOIN catechists ct
           ON ct.catechist_code = a.username
          AND ct.church_id = a.church_id
+
         WHERE a.id = ?
           AND a.church_id = ?
+
         LIMIT 1
       `,
       [adminId, churchId],
@@ -463,37 +482,49 @@ exports.getStudentsByTeacher = async (req, res) => {
       `
         SELECT
           s.*,
+
           c.id AS class_id,
           c.name AS class_name,
           c.code AS class_code,
+
           cs.status AS class_student_status,
           cs.joined_at
+
         FROM students s
+
         INNER JOIN class_students cs
           ON cs.student_id = s.id
+
         INNER JOIN classes c
           ON c.id = cs.class_id
+
         INNER JOIN catechist_classes cc
           ON cc.class_id = c.id
+
         WHERE cc.catechist_id = ?
           AND c.church_id = ?
+          AND s.church_id = ?
           AND cs.status = 'studying'
+
         ORDER BY
           c.name ASC,
           s.name ASC
       `,
-      [catechistId, churchId],
+      [catechistId, churchId, churchId],
     );
 
     return res.status(200).json({
       success: true,
+
       teacher: {
         admin_id: teacher.admin_id,
         catechist_id: teacher.catechist_id,
         catechist_code: teacher.catechist_code,
         full_name: teacher.full_name,
       },
+
       total: rows.length,
+
       data: rows,
     });
   } catch (error) {
@@ -504,7 +535,9 @@ exports.getStudentsByTeacher = async (req, res) => {
 
     return res.status(500).json({
       success: false,
+
       message: "Không thể lấy danh sách học sinh của giáo viên",
+
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
@@ -517,7 +550,8 @@ exports.getStudentsByTeacher = async (req, res) => {
 // TỰ ĐỘNG:
 // - Sinh code HS000001...
 // - Sinh QR token
-// - Gán vào lớp
+// - Có thể gán lớp
+// - Có thể KHÔNG gán lớp
 // =====================================================
 
 exports.createStudent = async (req, res) => {
@@ -589,27 +623,37 @@ exports.createStudent = async (req, res) => {
 
     // =================================================
     // VALIDATE CLASS
+    //
+    // class_id có thể bỏ trống
     // =================================================
 
-    const classId = Number(class_id);
+    let classId = null;
 
-    if (!Number.isInteger(classId) || classId <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Vui lòng chọn lớp hợp lệ cho học sinh",
-      });
-    }
+    if (
+      class_id !== undefined &&
+      class_id !== null &&
+      String(class_id).trim() !== ""
+    ) {
+      classId = Number(class_id);
 
-    const classBelongsToChurch = await checkClassBelongsToChurch(
-      classId,
-      churchId,
-    );
+      if (!Number.isInteger(classId) || classId <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "class_id không hợp lệ",
+        });
+      }
 
-    if (!classBelongsToChurch) {
-      return res.status(403).json({
-        success: false,
-        message: "Lớp không thuộc giáo xứ của tài khoản",
-      });
+      const classBelongsToChurch = await checkClassBelongsToChurch(
+        classId,
+        churchId,
+      );
+
+      if (!classBelongsToChurch) {
+        return res.status(403).json({
+          success: false,
+          message: "Lớp không thuộc giáo xứ của tài khoản",
+        });
+      }
     }
 
     // =================================================
@@ -671,6 +715,7 @@ exports.createStudent = async (req, res) => {
     // =================================================
 
     await connection.beginTransaction();
+
     transactionStarted = true;
 
     // =================================================
@@ -801,23 +846,45 @@ exports.createStudent = async (req, res) => {
     // GÁN HỌC SINH VÀO LỚP
     // =================================================
 
-    await connection.query(
-      `
-        INSERT INTO class_students (
-          class_id,
-          student_id
-        )
-        VALUES (?, ?)
-      `,
-      [classId, studentId],
-    );
+    if (classId !== null) {
+      await connection.query(
+        `
+          INSERT INTO class_students (
+            class_id,
+            student_id
+          )
+          VALUES (?, ?)
+        `,
+        [classId, studentId],
+      );
+    }
 
     // =================================================
     // COMMIT
     // =================================================
 
     await connection.commit();
+
     transactionStarted = false;
+
+    // =================================================
+    // ACTIVITY LOG
+    // =================================================
+
+    try {
+      await writeLog({
+        admin_id: req.user?.id || null,
+        action: "CREATE_STUDENT",
+        target_type: "students",
+        target_id: studentId,
+        description: `Tạo học sinh "${String(name).trim()}" (${studentCode})${
+          classId !== null ? `, thuộc lớp #${classId}` : ", chưa được phân lớp"
+        }, giáo xứ #${churchId}`,
+        ip_address: req.ip,
+      });
+    } catch (logError) {
+      console.error("⚠️ CREATE STUDENT ACTIVITY LOG ERROR:", logError.message);
+    }
 
     console.log("✅ CREATE STUDENT SUCCESS");
     console.log("Student ID:", studentId);
@@ -828,7 +895,9 @@ exports.createStudent = async (req, res) => {
 
     return res.status(201).json({
       success: true,
+
       message: "Thêm học sinh thành công",
+
       data: {
         id: studentId,
         code: studentCode,
@@ -853,7 +922,9 @@ exports.createStudent = async (req, res) => {
 
     return res.status(500).json({
       success: false,
+
       message: "Không thể thêm học sinh",
+
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   } finally {
@@ -870,6 +941,11 @@ exports.createStudent = async (req, res) => {
 // - code
 // - qr_token
 // - church_id
+//
+// class_id:
+// - Có -> đổi/gán lớp
+// - Không có -> giữ nguyên lớp
+// - Có thể gửi null/"" để bỏ lớp
 // =====================================================
 
 exports.updateStudent = async (req, res) => {
@@ -879,6 +955,7 @@ exports.updateStudent = async (req, res) => {
 
   try {
     const { id } = req.params;
+
     const churchId = getChurchId(req);
 
     const studentId = Number(id);
@@ -1017,30 +1094,46 @@ exports.updateStudent = async (req, res) => {
 
     // =================================================
     // CLASS
+    //
+    // class_id undefined:
+    //     Không đổi lớp
+    //
+    // class_id = "":
+    //     Bỏ lớp
+    //
+    // class_id = null:
+    //     Bỏ lớp
+    //
+    // class_id hợp lệ:
+    //     Đổi/gán lớp
     // =================================================
 
-    let classId = null;
+    let classId = undefined;
 
-    if (class_id !== undefined && class_id !== null && class_id !== "") {
-      classId = Number(class_id);
+    if (class_id !== undefined) {
+      if (class_id === null || String(class_id).trim() === "") {
+        classId = null;
+      } else {
+        classId = Number(class_id);
 
-      if (!Number.isInteger(classId) || classId <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "class_id không hợp lệ",
-        });
-      }
+        if (!Number.isInteger(classId) || classId <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: "class_id không hợp lệ",
+          });
+        }
 
-      const classBelongsToChurch = await checkClassBelongsToChurch(
-        classId,
-        churchId,
-      );
+        const classBelongsToChurch = await checkClassBelongsToChurch(
+          classId,
+          churchId,
+        );
 
-      if (!classBelongsToChurch) {
-        return res.status(403).json({
-          success: false,
-          message: "Lớp mới không thuộc giáo xứ của tài khoản",
-        });
+        if (!classBelongsToChurch) {
+          return res.status(403).json({
+            success: false,
+            message: "Lớp mới không thuộc giáo xứ của tài khoản",
+          });
+        }
       }
     }
 
@@ -1049,6 +1142,7 @@ exports.updateStudent = async (req, res) => {
     // =================================================
 
     await connection.beginTransaction();
+
     transactionStarted = true;
 
     // =================================================
@@ -1094,6 +1188,7 @@ exports.updateStudent = async (req, res) => {
           status = ?,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
+          AND church_id = ?
       `,
       [
         String(name).trim(),
@@ -1130,11 +1225,13 @@ exports.updateStudent = async (req, res) => {
         avatar || null,
         status || "active",
         studentId,
+        churchId,
       ],
     );
 
     if (!result.affectedRows) {
       await connection.rollback();
+
       transactionStarted = false;
 
       return res.status(404).json({
@@ -1144,10 +1241,11 @@ exports.updateStudent = async (req, res) => {
     }
 
     // =================================================
-    // ĐỔI LỚP
+    // ĐỔI / GÁN / BỎ LỚP
     // =================================================
 
-    if (classId !== null) {
+    if (classId !== undefined) {
+      // Xóa lớp cũ
       await connection.query(
         `
           DELETE FROM class_students
@@ -1156,16 +1254,19 @@ exports.updateStudent = async (req, res) => {
         [studentId],
       );
 
-      await connection.query(
-        `
-          INSERT INTO class_students (
-            class_id,
-            student_id
-          )
-          VALUES (?, ?)
-        `,
-        [classId, studentId],
-      );
+      // Nếu có lớp mới thì thêm
+      if (classId !== null) {
+        await connection.query(
+          `
+            INSERT INTO class_students (
+              class_id,
+              student_id
+            )
+            VALUES (?, ?)
+          `,
+          [classId, studentId],
+        );
+      }
     }
 
     // =================================================
@@ -1173,12 +1274,47 @@ exports.updateStudent = async (req, res) => {
     // =================================================
 
     await connection.commit();
+
     transactionStarted = false;
+
+    // =================================================
+    // ACTIVITY LOG
+    // =================================================
+
+    try {
+      let classDescription = "";
+
+      if (classId === undefined) {
+        classDescription = "";
+      } else if (classId === null) {
+        classDescription = ", bỏ phân lớp";
+      } else {
+        classDescription = `, chuyển sang lớp #${classId}`;
+      }
+
+      await writeLog({
+        admin_id: req.user?.id || null,
+        action: "UPDATE_STUDENT",
+        target_type: "students",
+        target_id: studentId,
+        description: `Cập nhật học sinh #${studentId}${classDescription}, giáo xứ #${churchId}`,
+        ip_address: req.ip,
+      });
+    } catch (logError) {
+      console.error("⚠️ UPDATE STUDENT ACTIVITY LOG ERROR:", logError.message);
+    }
 
     console.log("✅ UPDATE STUDENT SUCCESS");
     console.log("Student ID:", studentId);
     console.log("Church ID:", churchId);
-    console.log("New Class ID:", classId !== null ? classId : "Không đổi");
+    console.log(
+      "New Class ID:",
+      classId === undefined
+        ? "Không đổi"
+        : classId === null
+          ? "Bỏ lớp"
+          : classId,
+    );
 
     return res.json({
       success: true,
@@ -1200,7 +1336,9 @@ exports.updateStudent = async (req, res) => {
 
     return res.status(500).json({
       success: false,
+
       message: "Không thể cập nhật học sinh",
+
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   } finally {
@@ -1211,19 +1349,18 @@ exports.updateStudent = async (req, res) => {
 // =====================================================
 // IMPORT STUDENTS FROM EXCEL
 //
-// Excel KHÔNG cần:
-// - id
-// - church_id
-// - qr_token
+// Excel:
+// - name bắt buộc
+// - class_id có thể trống
+// - code có thể trống
 //
-// Backend tự sinh:
-// - id
-// - church_id
-// - qr_token
+// Backend:
+// - church_id tự sinh
+// - qr_token tự sinh
+// - code tự sinh nếu Excel không có
 //
-// Excel bắt buộc:
-// - name
-// - class_id
+// Nếu 1 dòng lỗi:
+// => ROLLBACK TOÀN BỘ
 // =====================================================
 
 exports.importStudentsExcel = async (req, res) => {
@@ -1294,7 +1431,6 @@ exports.importStudentsExcel = async (req, res) => {
     const fileName = originalFileName.toLowerCase();
 
     console.log("FILE NAME:", originalFileName);
-
     console.log("FILE SIZE:", req.file.size, "bytes");
 
     if (!fileName.endsWith(".xlsx") && !fileName.endsWith(".xls")) {
@@ -1330,14 +1466,13 @@ exports.importStudentsExcel = async (req, res) => {
       });
     } catch (excelError) {
       console.error("❌ EXCEL READ ERROR");
-
       console.error("MESSAGE:", excelError.message);
-
       console.error("STACK:", excelError.stack);
 
       return res.status(400).json({
         success: false,
         message: "Không thể đọc file Excel",
+
         error:
           process.env.NODE_ENV === "development"
             ? excelError.message
@@ -1448,14 +1583,8 @@ exports.importStudentsExcel = async (req, res) => {
     const actualHeaders = Object.keys(rows[0] || {});
 
     console.log("EXPECTED HEADERS:", requiredHeaders.length);
-
     console.log("ACTUAL HEADERS:", actualHeaders.length);
-
     console.log("HEADERS:", actualHeaders);
-
-    // ---------------------------------------------------------
-    // Missing headers
-    // ---------------------------------------------------------
 
     const missingHeaders = requiredHeaders.filter(
       (header) => !actualHeaders.includes(header),
@@ -1466,9 +1595,13 @@ exports.importStudentsExcel = async (req, res) => {
 
       return res.status(400).json({
         success: false,
+
         message: "File Excel thiếu cột",
+
         missing_headers: missingHeaders,
+
         expected_headers: requiredHeaders,
+
         actual_headers: actualHeaders,
       });
     }
@@ -1601,9 +1734,7 @@ exports.importStudentsExcel = async (req, res) => {
     ];
 
     console.log("ALLOWED GENDER:", allowedGender);
-
     console.log("ALLOWED CATECHISM STATUS:", allowedCatechismStatus);
-
     console.log("ALLOWED STATUS:", allowedStatus);
 
     // =========================================================
@@ -1687,12 +1818,12 @@ exports.importStudentsExcel = async (req, res) => {
 
     const [lastStudentRows] = await connection.execute(
       `
-          SELECT id
-          FROM students
-          ORDER BY id DESC
-          LIMIT 1
-          FOR UPDATE
-        `,
+        SELECT id
+        FROM students
+        ORDER BY id DESC
+        LIMIT 1
+        FOR UPDATE
+      `,
     );
 
     let nextStudentId = lastStudentRows.length
@@ -1718,15 +1849,15 @@ exports.importStudentsExcel = async (req, res) => {
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index];
 
-      // Header = row 1
-      // Data starts = row 2
       const excelRow = index + 2;
 
       console.log("");
       console.log(
         "------------------------------------------------------------",
       );
+
       console.log(`PROCESSING EXCEL ROW ${excelRow}`);
+
       console.log(
         "------------------------------------------------------------",
       );
@@ -1779,7 +1910,6 @@ exports.importStudentsExcel = async (req, res) => {
           }
 
           console.log("CLASS NAME:", classInfo.name);
-
           console.log("CLASS CODE:", classInfo.code);
         } else {
           console.log("CLASS: Không gán lớp");
@@ -1862,10 +1992,6 @@ exports.importStudentsExcel = async (req, res) => {
         const codeWasGenerated = !code;
 
         if (!code) {
-          // ---------------------------------------------------
-          // AUTO GENERATE
-          // ---------------------------------------------------
-
           do {
             code = `HS${String(nextStudentId).padStart(6, "0")}`;
 
@@ -1897,12 +2023,12 @@ exports.importStudentsExcel = async (req, res) => {
 
         const [existingCodeRows] = await connection.execute(
           `
-              SELECT id
-              FROM students
-              WHERE church_id = ?
-                AND code = ?
-              LIMIT 1
-            `,
+            SELECT id
+            FROM students
+            WHERE church_id = ?
+              AND code = ?
+            LIMIT 1
+          `,
           [numericChurchId, code],
         );
 
@@ -1983,120 +2109,79 @@ exports.importStudentsExcel = async (req, res) => {
         // =====================================================
 
         const params = [
-          // 1
           numericChurchId,
-
-          // 2
           code,
-
-          // 3
           qrToken,
-
-          // 4
           name,
-
-          // 5
           gender,
-
-          // 6
           dateOfBirth,
 
-          // 7
           row.birth_place ? String(row.birth_place).trim() : null,
 
-          // 8
           row.nationality ? String(row.nationality).trim() : "Việt Nam",
 
-          // 9
           row.phone ? String(row.phone).trim() : null,
 
-          // 10
           row.email ? String(row.email).trim() : null,
 
-          // 11
           row.address ? String(row.address).trim() : null,
 
-          // 12
           row.parish ? String(row.parish).trim() : null,
 
-          // 13
           row.father_name ? String(row.father_name).trim() : null,
 
-          // 14
           row.father_phone ? String(row.father_phone).trim() : null,
 
-          // 15
           row.mother_name ? String(row.mother_name).trim() : null,
 
-          // 16
           row.mother_phone ? String(row.mother_phone).trim() : null,
 
-          // 17
           row.guardian_name ? String(row.guardian_name).trim() : null,
 
-          // 18
           row.guardian_phone ? String(row.guardian_phone).trim() : null,
 
-          // 19
           row.guardian_relationship
             ? String(row.guardian_relationship).trim()
             : null,
 
-          // 20
           row.baptism_name ? String(row.baptism_name).trim() : null,
 
-          // 21
           baptismDate,
 
-          // 22
           row.baptism_place ? String(row.baptism_place).trim() : null,
 
-          // 23
           row.baptism_parish ? String(row.baptism_parish).trim() : null,
 
-          // 24
           row.baptism_certificate_no
             ? String(row.baptism_certificate_no).trim()
             : null,
 
-          // 25
           row.saint_name ? String(row.saint_name).trim() : null,
 
-          // 26
           firstCommunionDate,
 
-          // 27
           row.first_communion_place
             ? String(row.first_communion_place).trim()
             : null,
 
-          // 28
           confirmationDate,
 
-          // 29
           row.confirmation_place ? String(row.confirmation_place).trim() : null,
 
-          // 30
           row.confirmation_saint_name
             ? String(row.confirmation_saint_name).trim()
             : null,
 
-          // 31
           row.catechism_level ? String(row.catechism_level).trim() : null,
 
-          // 32
           catechismStatus,
 
-          // 33
           enrollmentDate,
 
-          // 34
           row.note ? String(row.note).trim() : null,
 
-          // 35
           row.avatar ? String(row.avatar).trim() : null,
 
-          // 36
           studentStatus,
         ];
 
@@ -2193,10 +2278,6 @@ exports.importStudentsExcel = async (req, res) => {
 
         console.log("SQL PARAMS:", params.length);
 
-        // -----------------------------------------------------
-        // MUST BE 36
-        // -----------------------------------------------------
-
         if (placeholderCount !== 36) {
           throw new Error(
             `INSERT students phải có đúng 36 placeholders, hiện tại có ${placeholderCount}`,
@@ -2216,23 +2297,6 @@ exports.importStudentsExcel = async (req, res) => {
         }
 
         console.log("✅ SQL VALID: 36 COLUMNS / 36 PLACEHOLDERS / 36 PARAMS");
-
-        // =====================================================
-        // PARAM VALIDATION
-        // =====================================================
-
-        const paramTypes = params.map((value, index) => ({
-          index: index + 1,
-          type:
-            value === null
-              ? "NULL"
-              : Array.isArray(value)
-                ? "ARRAY"
-                : typeof value,
-          hasValue: value !== null && value !== undefined && value !== "",
-        }));
-
-        console.log("PARAM TYPES:", paramTypes);
 
         // =====================================================
         // INSERT STUDENT
@@ -2276,6 +2340,7 @@ exports.importStudentsExcel = async (req, res) => {
 
           console.log("CLASS INSERT RESULT:", {
             affectedRows: classResult.affectedRows,
+
             insertId: classResult.insertId,
           });
 
@@ -2292,11 +2357,17 @@ exports.importStudentsExcel = async (req, res) => {
 
         successRows.push({
           row: excelRow,
+
           id: studentId,
+
           code,
+
           name,
+
           class_id: classId,
+
           class_name: classInfo?.name || null,
+
           qr_token: qrToken,
         });
 
@@ -2307,6 +2378,7 @@ exports.importStudentsExcel = async (req, res) => {
         // =====================================================
 
         console.error("");
+
         console.error(
           "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
         );
@@ -2377,6 +2449,7 @@ exports.importStudentsExcel = async (req, res) => {
 
     if (errorRows.length > 0) {
       console.error("");
+
       console.error(
         "============================================================",
       );
@@ -2429,6 +2502,31 @@ exports.importStudentsExcel = async (req, res) => {
     console.log("✅ COMMIT SUCCESS");
 
     // =========================================================
+    // ACTIVITY LOG
+    //
+    // Chỉ 1 log cho toàn bộ file.
+    // Không tạo 1000 log nếu import 1000 học sinh.
+    // =========================================================
+
+    try {
+      await writeLog({
+        admin_id: req.user?.id || null,
+
+        action: "IMPORT_STUDENTS",
+
+        target_type: "students",
+
+        target_id: null,
+
+        description: `Import thành công ${successRows.length} học sinh từ file "${originalFileName}", giáo xứ #${numericChurchId}`,
+
+        ip_address: req.ip,
+      });
+    } catch (logError) {
+      console.error("⚠️ IMPORT STUDENTS ACTIVITY LOG ERROR:", logError.message);
+    }
+
+    // =========================================================
     // 15. RESPONSE
     // =========================================================
 
@@ -2437,6 +2535,7 @@ exports.importStudentsExcel = async (req, res) => {
     const duration = Date.now() - startedAt;
 
     console.log("");
+
     console.log("============================================================");
 
     console.log("✅ IMPORT STUDENTS SUCCESS");
@@ -2472,6 +2571,7 @@ exports.importStudentsExcel = async (req, res) => {
     // =========================================================
 
     console.error("");
+
     console.error(
       "============================================================",
     );
@@ -2560,6 +2660,7 @@ exports.importStudentsExcel = async (req, res) => {
     console.log("============================================================");
   }
 };
+
 // =====================================================
 // DELETE /api/students/:id
 // XÓA HỌC SINH
@@ -2572,6 +2673,7 @@ exports.deleteStudent = async (req, res) => {
 
   try {
     const { id } = req.params;
+
     const churchId = getChurchId(req);
 
     const studentId = Number(id);
@@ -2607,10 +2709,38 @@ exports.deleteStudent = async (req, res) => {
     }
 
     // =================================================
+    // LẤY THÔNG TIN HỌC SINH TRƯỚC KHI XÓA
+    // =================================================
+
+    const [studentRows] = await db.query(
+      `
+          SELECT
+            id,
+            code,
+            name
+          FROM students
+          WHERE id = ?
+            AND church_id = ?
+          LIMIT 1
+        `,
+      [studentId, churchId],
+    );
+
+    if (!studentRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy học sinh trong giáo xứ này",
+      });
+    }
+
+    const studentData = studentRows[0];
+
+    // =================================================
     // TRANSACTION
     // =================================================
 
     await connection.beginTransaction();
+
     transactionStarted = true;
 
     // =================================================
@@ -2631,14 +2761,16 @@ exports.deleteStudent = async (req, res) => {
 
     const [result] = await connection.query(
       `
-        DELETE FROM students
-        WHERE id = ?
-      `,
-      [studentId],
+          DELETE FROM students
+          WHERE id = ?
+            AND church_id = ?
+        `,
+      [studentId, churchId],
     );
 
     if (!result.affectedRows) {
       await connection.rollback();
+
       transactionStarted = false;
 
       return res.status(404).json({
@@ -2652,14 +2784,40 @@ exports.deleteStudent = async (req, res) => {
     // =================================================
 
     await connection.commit();
+
     transactionStarted = false;
 
+    // =================================================
+    // ACTIVITY LOG
+    // =================================================
+
+    try {
+      await writeLog({
+        admin_id: req.user?.id || null,
+
+        action: "DELETE_STUDENT",
+
+        target_type: "students",
+
+        target_id: studentId,
+
+        description: `Xóa học sinh "${studentData.name}" (${studentData.code}), giáo xứ #${churchId}`,
+
+        ip_address: req.ip,
+      });
+    } catch (logError) {
+      console.error("⚠️ DELETE STUDENT ACTIVITY LOG ERROR:", logError.message);
+    }
+
     console.log("✅ DELETE STUDENT SUCCESS");
+
     console.log("Student ID:", studentId);
+
     console.log("Church ID:", churchId);
 
     return res.json({
       success: true,
+
       message: "Đã xóa học sinh thành công",
     });
   } catch (error) {
@@ -2672,13 +2830,18 @@ exports.deleteStudent = async (req, res) => {
     }
 
     console.error("========== DELETE STUDENT ERROR ==========");
+
     console.error("Message:", error.message);
+
     console.error("Code:", error.code);
+
     console.error("SQL:", error.sqlMessage);
 
     return res.status(500).json({
       success: false,
+
       message: "Không thể xóa học sinh",
+
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   } finally {

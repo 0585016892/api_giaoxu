@@ -38,11 +38,19 @@ exports.getAllCatechists = async (req, res) => {
 
     const [rows] = await db.query(
       `
-      SELECT
-        c.*
-      FROM catechists c
-      WHERE c.church_id = ?
-      ORDER BY c.id DESC
+     SELECT
+  c.*,
+  a.avatar AS avatar
+
+FROM catechists c
+
+LEFT JOIN admins a
+  ON a.username = c.catechist_code
+  AND a.church_id = c.church_id
+
+WHERE c.church_id = ?
+
+ORDER BY c.id DESC
       `,
       [churchId],
     );
@@ -86,13 +94,23 @@ exports.getCatechistById = async (req, res) => {
 
     const [catechistRows] = await db.query(
       `
-      SELECT
-        c.*
-      FROM catechists c
-      WHERE c.id = ?
-        AND c.church_id = ?
-      LIMIT 1
-      `,
+  SELECT
+    c.*,
+
+    -- Avatar lấy từ tài khoản admins
+    a.avatar AS avatar
+
+  FROM catechists c
+
+  LEFT JOIN admins a
+    ON a.username = c.catechist_code
+    AND a.church_id = c.church_id
+
+  WHERE c.id = ?
+    AND c.church_id = ?
+
+  LIMIT 1
+  `,
       [id, churchId],
     );
 

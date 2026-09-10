@@ -1,6 +1,7 @@
 const db = require("../config/db");
 const { getIO } = require("../socket/socket");
 const { sendNotificationEmails } = require("../utils/emailService");
+
 // ============================================================
 // CONSTANTS
 // ============================================================
@@ -90,7 +91,16 @@ const NOTIFICATION_STATS_SELECT = `
 
 // ============================================================
 // CREATE NOTIFICATION
+//
+// church_id:
+//   - number => gửi trong 1 giáo xứ
+//   - null   => gửi toàn hệ thống
+//
+// LƯU Ý:
+// Quyền admin_catechist được kiểm tra ở CONTROLLER.
+// Service chỉ xử lý dữ liệu.
 // ============================================================
+
 const createNotification = async ({
   church_id,
   type = "system",
@@ -114,7 +124,11 @@ const createNotification = async ({
     // NORMALIZE
     // ========================================================
 
-    church_id = Number(church_id);
+    if (church_id !== null && church_id !== undefined) {
+      church_id = Number(church_id);
+    } else {
+      church_id = null;
+    }
 
     created_by = created_by ? Number(created_by) : null;
 
@@ -124,7 +138,11 @@ const createNotification = async ({
     // VALIDATE
     // ========================================================
 
-    if (!Number.isInteger(church_id) || church_id <= 0) {
+    // church_id NULL = toàn hệ thống
+    if (
+      church_id !== null &&
+      (!Number.isInteger(church_id) || church_id <= 0)
+    ) {
       throw new Error("church_id không hợp lệ");
     }
 
@@ -162,12 +180,21 @@ const createNotification = async ({
       let sql = `
         SELECT id
         FROM admins
-        WHERE church_id = ?
-          AND is_active = 1
+        WHERE is_active = 1
       `;
 
-      const params = [church_id];
+      const params = [];
 
+      // Có church_id => chỉ lấy user của giáo xứ đó
+      if (church_id !== null) {
+        sql += `
+          AND church_id = ?
+        `;
+
+        params.push(church_id);
+      }
+
+      // target_role = all => tất cả role
       if (target_role !== "all") {
         sql += `
           AND role = ?
@@ -188,15 +215,24 @@ const createNotification = async ({
     // ========================================================
 
     if (recipientIds.length === 0) {
-      const [allUsers] = await connection.query(
-        `
+      let sql = `
         SELECT id
         FROM admins
-        WHERE church_id = ?
-          AND is_active = 1
-        `,
-        [church_id],
-      );
+        WHERE is_active = 1
+      `;
+
+      const params = [];
+
+      // Chỉ filter church khi gửi trong giáo xứ
+      if (church_id !== null) {
+        sql += `
+          AND church_id = ?
+        `;
+
+        params.push(church_id);
+      }
+
+      const [allUsers] = await connection.query(sql, params);
 
       recipientIds = allUsers.map((user) => Number(user.id));
     }
@@ -206,7 +242,11 @@ const createNotification = async ({
     // ========================================================
 
     if (recipientIds.length === 0) {
-      throw new Error("Giáo xứ chưa có người dùng để nhận thông báo");
+      throw new Error(
+        church_id === null
+          ? "Hệ thống chưa có người dùng để nhận thông báo"
+          : "Giáo xứ chưa có người dùng để nhận thông báo",
+      );
     }
 
     // ========================================================
@@ -215,19 +255,30 @@ const createNotification = async ({
 
     const placeholders = recipientIds.map(() => "?").join(",");
 
-    const [validUsers] = await connection.query(
-      `
+    let validateSql = `
       SELECT
         id,
         full_name,
-        email
+        email,
+        church_id
       FROM admins
       WHERE id IN (${placeholders})
-        AND church_id = ?
         AND is_active = 1
-      `,
-      [...recipientIds, church_id],
-    );
+    `;
+
+    const validateParams = [...recipientIds];
+
+    // Nếu gửi trong 1 giáo xứ
+    // => recipient bắt buộc thuộc giáo xứ đó
+    if (church_id !== null) {
+      validateSql += `
+        AND church_id = ?
+      `;
+
+      validateParams.push(church_id);
+    }
+
+    const [validUsers] = await connection.query(validateSql, validateParams);
 
     const validRecipientIds = validUsers.map((user) => Number(user.id));
 
@@ -236,7 +287,11 @@ const createNotification = async ({
     // ========================================================
 
     if (validRecipientIds.length === 0) {
-      throw new Error("Không tìm thấy người dùng hợp lệ để nhận thông báo");
+      throw new Error(
+        church_id === null
+          ? "Không tìm thấy người dùng hợp lệ để nhận thông báo toàn hệ thống"
+          : "Không tìm thấy người dùng hợp lệ để nhận thông báo",
+      );
     }
 
     // ========================================================
@@ -272,7 +327,7 @@ const createNotification = async ({
           created_by
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
+      `,
       [
         church_id,
 
@@ -362,6 +417,7 @@ const createNotification = async ({
     const notificationData = {
       id: notificationId,
 
+      // NULL = toàn hệ thống
       church_id,
 
       type,
@@ -404,15 +460,29 @@ const createNotification = async ({
     try {
       const io = getIO();
 
-      const churchRoom = `church:${church_id}`;
+      if (church_id === null) {
+        // ================================================
+        // GLOBAL / SYSTEM NOTIFICATION
+        // ================================================
 
-      io.to(churchRoom).emit("notification", notificationData);
+        io.emit("notification", notificationData);
+
+        console.log("🌍 Gửi notification TOÀN HỆ THỐNG");
+      } else {
+        // ================================================
+        // CHURCH NOTIFICATION
+        // ================================================
+
+        const churchRoom = `church:${church_id}`;
+
+        io.to(churchRoom).emit("notification", notificationData);
+
+        console.log(`⛪ Church Room: ${churchRoom}`);
+      }
 
       console.log("📢 ====================================");
 
       console.log(`📢 Notification #${notificationId}`);
-
-      console.log(`⛪ Church Room: ${churchRoom}`);
 
       console.log(`👥 Total Recipients: ${validRecipientIds.length}`);
 
@@ -425,7 +495,7 @@ const createNotification = async ({
     // SEND EMAIL
     // ========================================================
 
-    let emailResult = {
+    const emailResult = {
       total: 0,
       success: 0,
       failed: 0,
@@ -438,18 +508,27 @@ const createNotification = async ({
       );
 
       // KHÔNG await
-      // Email lỗi/timeout không được phép làm request notification timeout
+      //
+      // Email lỗi / timeout không được phép
+      // làm request notification timeout.
       sendNotificationEmails({
         recipients: emailRecipients,
+
         title: String(title).trim(),
+
         content: content ? String(content).trim() : "",
+
         priority,
       })
         .then((result) => {
           console.log("📧 ====================================");
+
           console.log(`📧 Email Total: ${result.total}`);
+
           console.log(`📧 Email Success: ${result.success}`);
+
           console.log(`📧 Email Failed: ${result.failed}`);
+
           console.log("📧 ====================================");
 
           if (result.invalid > 0) {
@@ -460,6 +539,7 @@ const createNotification = async ({
           console.error("❌ EMAIL BACKGROUND ERROR:", error?.message || error);
         });
     }
+
     // ========================================================
     // EMAIL REQUESTED BUT NO EMAIL
     // ========================================================
@@ -479,7 +559,10 @@ const createNotification = async ({
 
       email_enabled: send_email,
 
-      email_recipient_count: emailResult.total,
+      // Vì email đang chạy background
+      // nên các giá trị này phản ánh trạng thái
+      // tại thời điểm request tạo notification.
+      email_recipient_count: emailRecipients.length,
 
       email_success_count: emailResult.success,
 
@@ -510,6 +593,10 @@ const createNotification = async ({
 
 // ============================================================
 // GET MY NOTIFICATIONS
+//
+// User sẽ nhận:
+// 1. Notification của giáo xứ mình
+// 2. Notification toàn hệ thống (church_id IS NULL)
 // ============================================================
 
 const getMyNotifications = async ({
@@ -529,24 +616,27 @@ const getMyNotifications = async ({
 
   const offset = (page - 1) * limit;
 
-  let where = `
+  const where = `
     WHERE nu.user_id = ?
       AND nu.is_deleted = 0
-      AND n.church_id = ?
+      AND (
+        n.church_id = ?
+        OR n.church_id IS NULL
+      )
   `;
 
   const params = [user_id, church_id];
 
-  if (
+  const finalWhere =
     unread_only === true ||
     unread_only === "true" ||
     unread_only === 1 ||
     unread_only === "1"
-  ) {
-    where += `
-      AND nu.is_read = 0
-    `;
-  }
+      ? `
+        ${where}
+        AND nu.is_read = 0
+      `
+      : where;
 
   const [rows] = await db.query(
     `
@@ -579,7 +669,7 @@ const getMyNotifications = async ({
     LEFT JOIN admins creator
       ON creator.id = n.created_by
 
-    ${where}
+    ${finalWhere}
 
     ORDER BY n.created_at DESC
 
@@ -590,15 +680,15 @@ const getMyNotifications = async ({
 
   const [[count]] = await db.query(
     `
-    SELECT COUNT(*) AS total
+      SELECT COUNT(*) AS total
 
-    FROM notification_users nu
+      FROM notification_users nu
 
-    INNER JOIN notifications n
-      ON n.id = nu.notification_id
+      INNER JOIN notifications n
+        ON n.id = nu.notification_id
 
-    ${where}
-    `,
+      ${finalWhere}
+      `,
     params,
   );
 
@@ -667,7 +757,10 @@ const getMyNotificationsToday = async ({ user_id, church_id }) => {
 
     WHERE nu.user_id = ?
       AND nu.is_deleted = 0
-      AND n.church_id = ?
+      AND (
+        n.church_id = ?
+        OR n.church_id IS NULL
+      )
       AND DATE(n.created_at) = CURDATE()
 
     ORDER BY n.created_at DESC
@@ -731,7 +824,10 @@ const getMyNotificationById = async ({
     WHERE n.id = ?
       AND nu.user_id = ?
       AND nu.is_deleted = 0
-      AND n.church_id = ?
+      AND (
+        n.church_id = ?
+        OR n.church_id IS NULL
+      )
 
     LIMIT 1
     `,
@@ -780,7 +876,10 @@ const markAsRead = async ({ notification_id, user_id, church_id }) => {
     WHERE nu.notification_id = ?
       AND nu.user_id = ?
       AND nu.is_deleted = 0
-      AND n.church_id = ?
+      AND (
+        n.church_id = ?
+        OR n.church_id IS NULL
+      )
     `,
     [Number(notification_id), Number(user_id), Number(church_id)],
   );
@@ -808,7 +907,10 @@ const markAllAsRead = async ({ user_id, church_id }) => {
     WHERE nu.user_id = ?
       AND nu.is_read = 0
       AND nu.is_deleted = 0
-      AND n.church_id = ?
+      AND (
+        n.church_id = ?
+        OR n.church_id IS NULL
+      )
     `,
     [Number(user_id), Number(church_id)],
   );
@@ -840,7 +942,10 @@ const deleteMyNotification = async ({
     WHERE nu.notification_id = ?
       AND nu.user_id = ?
       AND nu.is_deleted = 0
-      AND n.church_id = ?
+      AND (
+        n.church_id = ?
+        OR n.church_id IS NULL
+      )
     `,
     [Number(notification_id), Number(user_id), Number(church_id)],
   );
@@ -867,7 +972,10 @@ const deleteAllMyNotifications = async ({ user_id, church_id }) => {
 
     WHERE nu.user_id = ?
       AND nu.is_deleted = 0
-      AND n.church_id = ?
+      AND (
+        n.church_id = ?
+        OR n.church_id IS NULL
+      )
     `,
     [Number(user_id), Number(church_id)],
   );
@@ -882,41 +990,44 @@ const deleteAllMyNotifications = async ({ user_id, church_id }) => {
 const getMyNotificationStats = async ({ user_id, church_id }) => {
   const [[stats]] = await db.query(
     `
-    SELECT
+      SELECT
 
-      COUNT(*) AS total,
+        COUNT(*) AS total,
 
-      COALESCE(
-        SUM(
-          CASE
-            WHEN nu.is_read = 0
-            THEN 1
-            ELSE 0
-          END
-        ),
-        0
-      ) AS unread,
+        COALESCE(
+          SUM(
+            CASE
+              WHEN nu.is_read = 0
+              THEN 1
+              ELSE 0
+            END
+          ),
+          0
+        ) AS unread,
 
-      COALESCE(
-        SUM(
-          CASE
-            WHEN nu.is_read = 1
-            THEN 1
-            ELSE 0
-          END
-        ),
-        0
-      ) AS read_count
+        COALESCE(
+          SUM(
+            CASE
+              WHEN nu.is_read = 1
+              THEN 1
+              ELSE 0
+            END
+          ),
+          0
+        ) AS read_count
 
-    FROM notification_users nu
+      FROM notification_users nu
 
-    INNER JOIN notifications n
-      ON n.id = nu.notification_id
+      INNER JOIN notifications n
+        ON n.id = nu.notification_id
 
-    WHERE nu.user_id = ?
-      AND nu.is_deleted = 0
-      AND n.church_id = ?
-    `,
+      WHERE nu.user_id = ?
+        AND nu.is_deleted = 0
+        AND (
+          n.church_id = ?
+          OR n.church_id IS NULL
+        )
+      `,
     [Number(user_id), Number(church_id)],
   );
 
@@ -936,18 +1047,21 @@ const getMyNotificationStats = async ({ user_id, church_id }) => {
 const getUnreadCount = async ({ user_id, church_id }) => {
   const [[result]] = await db.query(
     `
-    SELECT COUNT(*) AS unread
+      SELECT COUNT(*) AS unread
 
-    FROM notification_users nu
+      FROM notification_users nu
 
-    INNER JOIN notifications n
-      ON n.id = nu.notification_id
+      INNER JOIN notifications n
+        ON n.id = nu.notification_id
 
-    WHERE nu.user_id = ?
-      AND nu.is_read = 0
-      AND nu.is_deleted = 0
-      AND n.church_id = ?
-    `,
+      WHERE nu.user_id = ?
+        AND nu.is_read = 0
+        AND nu.is_deleted = 0
+        AND (
+          n.church_id = ?
+          OR n.church_id IS NULL
+        )
+      `,
     [Number(user_id), Number(church_id)],
   );
 

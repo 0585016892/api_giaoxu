@@ -100,9 +100,8 @@ const NOTIFICATION_STATS_SELECT = `
 // Quyền admin_catechist được kiểm tra ở CONTROLLER.
 // Service chỉ xử lý dữ liệu.
 // ============================================================
-
 const createNotification = async ({
-  church_id,
+  church_id = null,
   type = "system",
   title,
   content = null,
@@ -112,7 +111,7 @@ const createNotification = async ({
   action_url = null,
   created_by = null,
   user_ids = [],
-  target_role = null,
+  target_role = "all",
   send_email = false,
 }) => {
   const connection = await db.getConnection();
@@ -121,24 +120,41 @@ const createNotification = async ({
 
   try {
     // ========================================================
-    // NORMALIZE
+    // 1. NORMALIZE
     // ========================================================
 
-    if (church_id !== null && church_id !== undefined) {
-      church_id = Number(church_id);
-    } else {
+    // NULL = TOÀN HỆ THỐNG
+    if (church_id === null || church_id === undefined || church_id === "") {
       church_id = null;
+    } else {
+      church_id = Number(church_id);
     }
 
-    created_by = created_by ? Number(created_by) : null;
+    // CREATED BY
+    if (created_by === null || created_by === undefined || created_by === "") {
+      created_by = null;
+    } else {
+      created_by = Number(created_by);
+    }
 
+    // TARGET ROLE
+    target_role =
+      target_role === null || target_role === undefined || target_role === ""
+        ? "all"
+        : String(target_role).trim();
+
+    // EMAIL
     send_email = Boolean(send_email);
 
     // ========================================================
-    // VALIDATE
+    // 2. VALIDATE
     // ========================================================
 
-    // church_id NULL = toàn hệ thống
+    // --------------------------------------------------------
+    // CHURCH ID
+    // NULL = GLOBAL
+    // --------------------------------------------------------
+
     if (
       church_id !== null &&
       (!Number.isInteger(church_id) || church_id <= 0)
@@ -146,26 +162,59 @@ const createNotification = async ({
       throw new Error("church_id không hợp lệ");
     }
 
+    // --------------------------------------------------------
+    // CREATED BY
+    // --------------------------------------------------------
+
+    if (
+      created_by !== null &&
+      (!Number.isInteger(created_by) || created_by <= 0)
+    ) {
+      throw new Error("created_by không hợp lệ");
+    }
+
+    // --------------------------------------------------------
+    // TITLE
+    // --------------------------------------------------------
+
     if (!title || !String(title).trim()) {
       throw new Error("Tiêu đề thông báo không được để trống");
     }
+
+    // --------------------------------------------------------
+    // TYPE
+    // --------------------------------------------------------
 
     if (!VALID_TYPES.includes(type)) {
       throw new Error(`Loại thông báo không hợp lệ: ${type}`);
     }
 
+    // --------------------------------------------------------
+    // PRIORITY
+    // --------------------------------------------------------
+
     if (!VALID_PRIORITIES.includes(priority)) {
       throw new Error(`Độ ưu tiên không hợp lệ: ${priority}`);
     }
 
+    // --------------------------------------------------------
+    // TARGET ROLE
+    // --------------------------------------------------------
+
+    const allowedRoles = ["all", "admin_catechist", "catechist", "teacher"];
+
+    if (!allowedRoles.includes(target_role)) {
+      throw new Error(`target_role không hợp lệ: ${target_role}`);
+    }
+
     // ========================================================
-    // START RECIPIENT IDS
+    // 3. NORMALIZE USER IDS
     // ========================================================
 
     let recipientIds = normalizeIds(user_ids);
 
     // ========================================================
-    // START TRANSACTION
+    // 4. START TRANSACTION
     // ========================================================
 
     await connection.beginTransaction();
@@ -173,72 +222,101 @@ const createNotification = async ({
     transactionStarted = true;
 
     // ========================================================
-    // TARGET ROLE
+    // 5. FIND USERS BY TARGET ROLE
+    // ========================================================
+    //
+    // GLOBAL:
+    // church_id = NULL
+    // => toàn bộ hệ thống
+    //
+    // CHURCH:
+    // church_id = 16
+    // => chỉ giáo xứ 16
+    //
     // ========================================================
 
-    if (target_role) {
-      let sql = `
-        SELECT id
-        FROM admins
-        WHERE is_active = 1
+    let roleSql = `
+      SELECT
+        id
+      FROM admins
+      WHERE is_active = 1
+    `;
+
+    const roleParams = [];
+
+    // --------------------------------------------------------
+    // CHỈ FILTER CHURCH KHI CÓ CHURCH_ID
+    // --------------------------------------------------------
+
+    if (church_id !== null) {
+      roleSql += `
+        AND church_id = ?
       `;
 
-      const params = [];
-
-      // Có church_id => chỉ lấy user của giáo xứ đó
-      if (church_id !== null) {
-        sql += `
-          AND church_id = ?
-        `;
-
-        params.push(church_id);
-      }
-
-      // target_role = all => tất cả role
-      if (target_role !== "all") {
-        sql += `
-          AND role = ?
-        `;
-
-        params.push(target_role);
-      }
-
-      const [users] = await connection.query(sql, params);
-
-      const roleUserIds = users.map((user) => Number(user.id));
-
-      recipientIds = [...new Set([...recipientIds, ...roleUserIds])];
+      roleParams.push(church_id);
     }
 
+    // --------------------------------------------------------
+    // FILTER ROLE
+    // --------------------------------------------------------
+
+    if (target_role !== "all") {
+      roleSql += `
+        AND role = ?
+      `;
+
+      roleParams.push(target_role);
+    }
+
+    const [roleUsers] = await connection.query(roleSql, roleParams);
+
+    const roleUserIds = roleUsers.map((user) => Number(user.id));
+
+    // --------------------------------------------------------
+    // MERGE USER IDS
+    // --------------------------------------------------------
+
+    recipientIds = [...new Set([...recipientIds, ...roleUserIds])];
+
     // ========================================================
-    // DEFAULT ALL USERS
+    // 6. NẾU CHƯA CÓ RECIPIENT
+    // ========================================================
+    //
+    // Trường hợp target_role = all nhưng query trên không ra
+    // thì query này vẫn đảm bảo lấy tất cả active users.
+    //
     // ========================================================
 
     if (recipientIds.length === 0) {
-      let sql = `
-        SELECT id
+      let allUsersSql = `
+        SELECT
+          id
         FROM admins
         WHERE is_active = 1
       `;
 
-      const params = [];
+      const allUsersParams = [];
 
-      // Chỉ filter church khi gửi trong giáo xứ
+      // ------------------------------------------------------
+      // GLOBAL
+      // => KHÔNG FILTER CHURCH
+      // ------------------------------------------------------
+
       if (church_id !== null) {
-        sql += `
+        allUsersSql += `
           AND church_id = ?
         `;
 
-        params.push(church_id);
+        allUsersParams.push(church_id);
       }
 
-      const [allUsers] = await connection.query(sql, params);
+      const [allUsers] = await connection.query(allUsersSql, allUsersParams);
 
       recipientIds = allUsers.map((user) => Number(user.id));
     }
 
     // ========================================================
-    // NO RECIPIENT
+    // 7. CHECK RECIPIENT
     // ========================================================
 
     if (recipientIds.length === 0) {
@@ -250,7 +328,15 @@ const createNotification = async ({
     }
 
     // ========================================================
-    // VALIDATE RECIPIENTS
+    // 8. VALIDATE RECIPIENTS
+    // ========================================================
+    //
+    // GLOBAL:
+    // => user thuộc giáo xứ nào cũng được
+    //
+    // CHURCH:
+    // => user bắt buộc thuộc church_id
+    //
     // ========================================================
 
     const placeholders = recipientIds.map(() => "?").join(",");
@@ -260,7 +346,8 @@ const createNotification = async ({
         id,
         full_name,
         email,
-        church_id
+        church_id,
+        role
       FROM admins
       WHERE id IN (${placeholders})
         AND is_active = 1
@@ -268,8 +355,10 @@ const createNotification = async ({
 
     const validateParams = [...recipientIds];
 
-    // Nếu gửi trong 1 giáo xứ
-    // => recipient bắt buộc thuộc giáo xứ đó
+    // --------------------------------------------------------
+    // CHURCH SCOPE
+    // --------------------------------------------------------
+
     if (church_id !== null) {
       validateSql += `
         AND church_id = ?
@@ -283,7 +372,7 @@ const createNotification = async ({
     const validRecipientIds = validUsers.map((user) => Number(user.id));
 
     // ========================================================
-    // NO VALID RECIPIENT
+    // 9. NO VALID RECIPIENT
     // ========================================================
 
     if (validRecipientIds.length === 0) {
@@ -295,7 +384,7 @@ const createNotification = async ({
     }
 
     // ========================================================
-    // EMAIL RECIPIENTS
+    // 10. EMAIL RECIPIENTS
     // ========================================================
 
     const emailRecipients = send_email
@@ -309,25 +398,25 @@ const createNotification = async ({
       : [];
 
     // ========================================================
-    // INSERT NOTIFICATION
+    // 11. INSERT NOTIFICATION
     // ========================================================
 
     const [notificationResult] = await connection.query(
       `
-        INSERT INTO notifications
-        (
-          church_id,
-          type,
-          title,
-          content,
-          priority,
-          related_type,
-          related_id,
-          action_url,
-          created_by
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
+          INSERT INTO notifications
+          (
+            church_id,
+            type,
+            title,
+            content,
+            priority,
+            related_type,
+            related_id,
+            action_url,
+            created_by
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
       [
         church_id,
 
@@ -335,7 +424,9 @@ const createNotification = async ({
 
         String(title).trim(),
 
-        content ? String(content).trim() : null,
+        content === null || content === undefined || content === ""
+          ? null
+          : String(content).trim(),
 
         priority,
 
@@ -352,7 +443,7 @@ const createNotification = async ({
     const notificationId = notificationResult.insertId;
 
     // ========================================================
-    // INSERT USER NOTIFICATIONS
+    // 12. INSERT NOTIFICATION USERS
     // ========================================================
 
     const notificationUserValues = validRecipientIds.map((userId) => [
@@ -364,9 +455,8 @@ const createNotification = async ({
       null,
     ]);
 
-    if (notificationUserValues.length > 0) {
-      await connection.query(
-        `
+    await connection.query(
+      `
         INSERT INTO notification_users
         (
           notification_id,
@@ -377,13 +467,12 @@ const createNotification = async ({
           deleted_at
         )
         VALUES ?
-        `,
-        [notificationUserValues],
-      );
-    }
+      `,
+      [notificationUserValues],
+    );
 
     // ========================================================
-    // GET CREATOR NAME
+    // 13. GET CREATOR
     // ========================================================
 
     let createdByName = null;
@@ -391,10 +480,11 @@ const createNotification = async ({
     if (created_by) {
       const [[creator]] = await connection.query(
         `
-          SELECT full_name
-          FROM admins
-          WHERE id = ?
-          LIMIT 1
+            SELECT
+              full_name
+            FROM admins
+            WHERE id = ?
+            LIMIT 1
           `,
         [created_by],
       );
@@ -403,7 +493,7 @@ const createNotification = async ({
     }
 
     // ========================================================
-    // COMMIT
+    // 14. COMMIT
     // ========================================================
 
     await connection.commit();
@@ -411,20 +501,26 @@ const createNotification = async ({
     transactionStarted = false;
 
     // ========================================================
-    // BUILD RESPONSE DATA
+    // 15. BUILD NOTIFICATION DATA
     // ========================================================
 
     const notificationData = {
       id: notificationId,
 
-      // NULL = toàn hệ thống
+      // NULL = TOÀN HỆ THỐNG
       church_id,
+
+      // GLOBAL / CHURCH
+      scope: church_id === null ? "global" : "church",
 
       type,
 
       title: String(title).trim(),
 
-      content: content ? String(content).trim() : null,
+      content:
+        content === null || content === undefined || content === ""
+          ? null
+          : String(content).trim(),
 
       priority,
 
@@ -454,37 +550,44 @@ const createNotification = async ({
     };
 
     // ========================================================
-    // SOCKET.IO
+    // 16. SOCKET.IO
     // ========================================================
 
     try {
       const io = getIO();
 
-      if (church_id === null) {
-        // ================================================
-        // GLOBAL / SYSTEM NOTIFICATION
-        // ================================================
+      // ------------------------------------------------------
+      // GLOBAL
+      // ------------------------------------------------------
 
+      if (church_id === null) {
         io.emit("notification", notificationData);
 
-        console.log("🌍 Gửi notification TOÀN HỆ THỐNG");
-      } else {
-        // ================================================
-        // CHURCH NOTIFICATION
-        // ================================================
+        console.log("🌍 Notification GLOBAL");
+      }
 
+      // ------------------------------------------------------
+      // CHURCH
+      // ------------------------------------------------------
+      else {
         const churchRoom = `church:${church_id}`;
 
         io.to(churchRoom).emit("notification", notificationData);
 
-        console.log(`⛪ Church Room: ${churchRoom}`);
+        console.log(`⛪ Notification ${churchRoom}`);
       }
 
       console.log("📢 ====================================");
 
       console.log(`📢 Notification #${notificationId}`);
 
-      console.log(`👥 Total Recipients: ${validRecipientIds.length}`);
+      console.log(
+        `🏷️ Scope: ${church_id === null ? "GLOBAL" : `CHURCH ${church_id}`}`,
+      );
+
+      console.log(`🎯 Target Role: ${target_role}`);
+
+      console.log(`👥 Recipients: ${validRecipientIds.length}`);
 
       console.log("📢 ====================================");
     } catch (socketError) {
@@ -492,7 +595,7 @@ const createNotification = async ({
     }
 
     // ========================================================
-    // SEND EMAIL
+    // 17. SEND EMAIL
     // ========================================================
 
     const emailResult = {
@@ -507,16 +610,17 @@ const createNotification = async ({
         `📧 Bắt đầu gửi Email cho ${emailRecipients.length} người...`,
       );
 
-      // KHÔNG await
-      //
-      // Email lỗi / timeout không được phép
-      // làm request notification timeout.
+      // Không await
+      // Email chạy background
       sendNotificationEmails({
         recipients: emailRecipients,
 
         title: String(title).trim(),
 
-        content: content ? String(content).trim() : "",
+        content:
+          content === null || content === undefined
+            ? ""
+            : String(content).trim(),
 
         priority,
       })
@@ -541,7 +645,7 @@ const createNotification = async ({
     }
 
     // ========================================================
-    // EMAIL REQUESTED BUT NO EMAIL
+    // 18. EMAIL REQUESTED BUT NO EMAIL
     // ========================================================
 
     if (send_email && emailRecipients.length === 0) {
@@ -549,7 +653,7 @@ const createNotification = async ({
     }
 
     // ========================================================
-    // RETURN
+    // 19. RETURN
     // ========================================================
 
     return {
@@ -559,9 +663,7 @@ const createNotification = async ({
 
       email_enabled: send_email,
 
-      // Vì email đang chạy background
-      // nên các giá trị này phản ánh trạng thái
-      // tại thời điểm request tạo notification.
+      // Email đang chạy background
       email_recipient_count: emailRecipients.length,
 
       email_success_count: emailResult.success,
@@ -590,7 +692,6 @@ const createNotification = async ({
     connection.release();
   }
 };
-
 // ============================================================
 // GET MY NOTIFICATIONS
 //

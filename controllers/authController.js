@@ -2,6 +2,7 @@ const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { writeLog } = require("../utils/activityLogger");
+const { generateCatechistCode } = require("../utils/generateCode");
 exports.login = async (req, res) => {
   console.log("===== LOGIN REQUEST =====");
 
@@ -272,6 +273,8 @@ exports.login = async (req, res) => {
     });
   }
 };
+// const { writeLog } = require("../utils/writeLog");
+
 exports.register = async (req, res) => {
   console.log("===== FAITHEDU REGISTER REQUEST =====");
 
@@ -282,7 +285,6 @@ exports.register = async (req, res) => {
       email,
       password,
       full_name,
-      username,
       phone,
 
       church_name,
@@ -297,19 +299,25 @@ exports.register = async (req, res) => {
     // 1. VALIDATE
     // =====================================================
 
-    if (!email || !password || !full_name || !username || !church_name) {
+    if (!email || !password || !full_name || !church_name) {
       return res.status(400).json({
         success: false,
-        message: "Email, password, họ tên, username và tên giáo xứ là bắt buộc",
+        message: "Email, password, họ tên và tên giáo xứ là bắt buộc",
       });
     }
 
-    const cleanEmail = email.trim().toLowerCase();
-    const cleanUsername = username.trim();
-    const cleanFullName = full_name.trim();
-    const cleanChurchName = church_name.trim();
+    const cleanEmail = String(email).trim().toLowerCase();
+    const cleanFullName = String(full_name).trim();
+    const cleanChurchName = String(church_name).trim();
 
-    if (password.length < 6) {
+    if (!cleanEmail || !cleanFullName || !cleanChurchName) {
+      return res.status(400).json({
+        success: false,
+        message: "Thông tin đăng ký không hợp lệ",
+      });
+    }
+
+    if (String(password).length < 6) {
       return res.status(400).json({
         success: false,
         message: "Mật khẩu phải có ít nhất 6 ký tự",
@@ -338,34 +346,13 @@ exports.register = async (req, res) => {
     }
 
     // =====================================================
-    // 3. CHECK USERNAME
-    // =====================================================
-
-    const [usernameRows] = await db.query(
-      `
-      SELECT id
-      FROM admins
-      WHERE username = ?
-      LIMIT 1
-      `,
-      [cleanUsername],
-    );
-
-    if (usernameRows.length > 0) {
-      return res.status(409).json({
-        success: false,
-        message: "Tên đăng nhập đã tồn tại",
-      });
-    }
-
-    // =====================================================
-    // 4. HASH PASSWORD
+    // 3. HASH PASSWORD
     // =====================================================
 
     const hashedPassword = await bcrypt.hash(password, 12);
 
     // =====================================================
-    // 5. CONNECTION + TRANSACTION
+    // 4. CONNECTION + TRANSACTION
     // =====================================================
 
     connection = await db.getConnection();
@@ -373,13 +360,26 @@ exports.register = async (req, res) => {
     await connection.beginTransaction();
 
     // =====================================================
-    // 6. TẠO MÃ GIÁO XỨ
+    // 5. TẠO MÃ GIÁO LÝ VIÊN
+    // =====================================================
+    // generateCatechistCode sẽ đảm bảo code không bị trùng
+    //
+    // Ví dụ:
+    // GLV20260035
+    //
+    // Mã này đồng thời được dùng làm username.
     // =====================================================
 
-    const churchCode = `FE${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    const catechistCode = await generateCatechistCode(connection);
+
+    const cleanUsername = catechistCode;
+
+    console.log("✅ CATECHIST CODE GENERATED");
+    console.log("Catechist Code:", catechistCode);
+    console.log("Username:", cleanUsername);
 
     // =====================================================
-    // 7. TRIAL 30 NGÀY
+    // 6. TRIAL 30 NGÀY
     // =====================================================
 
     const trialStartedAt = new Date();
@@ -387,6 +387,16 @@ exports.register = async (req, res) => {
     const trialExpiresAt = new Date(trialStartedAt);
 
     trialExpiresAt.setDate(trialExpiresAt.getDate() + 30);
+
+    // =====================================================
+    // 7. TẠO MÃ GIÁO XỨ
+    // =====================================================
+
+    const churchCode = `FE${Date.now()}${Math.floor(
+      100 + Math.random() * 900,
+    )}`;
+
+    console.log("Church Code:", churchCode);
 
     // =====================================================
     // 8. TẠO CHURCH
@@ -438,7 +448,7 @@ exports.register = async (req, res) => {
         ward || null,
         churchCode,
 
-        // Vì churches.image đang NOT NULL
+        // churches.image đang NOT NULL
         "/uploads/churches/default.jpg",
 
         trialStartedAt,
@@ -495,6 +505,7 @@ exports.register = async (req, res) => {
 
     console.log("✅ ADMIN CREATED");
     console.log("Admin ID:", adminId);
+    console.log("Username:", cleanUsername);
     console.log("Role:", "admin_catechist");
 
     // =====================================================
@@ -527,7 +538,8 @@ exports.register = async (req, res) => {
 
         account_type: "member",
 
-        // Admin catechist chưa có catechist record
+        // Admin catechist mới đăng ký
+        // chưa có record catechists / teachers
         catechist_id: null,
 
         teacher_id: null,
@@ -547,13 +559,19 @@ exports.register = async (req, res) => {
     try {
       await writeLog({
         admin_id: adminId,
+
         action: "REGISTER",
+
         target_type: "admin_catechist",
+
         target_id: adminId,
+
         description: `${cleanFullName} đăng ký FaithEdu - ${cleanChurchName}`,
+
         ip_address: req.ip,
       });
     } catch (logError) {
+      // Không để lỗi ghi log làm fail đăng ký
       console.error("⚠️ WRITE REGISTER LOG ERROR:", logError);
     }
 
@@ -568,6 +586,8 @@ exports.register = async (req, res) => {
     console.log("Email    :", cleanEmail);
     console.log("Role     :", "admin_catechist");
     console.log("Church ID:", churchId);
+    console.log("Church   :", cleanChurchName);
+    console.log("Code     :", catechistCode);
     console.log("Trial    :", trialStartedAt);
     console.log("Expires  :", trialExpiresAt);
     console.log("========================================");
@@ -590,15 +610,17 @@ exports.register = async (req, res) => {
 
         full_name: cleanFullName,
 
+        // username = catechist_code
         username: cleanUsername,
+
+        // Trả luôn catechist_code cho frontend
+        catechist_code: catechistCode,
 
         account_type: "member",
 
         avatar: null,
 
         catechist_id: null,
-
-        catechist_code: null,
 
         catechist_full_name: null,
 
@@ -642,24 +664,38 @@ exports.register = async (req, res) => {
 
     console.error("========================================");
     console.error("❌ FAITHEDU REGISTER ERROR");
+    console.error("Error Code:", err.code);
+    console.error("Error Message:", err.message);
     console.error(err);
     console.error("========================================");
 
-    // Duplicate do database
+    // =====================================================
+    // DUPLICATE
+    // =====================================================
+
     if (err.code === "ER_DUP_ENTRY") {
       return res.status(409).json({
         success: false,
-        message: "Email, username hoặc mã giáo xứ đã tồn tại",
+        message: "Email, username hoặc mã giáo lý viên đã tồn tại",
       });
     }
 
+    // =====================================================
+    // RESPONSE ERROR
+    // =====================================================
+
     return res.status(500).json({
       success: false,
+
       message: "Đăng ký FaithEdu thất bại",
 
       error: process.env.NODE_ENV === "development" ? err.message : undefined,
     });
   } finally {
+    // =====================================================
+    // RELEASE CONNECTION
+    // =====================================================
+
     if (connection) {
       connection.release();
     }

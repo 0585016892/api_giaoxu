@@ -46,6 +46,7 @@ const attendanceRoutes = require("./routes/attendanceRoutes");
 const corsRoutes = require("./routes/corsRoutes");
 const licenseRoutes = require("./routes/licenseRoutes");
 const statisticsRoutes = require("./routes/statisticsRoutes");
+const emailRoutes = require("./routes/email");
 
 // ===============================
 // APP
@@ -122,6 +123,7 @@ app.use("/api/daily-verses", dailyVerseRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/license", licenseRoutes);
 app.use("/api/statistics", statisticsRoutes);
+app.use("/api/email", emailRoutes);
 // ===============================
 // CORS MANAGEMENT
 // ===============================

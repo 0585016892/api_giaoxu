@@ -8,9 +8,8 @@ const nodemailer = require("nodemailer");
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || "smtp.gmail.com",
-  port: 587,
-  secure: false,
-  requireTLS: true,
+  port: 465,
+  secure: true,
 
   auth: {
     user: process.env.SMTP_USER,
@@ -21,9 +20,9 @@ const transporter = nodemailer.createTransport({
     rejectUnauthorized: false,
   },
 
-  connectionTimeout: 10000,
-  greetingTimeout: 10000,
-  socketTimeout: 15000,
+  connectionTimeout: 15000,
+  greetingTimeout: 15000,
+  socketTimeout: 20000,
 });
 // =========================================================
 // VERIFY SMTP

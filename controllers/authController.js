@@ -483,7 +483,7 @@ exports.register = async (req, res) => {
         ?,
         ?,
         ?,
-        'admin_catechist',
+        'catechist',
         'member',
         1,
         ?,
@@ -506,7 +506,7 @@ exports.register = async (req, res) => {
     console.log("✅ ADMIN CREATED");
     console.log("Admin ID:", adminId);
     console.log("Username:", cleanUsername);
-    console.log("Role:", "admin_catechist");
+    console.log("Role:", "catechist");
 
     // =====================================================
     // 10. COMMIT
@@ -532,7 +532,7 @@ exports.register = async (req, res) => {
 
         avatar: null,
 
-        role: "admin_catechist",
+        role: "catechist",
 
         church_id: Number(churchId),
 
@@ -562,7 +562,7 @@ exports.register = async (req, res) => {
 
         action: "REGISTER",
 
-        target_type: "admin_catechist",
+        target_type: "catechist",
 
         target_id: adminId,
 
@@ -584,7 +584,7 @@ exports.register = async (req, res) => {
     console.log("Admin ID :", adminId);
     console.log("Username :", cleanUsername);
     console.log("Email    :", cleanEmail);
-    console.log("Role     :", "admin_catechist");
+    console.log("Role     :", "catechist");
     console.log("Church ID:", churchId);
     console.log("Church   :", cleanChurchName);
     console.log("Code     :", catechistCode);
@@ -604,7 +604,7 @@ exports.register = async (req, res) => {
 
         email: cleanEmail,
 
-        role: "admin_catechist",
+        role: "catechist",
 
         church_id: Number(churchId),
 

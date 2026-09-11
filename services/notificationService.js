@@ -598,11 +598,18 @@ const createNotification = async ({
     // 17. SEND EMAIL
     // ========================================================
 
-    const emailResult = {
+    // ========================================================
+    // 17. SEND EMAIL
+    // ========================================================
+
+    let emailResult = {
       total: 0,
+      valid: 0,
+      invalid: 0,
       success: 0,
       failed: 0,
       results: [],
+      invalidRecipients: [],
     };
 
     if (send_email && emailRecipients.length > 0) {
@@ -610,40 +617,53 @@ const createNotification = async ({
         `📧 Bắt đầu gửi Email cho ${emailRecipients.length} người...`,
       );
 
-      // Không await
-      // Email chạy background
-      sendNotificationEmails({
-        recipients: emailRecipients,
+      try {
+        emailResult = await sendNotificationEmails({
+          recipients: emailRecipients,
 
-        title: String(title).trim(),
+          title: String(title).trim(),
 
-        content:
-          content === null || content === undefined
-            ? ""
-            : String(content).trim(),
+          content:
+            content === null || content === undefined
+              ? ""
+              : String(content).trim(),
 
-        priority,
-      })
-        .then((result) => {
-          console.log("📧 ====================================");
-
-          console.log(`📧 Email Total: ${result.total}`);
-
-          console.log(`📧 Email Success: ${result.success}`);
-
-          console.log(`📧 Email Failed: ${result.failed}`);
-
-          console.log("📧 ====================================");
-
-          if (result.invalid > 0) {
-            console.log(`⚠️ Email không hợp lệ: ${result.invalid}`);
-          }
-        })
-        .catch((error) => {
-          console.error("❌ EMAIL BACKGROUND ERROR:", error?.message || error);
+          priority,
         });
+
+        console.log("📧 ====================================");
+        console.log(`📧 Email Total: ${emailResult.total}`);
+        console.log(`📧 Email Valid: ${emailResult.valid}`);
+        console.log(`📧 Email Invalid: ${emailResult.invalid}`);
+        console.log(`📧 Email Success: ${emailResult.success}`);
+        console.log(`📧 Email Failed: ${emailResult.failed}`);
+        console.log("📧 ====================================");
+
+        if (emailResult.invalid > 0) {
+          console.log(`⚠️ Email không hợp lệ: ${emailResult.invalid}`);
+        }
+      } catch (emailError) {
+        console.error("❌ EMAIL ERROR:", emailError?.message || emailError);
+
+        emailResult = {
+          total: emailRecipients.length,
+          valid: emailRecipients.length,
+          invalid: 0,
+          success: 0,
+          failed: emailRecipients.length,
+          results: [],
+          invalidRecipients: [],
+        };
+      }
     }
 
+    // ========================================================
+    // 18. EMAIL REQUESTED BUT NO EMAIL
+    // ========================================================
+
+    if (send_email && emailRecipients.length === 0) {
+      console.log("⚠️ Không có người nhận nào có Email hợp lệ.");
+    }
     // ========================================================
     // 18. EMAIL REQUESTED BUT NO EMAIL
     // ========================================================
@@ -663,12 +683,19 @@ const createNotification = async ({
 
       email_enabled: send_email,
 
-      // Email đang chạy background
       email_recipient_count: emailRecipients.length,
+
+      email_total: emailResult.total,
+
+      email_valid: emailResult.valid,
+
+      email_invalid: emailResult.invalid,
 
       email_success_count: emailResult.success,
 
       email_failed_count: emailResult.failed,
+
+      email_results: emailResult.results,
     };
   } catch (error) {
     // ========================================================

@@ -768,7 +768,11 @@ const createNotification = async ({
     // ========================================================
     // 17. EXPO PUSH NOTIFICATION
     // ========================================================
-
+    console.log("");
+    console.log("🚨🚨🚨 ĐÃ ĐẾN ĐOẠN EXPO PUSH 🚨🚨🚨");
+    console.log("🚨 Notification ID:", notificationId);
+    console.log("🚨 Recipient IDs:", validRecipientIds);
+    console.log("");
     let pushResult = {
       success: false,
       total: 0,
@@ -778,6 +782,7 @@ const createNotification = async ({
     };
 
     try {
+      console.log("🚀 ĐANG GỌI sendPushForNotification...");
       pushResult = await sendPushForNotification({
         notificationId,
 
@@ -796,6 +801,7 @@ const createNotification = async ({
 
         priority,
       });
+      console.log("🚀 PUSH RESULT:", pushResult);
     } catch (pushError) {
       console.error("❌ EXPO PUSH ERROR:", pushError);
     }

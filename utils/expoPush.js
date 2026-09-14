@@ -1,42 +1,22 @@
 // ============================================================
 // FAITHEDU - EXPO PUSH SERVICE
-// CommonJS backend + ESM expo-server-sdk
+// Direct Expo Push API
+// Node.js 20+
+// Không sử dụng expo-server-sdk
 // ============================================================
 
-let Expo = null;
-let expoClient = null;
+const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 
-// ============================================================
-// LOAD EXPO SERVER SDK
-// ============================================================
-
-const getExpoClient = async () => {
-  if (expoClient) {
-    return expoClient;
-  }
-
-  const expoModule = await import("expo-server-sdk");
-
-  // Hỗ trợ cả:
-  // import { Expo } from "expo-server-sdk"
-  // và default export nếu package thay đổi
-  Expo = expoModule.Expo || expoModule.default;
-
-  if (!Expo) {
-    throw new Error("Không thể load Expo từ expo-server-sdk");
-  }
-
-  expoClient = new Expo();
-
-  console.log("✅ [ExpoPush] expo-server-sdk loaded");
-
-  return expoClient;
-};
-
-// ============================================================
-// SEND EXPO PUSH NOTIFICATIONS
-// ============================================================
-
+/**
+ * Gửi Push Notification qua Expo HTTP API
+ *
+ * @param {Object} params
+ * @param {string[]} params.tokens
+ * @param {string} params.title
+ * @param {string} params.body
+ * @param {Object} params.data
+ * @param {string} params.priority
+ */
 const sendExpoPushNotifications = async ({
   tokens = [],
   title = "FaithEdu",
@@ -47,62 +27,55 @@ const sendExpoPushNotifications = async ({
   try {
     console.log("");
     console.log("==============================================");
-    console.log("📱 [ExpoPush] START SEND");
+    console.log("📱 [ExpoPush HTTP] START SEND");
     console.log("==============================================");
 
-    // ========================================================
-    // 1. CHECK TOKENS
-    // ========================================================
+    // --------------------------------------------------------
+    // 1. Kiểm tra token
+    // --------------------------------------------------------
 
     if (!Array.isArray(tokens) || tokens.length === 0) {
-      console.log("⚠️ [ExpoPush] Không có token");
-
+      console.log("⚠️ [ExpoPush HTTP] Không có token");
       return [];
     }
 
-    console.log("📱 [ExpoPush] Input tokens:", tokens);
+    console.log("📱 Input tokens:", tokens);
 
-    // ========================================================
-    // 2. LOAD EXPO
-    // ========================================================
+    // --------------------------------------------------------
+    // 2. Lọc token hợp lệ
+    // --------------------------------------------------------
 
-    const expo = await getExpoClient();
+    const validTokens = tokens
+      .map((token) => String(token || "").trim())
+      .filter((token) => {
+        if (!token) {
+          return false;
+        }
 
-    // ========================================================
-    // 3. VALIDATE TOKEN
-    // ========================================================
+        const isExpoToken =
+          token.startsWith("ExponentPushToken[") ||
+          token.startsWith("ExpoPushToken[");
 
-    const validTokens = tokens.filter((token) => {
-      if (!token) {
-        return false;
-      }
+        if (!isExpoToken) {
+          console.warn("⚠️ [ExpoPush HTTP] Token không hợp lệ:", token);
 
-      const cleanToken = String(token).trim();
+          return false;
+        }
 
-      if (!cleanToken) {
-        return false;
-      }
+        return true;
+      });
 
-      if (!Expo.isExpoPushToken(cleanToken)) {
-        console.warn("⚠️ [ExpoPush] Token không hợp lệ:", cleanToken);
-
-        return false;
-      }
-
-      return true;
-    });
-
-    console.log("📱 [ExpoPush] Valid tokens:", validTokens);
+    console.log("📱 Valid tokens:", validTokens);
 
     if (validTokens.length === 0) {
-      console.log("⚠️ [ExpoPush] Không có token Expo hợp lệ");
+      console.log("⚠️ [ExpoPush HTTP] Không có Expo Push Token hợp lệ");
 
       return [];
     }
 
-    // ========================================================
-    // 4. BUILD MESSAGES
-    // ========================================================
+    // --------------------------------------------------------
+    // 3. Tạo messages
+    // --------------------------------------------------------
 
     const messages = validTokens.map((token) => ({
       to: token,
@@ -123,59 +96,76 @@ const sendExpoPushNotifications = async ({
       channelId: "default",
     }));
 
-    console.log("📱 [ExpoPush] Messages:", messages);
+    console.log(
+      "📦 [ExpoPush HTTP] Messages:",
+      JSON.stringify(messages, null, 2),
+    );
 
-    // ========================================================
-    // 5. CHUNK MESSAGES
-    // ========================================================
+    // --------------------------------------------------------
+    // 4. Gọi Expo Push API
+    // --------------------------------------------------------
 
-    const chunks = expo.chunkPushNotifications(messages);
+    console.log("🚀 [ExpoPush HTTP] Đang gửi tới Expo...");
 
-    console.log("📦 [ExpoPush] Chunks:", chunks.length);
+    const response = await fetch(EXPO_PUSH_URL, {
+      method: "POST",
 
-    // ========================================================
-    // 6. SEND
-    // ========================================================
+      headers: {
+        Accept: "application/json",
+        "Accept-Encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+      },
 
-    const tickets = [];
+      body: JSON.stringify(messages),
+    });
 
-    for (const chunk of chunks) {
-      try {
-        console.log(`🚀 [ExpoPush] Sending chunk: ${chunk.length}`);
+    console.log("📡 [ExpoPush HTTP] HTTP Status:", response.status);
 
-        const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
+    // --------------------------------------------------------
+    // 5. Đọc response
+    // --------------------------------------------------------
 
-        console.log("🎫 [ExpoPush] Ticket chunk:", ticketChunk);
+    const result = await response.json();
 
-        tickets.push(...ticketChunk);
-      } catch (error) {
-        console.error("❌ [ExpoPush] SEND CHUNK ERROR:", error);
-      }
+    console.log(
+      "📨 [ExpoPush HTTP] Response:",
+      JSON.stringify(result, null, 2),
+    );
+
+    // --------------------------------------------------------
+    // 6. HTTP lỗi
+    // --------------------------------------------------------
+
+    if (!response.ok) {
+      console.error("❌ [ExpoPush HTTP] HTTP ERROR:", response.status, result);
+
+      return [];
     }
 
-    // ========================================================
-    // 7. RESULT
-    // ========================================================
+    // --------------------------------------------------------
+    // 7. Lấy tickets
+    // --------------------------------------------------------
 
-    console.log(`📱 [ExpoPush] Total tickets: ${tickets.length}`);
+    const tickets = Array.isArray(result?.data) ? result.data : [];
+
+    console.log(
+      "🎫 [ExpoPush HTTP] Tickets:",
+      JSON.stringify(tickets, null, 2),
+    );
+
+    console.log(`📱 [ExpoPush HTTP] Total tickets: ${tickets.length}`);
 
     console.log("==============================================");
-
-    console.log("📱 [ExpoPush] END SEND");
-
+    console.log("📱 [ExpoPush HTTP] END SEND");
     console.log("==============================================");
 
     return tickets;
   } catch (error) {
-    console.error("❌ [ExpoPush] ERROR:", error);
+    console.error("❌ [ExpoPush HTTP] ERROR:", error);
 
     return [];
   }
 };
-
-// ============================================================
-// EXPORT
-// ============================================================
 
 module.exports = {
   sendExpoPushNotifications,

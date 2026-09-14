@@ -720,6 +720,99 @@ const createNotification = async ({
   }
 };
 // ============================================================
+// REGISTER PUSH TOKEN
+// ============================================================
+
+exports.registerPushToken = async ({
+  admin_id,
+  church_id,
+  token,
+  platform,
+  device_name,
+}) => {
+  // ========================================================
+  // 1. KIỂM TRA TOKEN ĐÃ TỒN TẠI
+  // ========================================================
+
+  const [existing] = await db.query(
+    `
+      SELECT
+        id,
+        admin_id,
+        church_id,
+        token
+      FROM push_tokens
+      WHERE token = ?
+      LIMIT 1
+    `,
+    [token],
+  );
+
+  // ========================================================
+  // 2. TOKEN ĐÃ TỒN TẠI
+  // ========================================================
+
+  if (existing.length > 0) {
+    const existingToken = existing[0];
+
+    await db.query(
+      `
+        UPDATE push_tokens
+        SET
+          admin_id = ?,
+          church_id = ?,
+          platform = ?,
+          device_name = ?,
+          is_active = 1,
+          last_used_at = NOW(),
+          updated_at = NOW()
+        WHERE id = ?
+      `,
+      [admin_id, church_id, platform, device_name || null, existingToken.id],
+    );
+
+    return {
+      id: existingToken.id,
+      admin_id,
+      church_id,
+      platform,
+      created: false,
+    };
+  }
+
+  // ========================================================
+  // 3. TOKEN MỚI
+  // ========================================================
+
+  const [result] = await db.query(
+    `
+      INSERT INTO push_tokens (
+        admin_id,
+        church_id,
+        token,
+        platform,
+        device_name,
+        is_active,
+        last_used_at
+      )
+      VALUES (?, ?, ?, ?, ?, 1, NOW())
+    `,
+    [admin_id, church_id, token, platform, device_name || null],
+  );
+
+  // ========================================================
+  // 4. RETURN
+  // ========================================================
+
+  return {
+    id: result.insertId,
+    admin_id,
+    church_id,
+    platform,
+    created: true,
+  };
+};
+// ============================================================
 // GET MY NOTIFICATIONS
 //
 // User sẽ nhận:

@@ -756,7 +756,7 @@ exports.getUnreadCount = async (req, res) => {
 // REGISTER PUSH TOKEN
 // ======================================================
 
-const registerPushToken = async (req, res) => {
+exports.registerPushToken = async (req, res) => {
   try {
     // ==================================================
     // LẤY ADMIN TỪ JWT

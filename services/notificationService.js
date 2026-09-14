@@ -89,7 +89,7 @@ const NOTIFICATION_STATS_SELECT = `
   ) AS read_percent
 `;
 // ============================================================
-// SEND PUSH TO NOTIFICATION RECIPIENTS
+// SEND PUSH TO NOTIFICATION RECIPIENTS thêm log
 // ============================================================
 
 const sendPushForNotification = async ({

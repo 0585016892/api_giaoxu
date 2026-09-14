@@ -10,6 +10,12 @@ const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 /**
  * Gửi Push Notification qua Expo HTTP API
  *
+ * Hiển thị notification theo format:
+ *
+ * FaithEdu
+ * Tiêu đề thông báo
+ * Nội dung thông báo
+ *
  * @param {Object} params
  * @param {string[]} params.tokens
  * @param {string} params.title
@@ -19,8 +25,8 @@ const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
  */
 const sendExpoPushNotifications = async ({
   tokens = [],
-  title = "FaithEdu",
-  body = "Bạn có một thông báo mới từ FaithEdu",
+  title = "",
+  body = "",
   data = {},
   priority = "normal",
 }) => {
@@ -36,6 +42,7 @@ const sendExpoPushNotifications = async ({
 
     if (!Array.isArray(tokens) || tokens.length === 0) {
       console.log("⚠️ [ExpoPush HTTP] Không có token");
+
       return [];
     }
 
@@ -74,7 +81,49 @@ const sendExpoPushNotifications = async ({
     }
 
     // --------------------------------------------------------
-    // 3. Tạo messages
+    // 3. Chuẩn hóa nội dung
+    // --------------------------------------------------------
+
+    const notificationTitle = String(title || "").trim();
+
+    const notificationBody = String(body || "").trim();
+
+    // --------------------------------------------------------
+    // 4. Tạo nội dung notification
+    //
+    // Expo/iOS sẽ hiển thị:
+    //
+    // FaithEdu
+    // [title]
+    // [body]
+    //
+    // Trong đó:
+    // title của Expo = FaithEdu
+    // body của Expo = title + body
+    // --------------------------------------------------------
+
+    let displayBody = "";
+
+    if (notificationTitle && notificationBody) {
+      displayBody = `${notificationTitle}\n${notificationBody}`;
+    } else if (notificationTitle) {
+      displayBody = notificationTitle;
+    } else if (notificationBody) {
+      displayBody = notificationBody;
+    } else {
+      displayBody = "Bạn có một thông báo mới từ FaithEdu";
+    }
+
+    console.log("📌 Notification app name:", "FaithEdu");
+
+    console.log("📌 Notification title:", notificationTitle);
+
+    console.log("📌 Notification body:", notificationBody);
+
+    console.log("📌 Notification display body:", displayBody);
+
+    // --------------------------------------------------------
+    // 5. Tạo messages
     // --------------------------------------------------------
 
     const messages = validTokens.map((token) => ({
@@ -82,16 +131,39 @@ const sendExpoPushNotifications = async ({
 
       sound: "default",
 
-      title: String(title || "FaithEdu").trim(),
+      // ------------------------------------------------------
+      // Luôn hiển thị FaithEdu ở phần tên ứng dụng
+      // ------------------------------------------------------
 
-      body: String(body || "Bạn có một thông báo mới từ FaithEdu").trim(),
+      title: "FaithEdu",
+
+      // ------------------------------------------------------
+      // Nội dung:
+      //
+      // Tiêu đề
+      // Nội dung
+      // ------------------------------------------------------
+
+      body: displayBody,
+
+      // ------------------------------------------------------
+      // Data dùng khi người dùng bấm notification
+      // ------------------------------------------------------
 
       data: {
         ...data,
       },
 
+      // ------------------------------------------------------
+      // Priority
+      // ------------------------------------------------------
+
       priority:
         priority === "urgent" || priority === "high" ? "high" : "default",
+
+      // ------------------------------------------------------
+      // Android notification channel
+      // ------------------------------------------------------
 
       channelId: "default",
     }));
@@ -102,7 +174,7 @@ const sendExpoPushNotifications = async ({
     );
 
     // --------------------------------------------------------
-    // 4. Gọi Expo Push API
+    // 6. Gọi Expo Push API
     // --------------------------------------------------------
 
     console.log("🚀 [ExpoPush HTTP] Đang gửi tới Expo...");
@@ -122,7 +194,7 @@ const sendExpoPushNotifications = async ({
     console.log("📡 [ExpoPush HTTP] HTTP Status:", response.status);
 
     // --------------------------------------------------------
-    // 5. Đọc response
+    // 7. Đọc response
     // --------------------------------------------------------
 
     const result = await response.json();
@@ -133,7 +205,7 @@ const sendExpoPushNotifications = async ({
     );
 
     // --------------------------------------------------------
-    // 6. HTTP lỗi
+    // 8. HTTP lỗi
     // --------------------------------------------------------
 
     if (!response.ok) {
@@ -143,7 +215,7 @@ const sendExpoPushNotifications = async ({
     }
 
     // --------------------------------------------------------
-    // 7. Lấy tickets
+    // 9. Lấy tickets
     // --------------------------------------------------------
 
     const tickets = Array.isArray(result?.data) ? result.data : [];
@@ -155,8 +227,14 @@ const sendExpoPushNotifications = async ({
 
     console.log(`📱 [ExpoPush HTTP] Total tickets: ${tickets.length}`);
 
+    // --------------------------------------------------------
+    // 10. Kết thúc
+    // --------------------------------------------------------
+
     console.log("==============================================");
+
     console.log("📱 [ExpoPush HTTP] END SEND");
+
     console.log("==============================================");
 
     return tickets;

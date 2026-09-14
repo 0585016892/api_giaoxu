@@ -752,23 +752,23 @@ exports.getUnreadCount = async (req, res) => {
   }
 };
 
-// ======================================================
+// ============================================================
 // REGISTER PUSH TOKEN
-// ======================================================
+// POST /api/notifications/push-token
+// ============================================================
 
 exports.registerPushToken = async (req, res) => {
   try {
-    // ==================================================
-    // LẤY ADMIN TỪ JWT
-    // ==================================================
+    // ========================================================
+    // 1. LẤY ADMIN TỪ JWT
+    // ========================================================
 
-    const adminId = req.user?.id || req.admin?.id;
+    const adminId = getUserId(req);
+    const churchId = getChurchId(req);
 
-    const churchId = req.user?.church_id || req.admin?.church_id;
-
-    // ==================================================
-    // VALIDATE AUTH
-    // ==================================================
+    // ========================================================
+    // 2. VALIDATE AUTH
+    // ========================================================
 
     if (!adminId) {
       return res.status(401).json({
@@ -780,134 +780,66 @@ exports.registerPushToken = async (req, res) => {
     if (!churchId) {
       return res.status(400).json({
         success: false,
-        message: "Không xác định được giáo xứ",
+        message: "Tài khoản chưa được liên kết với giáo xứ",
       });
     }
 
-    // ==================================================
-    // BODY
-    // ==================================================
+    // ========================================================
+    // 3. BODY
+    // ========================================================
 
-    const { token, platform, device_name } = req.body;
+    const { token, platform = "android", device_name = null } = req.body || {};
 
-    // ==================================================
-    // VALIDATE TOKEN
-    // ==================================================
+    // ========================================================
+    // 4. VALIDATE TOKEN
+    // ========================================================
 
-    if (!token) {
+    if (!token || !String(token).trim()) {
       return res.status(400).json({
         success: false,
         message: "Thiếu Push Token",
       });
     }
 
-    // ==================================================
-    // PLATFORM
-    // ==================================================
+    // ========================================================
+    // 5. VALIDATE PLATFORM
+    // ========================================================
 
-    const safePlatform = ["ios", "android", "web"].includes(platform)
-      ? platform
+    const normalizedPlatform = ["ios", "android", "web"].includes(
+      String(platform).toLowerCase(),
+    )
+      ? String(platform).toLowerCase()
       : "android";
 
-    // ==================================================
-    // CHECK TOKEN ĐÃ TỒN TẠI CHƯA
-    // ==================================================
+    // ========================================================
+    // 6. LƯU TOKEN
+    // ========================================================
 
-    const [existing] = await db.query(
-      `
-        SELECT
-          id,
-          admin_id,
-          church_id
-        FROM push_tokens
-        WHERE token = ?
-        LIMIT 1
-      `,
-      [token],
-    );
+    const data = await notificationService.registerPushToken({
+      admin_id: adminId,
+      church_id: churchId,
+      token: String(token).trim(),
+      platform: normalizedPlatform,
+      device_name: device_name ? String(device_name).trim() : null,
+    });
 
-    // ==================================================
-    // TOKEN ĐÃ CÓ
-    // ==================================================
+    // ========================================================
+    // 7. RESPONSE
+    // ========================================================
 
-    if (existing.length > 0) {
-      const existingToken = existing[0];
-
-      await db.query(
-        `
-          UPDATE push_tokens
-          SET
-            admin_id = ?,
-            church_id = ?,
-            platform = ?,
-            device_name = ?,
-            is_active = 1,
-            last_used_at = NOW(),
-            updated_at = NOW()
-          WHERE id = ?
-        `,
-        [
-          adminId,
-          churchId,
-          safePlatform,
-          device_name || null,
-          existingToken.id,
-        ],
-      );
-
-      return res.json({
-        success: true,
-        message: "Push Token đã được cập nhật",
-        data: {
-          id: existingToken.id,
-          admin_id: adminId,
-          church_id: churchId,
-          platform: safePlatform,
-        },
-      });
-    }
-
-    // ==================================================
-    // TOKEN MỚI
-    // ==================================================
-
-    const [result] = await db.query(
-      `
-        INSERT INTO push_tokens (
-          admin_id,
-          church_id,
-          token,
-          platform,
-          device_name,
-          is_active,
-          last_used_at
-        )
-        VALUES (?, ?, ?, ?, ?, 1, NOW())
-      `,
-      [adminId, churchId, token, safePlatform, device_name || null],
-    );
-
-    // ==================================================
-    // RESPONSE
-    // ==================================================
-
-    return res.status(201).json({
+    return res.status(data?.created ? 201 : 200).json({
       success: true,
-      message: "Đăng ký Push Token thành công",
-      data: {
-        id: result.insertId,
-        admin_id: adminId,
-        church_id: churchId,
-        platform: safePlatform,
-      },
+      message: data?.created
+        ? "Đăng ký Push Token thành công"
+        : "Push Token đã được cập nhật",
+      data,
     });
   } catch (error) {
     console.error("REGISTER PUSH TOKEN ERROR:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể đăng ký Push Token",
-      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+      message: error.message || "Không thể đăng ký Push Token",
     });
   }
 };

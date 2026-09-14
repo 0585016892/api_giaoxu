@@ -2,26 +2,21 @@ const { Expo } = require("expo-server-sdk");
 
 const expo = new Expo();
 
-// ============================================================
-// SEND EXPO PUSH NOTIFICATIONS
-// ============================================================
-
 const sendExpoPushNotifications = async ({
   tokens = [],
-  title,
-  body,
+  title = "FaithEdu",
+  body = "Bạn có một thông báo mới từ FaithEdu",
   data = {},
   priority = "normal",
 }) => {
   if (!Array.isArray(tokens) || tokens.length === 0) {
-    console.log("[ExpoPush] Không có token để gửi");
-
+    console.log("[ExpoPush] Không có token");
     return [];
   }
 
-  // ============================================================
-  // FILTER VALID EXPO TOKENS
-  // ============================================================
+  // ========================================================
+  // 1. VALIDATE TOKEN
+  // ========================================================
 
   const validTokens = tokens.filter((token) => {
     if (!token) {
@@ -37,27 +32,25 @@ const sendExpoPushNotifications = async ({
     return true;
   });
 
-  if (validTokens.length === 0) {
-    console.log("[ExpoPush] Không có Expo Push Token hợp lệ");
+  console.log("[ExpoPush] Valid tokens:", validTokens);
 
+  if (validTokens.length === 0) {
+    console.log("[ExpoPush] Không có token hợp lệ");
     return [];
   }
 
-  // ============================================================
-  // BUILD MESSAGES
-  // ============================================================
+  // ========================================================
+  // 2. BUILD MESSAGES
+  // ========================================================
 
   const messages = validTokens.map((token) => ({
     to: token,
 
     sound: "default",
 
-    title: title && String(title).trim() ? String(title).trim() : "FaithEdu",
+    title: String(title || "FaithEdu").trim(),
 
-    body:
-      body && String(body).trim()
-        ? String(body).trim()
-        : "Bạn có một thông báo mới từ FaithEdu",
+    body: String(body || "Bạn có một thông báo mới từ FaithEdu").trim(),
 
     data,
 
@@ -66,19 +59,19 @@ const sendExpoPushNotifications = async ({
     channelId: "default",
   }));
 
-  console.log(`[ExpoPush] Chuẩn bị gửi ${messages.length} notification`);
+  console.log("[ExpoPush] Messages:", messages);
 
-  // ============================================================
-  // CHUNK
-  // ============================================================
+  // ========================================================
+  // 3. CHUNK
+  // ========================================================
 
   const chunks = expo.chunkPushNotifications(messages);
 
   const tickets = [];
 
-  // ============================================================
-  // SEND
-  // ============================================================
+  // ========================================================
+  // 4. SEND
+  // ========================================================
 
   for (const chunk of chunks) {
     try {
@@ -86,13 +79,15 @@ const sendExpoPushNotifications = async ({
 
       const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
 
-      console.log("[ExpoPush] Ticket:", ticketChunk);
+      console.log("[ExpoPush] Ticket chunk:", ticketChunk);
 
       tickets.push(...ticketChunk);
     } catch (error) {
       console.error("[ExpoPush] SEND ERROR:", error);
     }
   }
+
+  console.log("[ExpoPush] Total tickets:", tickets.length);
 
   return tickets;
 };

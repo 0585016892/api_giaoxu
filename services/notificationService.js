@@ -865,13 +865,6 @@ const createNotification = async ({
     if (send_email && emailRecipients.length === 0) {
       console.log("⚠️ Không có người nhận nào có Email hợp lệ.");
     }
-    // ========================================================
-    // 18. EMAIL REQUESTED BUT NO EMAIL
-    // ========================================================
-
-    if (send_email && emailRecipients.length === 0) {
-      console.log("⚠️ Không có người nhận nào có Email hợp lệ.");
-    }
 
     // ========================================================
     // 19. RETURN

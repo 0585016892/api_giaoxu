@@ -759,6 +759,11 @@ exports.getUnreadCount = async (req, res) => {
 
 exports.registerPushToken = async (req, res) => {
   try {
+    console.log("====================================");
+    console.log("📱 REGISTER PUSH TOKEN REQUEST");
+    console.log("REQ USER:", req.user);
+    console.log("REQ BODY:", req.body);
+    console.log("====================================");
     // ========================================================
     // 1. LẤY ADMIN TỪ JWT
     // ========================================================

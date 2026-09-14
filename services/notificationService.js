@@ -723,7 +723,7 @@ const createNotification = async ({
 // REGISTER PUSH TOKEN
 // ============================================================
 
-exports.registerPushToken = async ({
+const registerPushToken = async ({
   admin_id,
   church_id,
   token,
@@ -1292,9 +1292,10 @@ const getUnreadCount = async ({ user_id, church_id }) => {
 // ============================================================
 // EXPORT
 // ============================================================
-
 module.exports = {
   createNotification,
+
+  registerPushToken,
 
   getMyNotifications,
 

@@ -15,7 +15,7 @@ router.use(verifyToken);
 // ============================================================
 // CREATE
 // ============================================================
-
+router.post("/push-token", notificationController.registerPushToken);
 router.post("/", notificationController.createNotification);
 
 // ============================================================

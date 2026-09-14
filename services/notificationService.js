@@ -1,7 +1,7 @@
 const db = require("../config/db");
 const { getIO } = require("../socket/socket");
 const { sendNotificationEmails } = require("../utils/emailService");
-
+const { sendExpoPushNotifications } = require("../utils/expoPush");
 // ============================================================
 // CONSTANTS
 // ============================================================
@@ -88,7 +88,178 @@ const NOTIFICATION_STATS_SELECT = `
       AND nus.is_deleted = 0
   ) AS read_percent
 `;
+// ============================================================
+// SEND PUSH TO NOTIFICATION RECIPIENTS thêm log
+// ============================================================
 
+const sendPushForNotification = async ({
+  notificationId,
+  recipientIds,
+  title,
+  content,
+  type,
+  action_url,
+  priority,
+}) => {
+  try {
+    console.log("");
+    console.log("==============================================");
+    console.log("📱 [EXPO PUSH] START");
+    console.log("==============================================");
+
+    // ========================================================
+    // 1. NORMALIZE RECIPIENT IDS
+    // ========================================================
+
+    const userIds = normalizeIds(recipientIds);
+
+    console.log("📱 Recipient IDs:", userIds);
+
+    if (userIds.length === 0) {
+      console.log("📱 [EXPO PUSH] Không có người nhận");
+
+      return {
+        success: false,
+        total: 0,
+        sent: 0,
+        failed: 0,
+        tickets: [],
+      };
+    }
+
+    // ========================================================
+    // 2. GET PUSH TOKENS
+    // ========================================================
+
+    const placeholders = userIds.map(() => "?").join(",");
+
+    const [pushTokenRows] = await db.query(
+      `
+        SELECT
+          id,
+          admin_id,
+          church_id,
+          token,
+          platform
+        FROM push_tokens
+        WHERE admin_id IN (${placeholders})
+          AND is_active = 1
+          AND token IS NOT NULL
+          AND token != ''
+      `,
+      userIds,
+    );
+
+    console.log("📱 Push token rows:", pushTokenRows);
+
+    // ========================================================
+    // 3. NO TOKEN
+    // ========================================================
+
+    if (!pushTokenRows.length) {
+      console.log("⚠️ [EXPO PUSH] Không có Push Token active");
+
+      return {
+        success: false,
+        total: 0,
+        sent: 0,
+        failed: 0,
+        tickets: [],
+      };
+    }
+
+    // ========================================================
+    // 4. UNIQUE TOKENS
+    // ========================================================
+
+    const uniqueTokens = [
+      ...new Set(
+        pushTokenRows.map((row) => String(row.token).trim()).filter(Boolean),
+      ),
+    ];
+
+    console.log("📱 Unique Push Tokens:", uniqueTokens);
+
+    if (uniqueTokens.length === 0) {
+      return {
+        success: false,
+        total: 0,
+        sent: 0,
+        failed: 0,
+        tickets: [],
+      };
+    }
+
+    // ========================================================
+    // 5. SEND EXPO PUSH
+    // ========================================================
+
+    const tickets = await sendExpoPushNotifications({
+      tokens: uniqueTokens,
+
+      title: String(title || "FaithEdu"),
+
+      body:
+        content && String(content).trim()
+          ? String(content).trim()
+          : "Bạn có một thông báo mới từ FaithEdu",
+
+      data: {
+        notification_id: Number(notificationId),
+        type: type || "system",
+        action_url: action_url || null,
+      },
+
+      priority: priority || "normal",
+    });
+
+    console.log("📱 Expo Push Tickets:", tickets);
+
+    // ========================================================
+    // 6. COUNT RESULT
+    // ========================================================
+
+    let sent = 0;
+    let failed = 0;
+
+    if (Array.isArray(tickets)) {
+      for (const ticket of tickets) {
+        if (ticket?.status === "ok") {
+          sent++;
+        } else {
+          failed++;
+        }
+      }
+    }
+
+    console.log(`📱 [EXPO PUSH] Sent: ${sent}`);
+
+    console.log(`📱 [EXPO PUSH] Failed: ${failed}`);
+
+    console.log("==============================================");
+    console.log("📱 [EXPO PUSH] END");
+    console.log("==============================================");
+
+    return {
+      success: sent > 0,
+      total: uniqueTokens.length,
+      sent,
+      failed,
+      tickets,
+    };
+  } catch (error) {
+    console.error("❌ [EXPO PUSH] ERROR:", error);
+
+    return {
+      success: false,
+      total: 0,
+      sent: 0,
+      failed: 0,
+      tickets: [],
+      error: error.message,
+    };
+  }
+};
 // ============================================================
 // CREATE NOTIFICATION
 //
@@ -595,9 +766,45 @@ const createNotification = async ({
     }
 
     // ========================================================
-    // 17. SEND EMAIL
+    // 17. EXPO PUSH NOTIFICATION
     // ========================================================
+    console.log("");
+    console.log("🚨🚨🚨 ĐÃ ĐẾN ĐOẠN EXPO PUSH 🚨🚨🚨");
+    console.log("🚨 Notification ID:", notificationId);
+    console.log("🚨 Recipient IDs:", validRecipientIds);
+    console.log("");
+    let pushResult = {
+      success: false,
+      total: 0,
+      sent: 0,
+      failed: 0,
+      tickets: [],
+    };
 
+    try {
+      console.log("🚀 ĐANG GỌI sendPushForNotification...");
+      pushResult = await sendPushForNotification({
+        notificationId,
+
+        recipientIds: validRecipientIds,
+
+        title: String(title).trim(),
+
+        content:
+          content === null || content === undefined
+            ? ""
+            : String(content).trim(),
+
+        type,
+
+        action_url,
+
+        priority,
+      });
+      console.log("🚀 PUSH RESULT:", pushResult);
+    } catch (pushError) {
+      console.error("❌ EXPO PUSH ERROR:", pushError);
+    }
     // ========================================================
     // 17. SEND EMAIL
     // ========================================================
@@ -664,13 +871,6 @@ const createNotification = async ({
     if (send_email && emailRecipients.length === 0) {
       console.log("⚠️ Không có người nhận nào có Email hợp lệ.");
     }
-    // ========================================================
-    // 18. EMAIL REQUESTED BUT NO EMAIL
-    // ========================================================
-
-    if (send_email && emailRecipients.length === 0) {
-      console.log("⚠️ Không có người nhận nào có Email hợp lệ.");
-    }
 
     // ========================================================
     // 19. RETURN
@@ -680,6 +880,24 @@ const createNotification = async ({
       ...notificationData,
 
       user_ids: validRecipientIds,
+
+      // ========================================================
+      // PUSH
+      // ========================================================
+
+      push_enabled: true,
+
+      push_total: pushResult.total,
+
+      push_sent_count: pushResult.sent,
+
+      push_failed_count: pushResult.failed,
+
+      push_success: pushResult.success,
+
+      // ========================================================
+      // EMAIL
+      // ========================================================
 
       email_enabled: send_email,
 
@@ -812,6 +1030,7 @@ const registerPushToken = async ({
     created: true,
   };
 };
+
 // ============================================================
 // GET MY NOTIFICATIONS
 //

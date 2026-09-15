@@ -65,50 +65,118 @@ const getAllowedOrigins = () => {
 /**
  * Kiểm tra format origin
  */
-const validateOrigin = (origin) => {
-  try {
-    const normalized = normalizeOrigin(origin);
+// =====================================================
+// VALIDATE CORS ORIGIN
+// Hỗ trợ:
+// - http://
+// - https://
+// - faith:// (Electron)
+// =====================================================
 
-    if (!normalized) {
-      return {
-        valid: false,
-        message: "Origin không được để trống",
-      };
-    }
-
-    const url = new URL(normalized);
-
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      return {
-        valid: false,
-        message: "Origin phải sử dụng http hoặc https",
-      };
-    }
-
-    if (url.pathname !== "/" && url.pathname !== "") {
-      return {
-        valid: false,
-        message: "Origin không được chứa pathname",
-      };
-    }
-
-    if (url.search || url.hash) {
-      return {
-        valid: false,
-        message: "Origin không được chứa query hoặc hash",
-      };
-    }
-
-    return {
-      valid: true,
-      origin: normalized,
-    };
-  } catch {
+const validateOrigin = (value) => {
+  if (!value || typeof value !== "string") {
     return {
       valid: false,
-      message: "Origin không hợp lệ",
+      message: "Origin không được để trống",
     };
   }
+
+  const origin = value.trim().replace(/\/+$/, "");
+
+  let parsed;
+
+  try {
+    parsed = new URL(origin);
+  } catch (error) {
+    return {
+      valid: false,
+      message:
+        "Origin không hợp lệ. Ví dụ: https://giaolyso.site hoặc faith://app",
+    };
+  }
+
+  // =====================================================
+  // CHỈ CHO PHÉP CÁC SCHEME
+  // =====================================================
+
+  const allowedProtocols = ["http:", "https:", "faith:"];
+
+  if (!allowedProtocols.includes(parsed.protocol)) {
+    return {
+      valid: false,
+      message: "Origin chỉ hỗ trợ http://, https:// hoặc faith://",
+    };
+  }
+
+  // =====================================================
+  // KHÔNG CHO PATH
+  // =====================================================
+
+  if (parsed.pathname && parsed.pathname !== "/") {
+    return {
+      valid: false,
+      message:
+        "Origin không được chứa đường dẫn. Ví dụ đúng: https://giaolyso.site",
+    };
+  }
+
+  // =====================================================
+  // KHÔNG QUERY / HASH
+  // =====================================================
+
+  if (parsed.search || parsed.hash) {
+    return {
+      valid: false,
+      message: "Origin không được chứa query hoặc hash",
+    };
+  }
+
+  // =====================================================
+  // KHÔNG USERNAME / PASSWORD
+  // =====================================================
+
+  if (parsed.username || parsed.password) {
+    return {
+      valid: false,
+      message: "Origin không được chứa username hoặc password",
+    };
+  }
+
+  // =====================================================
+  // FAITH://
+  // =====================================================
+
+  if (parsed.protocol === "faith:") {
+    if (!parsed.hostname) {
+      return {
+        valid: false,
+        message: "Origin faith:// phải có hostname. Ví dụ: faith://app",
+      };
+    }
+
+    // Electron của FaithEdu hiện dùng chính xác:
+    // faith://app
+    return {
+      valid: true,
+      origin: `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ""}`,
+    };
+  }
+
+  // =====================================================
+  // HTTP / HTTPS
+  // =====================================================
+
+  if (!parsed.hostname) {
+    return {
+      valid: false,
+      message: "Origin phải có domain hợp lệ",
+    };
+  }
+
+  return {
+    valid: true,
+    origin: `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ""}`,
+  };
 };
 
 module.exports = {

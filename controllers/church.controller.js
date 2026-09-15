@@ -809,6 +809,8 @@ exports.update = async (req, res) => {
 exports.remove = async (req, res) => {
   const connection = await db.getConnection();
 
+  let churchImage = null;
+
   try {
     const churchId = Number(req.params.id);
 
@@ -822,10 +824,15 @@ exports.remove = async (req, res) => {
     await connection.beginTransaction();
 
     // =========================================================
-    // 1. Kiểm tra giáo xứ tồn tại + lấy ảnh
+    // 1. Kiểm tra giáo xứ
     // =========================================================
     const [churchRows] = await connection.query(
-      "SELECT id, image FROM churches WHERE id = ? FOR UPDATE",
+      `
+      SELECT id, image
+      FROM churches
+      WHERE id = ?
+      FOR UPDATE
+      `,
       [churchId],
     );
 
@@ -838,140 +845,343 @@ exports.remove = async (req, res) => {
       });
     }
 
-    const churchImage = churchRows[0].image;
+    churchImage = churchRows[0].image;
 
     // =========================================================
-    // 2. Xóa notification_users
+    // 2. Lấy danh sách ADMIN
+    // =========================================================
+    const [adminRows] = await connection.query(
+      `
+      SELECT id
+      FROM admins
+      WHERE church_id = ?
+      `,
+      [churchId],
+    );
+
+    const adminIds = adminRows.map((row) => row.id);
+
+    // =========================================================
+    // 3. Xóa dữ liệu phụ thuộc ADMIN
+    // =========================================================
+    if (adminIds.length) {
+      const placeholders = adminIds.map(() => "?").join(",");
+
+      // media.uploaded_by -> admins.id
+      await connection.query(
+        `
+        DELETE FROM media
+        WHERE uploaded_by IN (${placeholders})
+        `,
+        adminIds,
+      );
+
+      // push_tokens.admin_id -> admins.id
+      await connection.query(
+        `
+        DELETE FROM push_tokens
+        WHERE admin_id IN (${placeholders})
+        `,
+        adminIds,
+      );
+
+      // notification_users.user_id -> admins.id
+      await connection.query(
+        `
+        DELETE FROM notification_users
+        WHERE user_id IN (${placeholders})
+        `,
+        adminIds,
+      );
+    }
+
+    // =========================================================
+    // 4. Xóa notification_users
     // =========================================================
     await connection.query(
       `
       DELETE nu
       FROM notification_users nu
-      INNER JOIN notifications n ON n.id = nu.notification_id
+      INNER JOIN notifications n
+        ON n.id = nu.notification_id
       WHERE n.church_id = ?
       `,
       [churchId],
     );
 
     // =========================================================
-    // 3. Xóa notifications
+    // 5. Xóa notifications
     // =========================================================
-    await connection.query("DELETE FROM notifications WHERE church_id = ?", [
-      churchId,
-    ]);
-
-    // =========================================================
-    // 4. Xóa attendance
-    // =========================================================
-    await connection.query("DELETE FROM attendances WHERE church_id = ?", [
-      churchId,
-    ]);
-
-    // =========================================================
-    // 5. Xóa kết quả / dữ liệu game nếu có
-    // =========================================================
-    await connection.query("DELETE FROM game_results WHERE church_id = ?", [
-      churchId,
-    ]);
-
-    // Nếu hệ thống có bảng leaderboard riêng:
-    // await connection.query(
-    //   "DELETE FROM leaderboards WHERE church_id = ?",
-    //   [churchId]
-    // );
-
-    // =========================================================
-    // 6. Xóa các bảng liên quan lớp học
-    // =========================================================
-
-    // Lấy danh sách class trước
-    const [classes] = await connection.query(
-      "SELECT id FROM classes WHERE church_id = ?",
+    await connection.query(
+      `
+      DELETE FROM notifications
+      WHERE church_id = ?
+      `,
       [churchId],
     );
 
-    const classIds = classes.map((item) => item.id);
+    // =========================================================
+    // 6. Lấy CATECHISTS
+    // =========================================================
+    const [catechistRows] = await connection.query(
+      `
+      SELECT id
+      FROM catechists
+      WHERE church_id = ?
+      `,
+      [churchId],
+    );
 
-    if (classIds.length) {
-      const placeholders = classIds.map(() => "?").join(",");
+    const catechistIds = catechistRows.map((row) => row.id);
 
-      // catechist_classes
+    // =========================================================
+    // 7. Lấy CLASSES
+    // =========================================================
+    const [classRows] = await connection.query(
+      `
+      SELECT id
+      FROM classes
+      WHERE church_id = ?
+      `,
+      [churchId],
+    );
+
+    const classIds = classRows.map((row) => row.id);
+
+    // =========================================================
+    // 8. Xóa CATECHIST_CLASSES
+    // =========================================================
+    if (classIds.length || catechistIds.length) {
+      const conditions = [];
+      const params = [];
+
+      if (classIds.length) {
+        const placeholders = classIds.map(() => "?").join(",");
+
+        conditions.push(`class_id IN (${placeholders})`);
+
+        params.push(...classIds);
+      }
+
+      if (catechistIds.length) {
+        const placeholders = catechistIds.map(() => "?").join(",");
+
+        conditions.push(`catechist_id IN (${placeholders})`);
+
+        params.push(...catechistIds);
+      }
+
       await connection.query(
-        `DELETE FROM catechist_classes
-         WHERE class_id IN (${placeholders})`,
-        classIds,
+        `
+        DELETE FROM catechist_classes
+        WHERE ${conditions.join(" OR ")}
+        `,
+        params,
       );
-
-      // student_classes
-      await connection.query(
-        `DELETE FROM student_classes
-         WHERE class_id IN (${placeholders})`,
-        classIds,
-      );
-
-      // Các bảng khác liên quan class nếu có
-      // await connection.query(
-      //   `DELETE FROM class_results
-      //    WHERE class_id IN (${placeholders})`,
-      //   classIds
-      // );
     }
 
     // =========================================================
-    // 7. Xóa classes
+    // 9. Lấy STUDENTS
     // =========================================================
-    await connection.query("DELETE FROM classes WHERE church_id = ?", [
-      churchId,
-    ]);
+    const [studentRows] = await connection.query(
+      `
+      SELECT id
+      FROM students
+      WHERE church_id = ?
+      `,
+      [churchId],
+    );
+
+    const studentIds = studentRows.map((row) => row.id);
 
     // =========================================================
-    // 8. Xóa catechists
+    // 10. Xóa CLASS_STUDENTS theo STUDENT
     // =========================================================
-    await connection.query("DELETE FROM catechists WHERE church_id = ?", [
-      churchId,
-    ]);
+    if (studentIds.length) {
+      const placeholders = studentIds.map(() => "?").join(",");
+
+      await connection.query(
+        `
+        DELETE FROM class_students
+        WHERE student_id IN (${placeholders})
+        `,
+        studentIds,
+      );
+
+      // results.student_id -> students.id
+      await connection.query(
+        `
+        DELETE FROM results
+        WHERE student_id IN (${placeholders})
+        `,
+        studentIds,
+      );
+    }
 
     // =========================================================
-    // 9. Xóa students
+    // 11. Xóa CLASS_STUDENTS theo CLASS
     // =========================================================
-    await connection.query("DELETE FROM students WHERE church_id = ?", [
-      churchId,
-    ]);
+    if (classIds.length) {
+      const placeholders = classIds.map(() => "?").join(",");
+
+      await connection.query(
+        `
+        DELETE FROM class_students
+        WHERE class_id IN (${placeholders})
+        `,
+        classIds,
+      );
+    }
 
     // =========================================================
-    // 10. Xóa admins thuộc giáo xứ
-    // =========================================================
-    await connection.query("DELETE FROM admins WHERE church_id = ?", [
-      churchId,
-    ]);
-
-    // =========================================================
-    // 11. Xóa lịch phụng vụ
+    // 12. Xóa CLASSES
     // =========================================================
     await connection.query(
-      "DELETE FROM liturgical_schedules WHERE church_id = ?",
+      `
+      DELETE FROM classes
+      WHERE church_id = ?
+      `,
       [churchId],
     );
 
     // =========================================================
-    // 12. Xóa license
+    // 13. Xóa STUDENTS
     // =========================================================
-    await connection.query("DELETE FROM licenses WHERE church_id = ?", [
-      churchId,
-    ]);
+    await connection.query(
+      `
+      DELETE FROM students
+      WHERE church_id = ?
+      `,
+      [churchId],
+    );
 
     // =========================================================
-    // 13. Cuối cùng mới xóa church
+    // 14. Xóa CATECHISTS
     // =========================================================
-    await connection.query("DELETE FROM churches WHERE id = ?", [churchId]);
+    await connection.query(
+      `
+      DELETE FROM catechists
+      WHERE church_id = ?
+      `,
+      [churchId],
+    );
 
     // =========================================================
-    // 14. Commit
+    // 15. LITURGICAL EVENTS
+    // =========================================================
+    await connection.query(
+      `
+      DELETE le
+      FROM liturgical_events le
+      INNER JOIN liturgical_schedules ls
+        ON ls.id = le.schedule_id
+      WHERE ls.church_id = ?
+      `,
+      [churchId],
+    );
+
+    // =========================================================
+    // 16. LITURGICAL SCHEDULES
+    // =========================================================
+    await connection.query(
+      `
+      DELETE FROM liturgical_schedules
+      WHERE church_id = ?
+      `,
+      [churchId],
+    );
+
+    // =========================================================
+    // 17. PARISHIONERS
+    // =========================================================
+
+    // Xóa sacraments trước
+    await connection.query(
+      `
+      DELETE s
+      FROM sacraments s
+      INNER JOIN parishioners p
+        ON p.id = s.parishioner_id
+      WHERE p.churches_id = ?
+      `,
+      [churchId],
+    );
+
+    // Trường hợp spouse_parishioner_id
+    await connection.query(
+      `
+      DELETE s
+      FROM sacraments s
+      INNER JOIN parishioners p
+        ON p.id = s.spouse_parishioner_id
+      WHERE p.churches_id = ?
+      `,
+      [churchId],
+    );
+
+    // =========================================================
+    // 18. Xử lý parishioners tự tham chiếu
+    // =========================================================
+    await connection.query(
+      `
+      UPDATE parishioners
+      SET head_id = NULL
+      WHERE churches_id = ?
+      `,
+      [churchId],
+    );
+
+    // =========================================================
+    // 19. Xóa parishioners
+    // =========================================================
+    await connection.query(
+      `
+      DELETE FROM parishioners
+      WHERE churches_id = ?
+      `,
+      [churchId],
+    );
+
+    // =========================================================
+    // 20. Xóa sacraments còn lại theo church
+    // =========================================================
+    await connection.query(
+      `
+      DELETE FROM sacraments
+      WHERE church_id = ?
+      `,
+      [churchId],
+    );
+
+    // =========================================================
+    // 21. Xóa ADMINS
+    // =========================================================
+    await connection.query(
+      `
+      DELETE FROM admins
+      WHERE church_id = ?
+      `,
+      [churchId],
+    );
+
+    // =========================================================
+    // 22. Cuối cùng XÓA CHURCH
+    // =========================================================
+    await connection.query(
+      `
+      DELETE FROM churches
+      WHERE id = ?
+      `,
+      [churchId],
+    );
+
+    // =========================================================
+    // 23. COMMIT
     // =========================================================
     await connection.commit();
 
     // =========================================================
-    // 15. Xóa file ảnh SAU KHI DB xóa thành công
+    // 24. Xóa file ảnh sau khi DB thành công
     // =========================================================
     if (churchImage) {
       try {
@@ -982,7 +1192,7 @@ exports.remove = async (req, res) => {
     }
 
     // =========================================================
-    // 16. Ghi log
+    // 25. GHI LOG
     // =========================================================
     try {
       await writeLog({
@@ -990,7 +1200,7 @@ exports.remove = async (req, res) => {
         action: "DELETE_CHURCH",
         target_type: "churches",
         target_id: churchId,
-        description: `Xóa toàn bộ dữ liệu giáo xứ ID ${churchId}`,
+        description: `Xóa giáo xứ và toàn bộ dữ liệu liên quan ID ${churchId}`,
         ip_address: req.ip,
       });
     } catch (logErr) {
@@ -1002,7 +1212,11 @@ exports.remove = async (req, res) => {
       message: "Đã xóa giáo xứ và toàn bộ dữ liệu liên quan",
     });
   } catch (err) {
-    await connection.rollback();
+    try {
+      await connection.rollback();
+    } catch (rollbackErr) {
+      console.error("Rollback error:", rollbackErr.message);
+    }
 
     console.error("DELETE CHURCH ERROR:", err);
 

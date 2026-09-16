@@ -319,7 +319,7 @@ class LessonController {
       // VALIDATE TITLE
       // ===================================================
 
-      const cleanTitle = title.trim();
+      const cleanTitle = title;
 
       if (!cleanTitle) {
         return res.status(400).json({

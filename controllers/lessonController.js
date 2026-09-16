@@ -1,13 +1,13 @@
 const db = require("../config/db");
 
-// =====================================================
-// CÁC BỘ GIÁO LÝ ĐƯỢC PHÉP
-// =====================================================
+// =========================================================
+// DANH SÁCH LOẠI GIÁO LÝ
+// =========================================================
 
 const ALLOWED_CATECHISM_TYPES = [
   "khai_tam",
   "den_ban_tiec_thanh",
-  "lon_len_trong_chua_thanh_than",
+  "lon_len_trong_chua_thanh",
   "song_dao",
   "vao_doi",
   "huynh_truong",
@@ -19,42 +19,27 @@ const ALLOWED_CATECHISM_TYPES = [
   "mua_he",
 ];
 
-// =====================================================
-// LABEL HIỂN THỊ
-// =====================================================
-
 const CATECHISM_TYPE_LABELS = {
   khai_tam: "Giáo lý Khai Tâm",
-
   den_ban_tiec_thanh: "Giáo lý Đến Bàn Tiệc Thánh",
-
-  lon_len_trong_chua_thanh_than: "Giáo lý Lớn Lên Trong Chúa Thánh Thần",
-
+  lon_len_trong_chua_thanh: "Giáo lý Lớn Lên Trong Chúa Thánh Thần",
   song_dao: "Giáo lý Sống Đạo",
-
   vao_doi: "Giáo lý Vào Đời",
-
   huynh_truong: "Giáo lý Huynh Trưởng",
-
   hon_nhan: "Giáo lý Hôn Nhân",
-
   du_tong: "Giáo lý Dự Tòng",
-
   nguoi_lon: "Giáo lý Người Lớn",
-
   kinh_thanh: "Lớp Kinh Thánh",
-
   mua_chay: "Giáo lý Mùa Chay",
-
   mua_he: "Giáo lý Mùa Hè",
 };
 
-// =====================================================
+// =========================================================
 // HELPER
-// =====================================================
+// =========================================================
 
 const getChurchId = (req) => {
-  const churchId = Number(req.user?.church_id);
+  const churchId = Number(req.user?.church_id || req.user?.parish_id);
 
   if (!churchId || Number.isNaN(churchId)) {
     return null;
@@ -67,26 +52,33 @@ const getCatechismLabel = (type) => {
   return CATECHISM_TYPE_LABELS[type] || type;
 };
 
-// =====================================================
+const isValidId = (id) => {
+  const number = Number(id);
+
+  return Number.isInteger(number) && number > 0;
+};
+
+// =========================================================
 // CONTROLLER
-// =====================================================
+// =========================================================
 
 class LessonController {
-  // =====================================================
-  // GET ALL
-  // GET /api/lessons
-  //
-  // Query:
-  // ?page=1
-  // ?limit=10
-  // ?search=thiên chúa
-  // ?catechism_type=du_tong
-  //
-  // TẤT CẢ GIÁO XỨ ĐỀU NHÌN THẤY KHO CHUNG
-  // =====================================================
+  // =======================================================
+  // GET /lessons
+  // Chỉ lấy lesson của giáo xứ hiện tại
+  // =======================================================
 
   async getAll(req, res) {
     try {
+      const churchId = getChurchId(req);
+
+      if (!churchId) {
+        return res.status(401).json({
+          success: false,
+          message: "Không xác định được giáo xứ của tài khoản",
+        });
+      }
+
       const page = Math.max(1, Number(req.query.page) || 1);
 
       const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 10));
@@ -97,12 +89,17 @@ class LessonController {
 
       const catechismType = String(req.query.catechism_type || "").trim();
 
-      // -------------------------------------------------
-      // BUILD WHERE
-      // -------------------------------------------------
+      // ===================================================
+      // CONDITIONS
+      // ===================================================
 
-      const conditions = [];
-      const queryParams = [];
+      const conditions = ["l.church_id = ?"];
+
+      const queryParams = [churchId];
+
+      // ===================================================
+      // SEARCH
+      // ===================================================
 
       if (search) {
         conditions.push(`
@@ -114,6 +111,10 @@ class LessonController {
 
         queryParams.push(`%${search}%`, `%${search}%`);
       }
+
+      // ===================================================
+      // CATECHISM TYPE
+      // ===================================================
 
       if (catechismType) {
         if (!ALLOWED_CATECHISM_TYPES.includes(catechismType)) {
@@ -129,77 +130,69 @@ class LessonController {
         queryParams.push(catechismType);
       }
 
-      const whereClause =
-        conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+      const whereClause = `
+        WHERE ${conditions.join(" AND ")}
+      `;
 
-      // -------------------------------------------------
-      // COUNT
-      // -------------------------------------------------
+      // ===================================================
+      // TOTAL
+      // ===================================================
 
-      const [countResult] = await db.query(
+      const [countRows] = await db.query(
         `
-          SELECT COUNT(*) AS total
-          FROM lessons l
-          LEFT JOIN churches c
-            ON c.id = l.church_id
-          ${whereClause}
-          `,
+        SELECT COUNT(*) AS total
+
+        FROM lessons l
+
+        LEFT JOIN churches c
+          ON c.id = l.church_id
+
+        ${whereClause}
+        `,
         queryParams,
       );
 
-      const total = Number(countResult[0]?.total || 0);
+      const total = Number(countRows[0]?.total || 0);
 
-      // -------------------------------------------------
-      // GET DATA
-      // -------------------------------------------------
+      // ===================================================
+      // DATA
+      // ===================================================
 
       const [rows] = await db.query(
         `
-          SELECT
-            l.id,
-            l.church_id,
-            l.title,
-            l.catechism_type,
-            l.created_at,
-            l.updated_at,
+        SELECT
+          l.id,
+          l.church_id,
+          l.title,
+          l.catechism_type,
+          l.created_at,
+          l.updated_at,
 
-            c.name AS church_name
+          c.name AS church_name
 
-          FROM lessons l
+        FROM lessons l
 
-          LEFT JOIN churches c
-            ON c.id = l.church_id
+        LEFT JOIN churches c
+          ON c.id = l.church_id
 
-          ${whereClause}
+        ${whereClause}
 
-          ORDER BY l.id ASC
+        ORDER BY l.id ASC
 
-          LIMIT ? OFFSET ?
-          `,
+        LIMIT ?
+        OFFSET ?
+        `,
         [...queryParams, limit, offset],
       );
-
-      // -------------------------------------------------
-      // FORMAT
-      // -------------------------------------------------
-
-      const currentChurchId = getChurchId(req);
 
       const data = rows.map((lesson) => ({
         ...lesson,
 
         catechism_type_label: getCatechismLabel(lesson.catechism_type),
 
-        // Giáo xứ hiện tại có phải
-        // chủ bài học không?
-        can_edit: Number(lesson.church_id) === Number(currentChurchId),
-
-        can_delete: Number(lesson.church_id) === Number(currentChurchId),
+        can_edit: true,
+        can_delete: true,
       }));
-
-      // -------------------------------------------------
-      // RESPONSE
-      // -------------------------------------------------
 
       return res.json({
         success: true,
@@ -224,18 +217,24 @@ class LessonController {
     }
   }
 
-  // =====================================================
-  // GET DETAIL
-  // GET /api/lessons/:id
-  //
-  // TẤT CẢ GIÁO XỨ ĐỀU CÓ THỂ XEM
-  // =====================================================
+  // =======================================================
+  // GET /lessons/:id
+  // =======================================================
 
   async getById(req, res) {
     try {
-      const { id } = req.params;
+      const churchId = getChurchId(req);
 
-      if (!id || Number.isNaN(Number(id))) {
+      const lessonId = Number(req.params.id);
+
+      if (!churchId) {
+        return res.status(401).json({
+          success: false,
+          message: "Không xác định được giáo xứ của tài khoản",
+        });
+      }
+
+      if (!isValidId(lessonId)) {
         return res.status(400).json({
           success: false,
           message: "ID bài học không hợp lệ",
@@ -244,26 +243,27 @@ class LessonController {
 
       const [rows] = await db.query(
         `
-          SELECT
-            l.id,
-            l.church_id,
-            l.title,
-            l.catechism_type,
-            l.created_at,
-            l.updated_at,
+        SELECT
+          l.id,
+          l.church_id,
+          l.title,
+          l.catechism_type,
+          l.created_at,
+          l.updated_at,
 
-            c.name AS church_name
+          c.name AS church_name
 
-          FROM lessons l
+        FROM lessons l
 
-          LEFT JOIN churches c
-            ON c.id = l.church_id
+        LEFT JOIN churches c
+          ON c.id = l.church_id
 
-          WHERE l.id = ?
+        WHERE l.id = ?
+          AND l.church_id = ?
 
-          LIMIT 1
-          `,
-        [id],
+        LIMIT 1
+        `,
+        [lessonId, churchId],
       );
 
       if (!rows.length) {
@@ -275,8 +275,6 @@ class LessonController {
 
       const lesson = rows[0];
 
-      const currentChurchId = getChurchId(req);
-
       return res.json({
         success: true,
 
@@ -285,9 +283,8 @@ class LessonController {
 
           catechism_type_label: getCatechismLabel(lesson.catechism_type),
 
-          can_edit: Number(lesson.church_id) === Number(currentChurchId),
-
-          can_delete: Number(lesson.church_id) === Number(currentChurchId),
+          can_edit: true,
+          can_delete: true,
         },
       });
     } catch (error) {
@@ -301,27 +298,13 @@ class LessonController {
     }
   }
 
-  // =====================================================
-  // CREATE
-  // POST /api/lessons
-  //
-  // Body:
-  // {
-  //   "title": "Bài 1: Thiên Chúa là Cha",
-  //   "catechism_type": "du_tong"
-  // }
-  //
-  // church_id LẤY TỪ TOKEN
-  // KHÔNG LẤY TỪ BODY
-  // =====================================================
+  // =======================================================
+  // POST /lessons
+  // =======================================================
 
   async create(req, res) {
     try {
       const churchId = getChurchId(req);
-
-      // -------------------------------------------------
-      // CHECK CHURCH
-      // -------------------------------------------------
 
       if (!churchId) {
         return res.status(401).json({
@@ -332,22 +315,22 @@ class LessonController {
 
       const { title, catechism_type } = req.body;
 
-      // -------------------------------------------------
+      // ===================================================
       // VALIDATE TITLE
-      // -------------------------------------------------
+      // ===================================================
 
-      if (!title || !String(title).trim()) {
+      const cleanTitle = String(title || "").trim();
+
+      if (!cleanTitle) {
         return res.status(400).json({
           success: false,
           message: "Tiêu đề không được bỏ trống",
         });
       }
 
-      const cleanTitle = String(title).trim();
-
-      // -------------------------------------------------
+      // ===================================================
       // TYPE
-      // -------------------------------------------------
+      // ===================================================
 
       const type = String(catechism_type || "").trim() || "du_tong";
 
@@ -363,56 +346,49 @@ class LessonController {
         });
       }
 
-      // -------------------------------------------------
+      // ===================================================
       // CHECK DUPLICATE
-      //
-      // Cho phép 2 giáo xứ có cùng tên bài.
-      //
-      // Ví dụ:
-      // Giáo xứ A: Bài 1 - Thiên Chúa
-      // Giáo xứ B: Bài 1 - Thiên Chúa
-      //
-      // Đây vẫn là 2 bài do 2 giáo xứ sở hữu.
-      // -------------------------------------------------
+      // Chỉ kiểm tra trong giáo xứ hiện tại
+      // ===================================================
 
       const [exist] = await db.query(
         `
-          SELECT id
-          FROM lessons
-          WHERE church_id = ?
-            AND title = ?
-            AND catechism_type = ?
-          LIMIT 1
-          `,
+        SELECT id
+
+        FROM lessons
+
+        WHERE church_id = ?
+          AND title = ?
+          AND catechism_type = ?
+
+        LIMIT 1
+        `,
         [churchId, cleanTitle, type],
       );
 
       if (exist.length) {
-        return res.status(400).json({
+        return res.status(409).json({
           success: false,
           message: "Giáo xứ đã có bài học này trong bộ giáo lý này",
         });
       }
 
-      // -------------------------------------------------
+      // ===================================================
       // INSERT
-      // -------------------------------------------------
+      // ===================================================
 
       const [result] = await db.query(
         `
-          INSERT INTO lessons (
-            church_id,
-            title,
-            catechism_type
-          )
-          VALUES (?, ?, ?)
-          `,
+        INSERT INTO lessons (
+          church_id,
+          title,
+          catechism_type
+        )
+
+        VALUES (?, ?, ?)
+        `,
         [churchId, cleanTitle, type],
       );
-
-      // -------------------------------------------------
-      // RESPONSE
-      // -------------------------------------------------
 
       return res.status(201).json({
         success: true,
@@ -444,22 +420,15 @@ class LessonController {
     }
   }
 
-  // =====================================================
-  // UPDATE
-  // PUT /api/lessons/:id
-  //
-  // CHỈ GIÁO XỨ TẠO BÀI MỚI ĐƯỢC SỬA
-  // =====================================================
+  // =======================================================
+  // PUT /lessons/:id
+  // =======================================================
 
   async update(req, res) {
     try {
-      const { id } = req.params;
-
       const churchId = getChurchId(req);
 
-      // -------------------------------------------------
-      // CHECK CHURCH
-      // -------------------------------------------------
+      const lessonId = Number(req.params.id);
 
       if (!churchId) {
         return res.status(401).json({
@@ -468,11 +437,7 @@ class LessonController {
         });
       }
 
-      // -------------------------------------------------
-      // CHECK ID
-      // -------------------------------------------------
-
-      if (!id || Number.isNaN(Number(id))) {
+      if (!isValidId(lessonId)) {
         return res.status(400).json({
           success: false,
           message: "ID bài học không hợp lệ",
@@ -481,9 +446,9 @@ class LessonController {
 
       const { title, catechism_type } = req.body;
 
-      // -------------------------------------------------
-      // GET LESSON
-      // -------------------------------------------------
+      // ===================================================
+      // CHECK OWNERSHIP
+      // ===================================================
 
       const [lessonRows] = await db.query(
         `
@@ -499,7 +464,7 @@ class LessonController {
 
           LIMIT 1
           `,
-        [id],
+        [lessonId],
       );
 
       if (!lessonRows.length) {
@@ -511,10 +476,6 @@ class LessonController {
 
       const currentLesson = lessonRows[0];
 
-      // -------------------------------------------------
-      // CHECK OWNERSHIP
-      // -------------------------------------------------
-
       if (Number(currentLesson.church_id) !== Number(churchId)) {
         return res.status(403).json({
           success: false,
@@ -522,22 +483,18 @@ class LessonController {
         });
       }
 
-      // -------------------------------------------------
-      // VALIDATE TITLE
-      // -------------------------------------------------
+      // ===================================================
+      // VALIDATE
+      // ===================================================
 
-      if (!title || !String(title).trim()) {
+      const cleanTitle = String(title || "").trim();
+
+      if (!cleanTitle) {
         return res.status(400).json({
           success: false,
           message: "Tiêu đề không được bỏ trống",
         });
       }
-
-      const cleanTitle = String(title).trim();
-
-      // -------------------------------------------------
-      // TYPE
-      // -------------------------------------------------
 
       const type =
         String(catechism_type || "").trim() ||
@@ -553,54 +510,49 @@ class LessonController {
         });
       }
 
-      // -------------------------------------------------
-      // CHECK DUPLICATE
-      // CHỈ CHECK TRONG GIÁO XỨ HIỆN TẠI
-      // -------------------------------------------------
+      // ===================================================
+      // DUPLICATE
+      // ===================================================
 
       const [exist] = await db.query(
         `
-          SELECT id
+        SELECT id
 
-          FROM lessons
+        FROM lessons
 
-          WHERE church_id = ?
-            AND title = ?
-            AND catechism_type = ?
-            AND id != ?
+        WHERE church_id = ?
+          AND title = ?
+          AND catechism_type = ?
+          AND id != ?
 
-          LIMIT 1
-          `,
-        [churchId, cleanTitle, type, id],
+        LIMIT 1
+        `,
+        [churchId, cleanTitle, type, lessonId],
       );
 
       if (exist.length) {
-        return res.status(400).json({
+        return res.status(409).json({
           success: false,
           message: "Giáo xứ đã có bài học này trong bộ giáo lý này",
         });
       }
 
-      // -------------------------------------------------
+      // ===================================================
       // UPDATE
-      //
-      // QUAN TRỌNG:
-      // vẫn thêm church_id vào WHERE
-      // để chống sửa bài của giáo xứ khác.
-      // -------------------------------------------------
+      // ===================================================
 
       const [result] = await db.query(
         `
-          UPDATE lessons
+        UPDATE lessons
 
-          SET
-            title = ?,
-            catechism_type = ?
+        SET
+          title = ?,
+          catechism_type = ?
 
-          WHERE id = ?
-            AND church_id = ?
-          `,
-        [cleanTitle, type, id, churchId],
+        WHERE id = ?
+          AND church_id = ?
+        `,
+        [cleanTitle, type, lessonId, churchId],
       );
 
       if (!result.affectedRows) {
@@ -610,17 +562,13 @@ class LessonController {
         });
       }
 
-      // -------------------------------------------------
-      // RESPONSE
-      // -------------------------------------------------
-
       return res.json({
         success: true,
 
         message: "Cập nhật bài học thành công",
 
         data: {
-          id: Number(id),
+          id: lessonId,
           church_id: churchId,
           title: cleanTitle,
           catechism_type: type,
@@ -642,22 +590,15 @@ class LessonController {
     }
   }
 
-  // =====================================================
-  // DELETE
-  // DELETE /api/lessons/:id
-  //
-  // CHỈ GIÁO XỨ TẠO BÀI MỚI ĐƯỢC XÓA
-  // =====================================================
+  // =======================================================
+  // DELETE /lessons/:id
+  // =======================================================
 
   async delete(req, res) {
     try {
-      const { id } = req.params;
-
       const churchId = getChurchId(req);
 
-      // -------------------------------------------------
-      // CHECK CHURCH
-      // -------------------------------------------------
+      const lessonId = Number(req.params.id);
 
       if (!churchId) {
         return res.status(401).json({
@@ -666,22 +607,18 @@ class LessonController {
         });
       }
 
-      // -------------------------------------------------
-      // CHECK ID
-      // -------------------------------------------------
-
-      if (!id || Number.isNaN(Number(id))) {
+      if (!isValidId(lessonId)) {
         return res.status(400).json({
           success: false,
           message: "ID bài học không hợp lệ",
         });
       }
 
-      // -------------------------------------------------
-      // CHECK LESSON
-      // -------------------------------------------------
+      // ===================================================
+      // CHECK OWNERSHIP
+      // ===================================================
 
-      const [lesson] = await db.query(
+      const [lessonRows] = await db.query(
         `
           SELECT
             id,
@@ -694,39 +631,35 @@ class LessonController {
 
           LIMIT 1
           `,
-        [id],
+        [lessonId],
       );
 
-      if (!lesson.length) {
+      if (!lessonRows.length) {
         return res.status(404).json({
           success: false,
           message: "Không tìm thấy bài học",
         });
       }
 
-      // -------------------------------------------------
-      // CHECK OWNERSHIP
-      // -------------------------------------------------
-
-      if (Number(lesson[0].church_id) !== Number(churchId)) {
+      if (Number(lessonRows[0].church_id) !== Number(churchId)) {
         return res.status(403).json({
           success: false,
           message: "Bạn không có quyền xóa bài học này",
         });
       }
 
-      // -------------------------------------------------
+      // ===================================================
       // DELETE
-      // -------------------------------------------------
+      // ===================================================
 
       const [result] = await db.query(
         `
-          DELETE FROM lessons
+        DELETE FROM lessons
 
-          WHERE id = ?
-            AND church_id = ?
-          `,
-        [id, churchId],
+        WHERE id = ?
+          AND church_id = ?
+        `,
+        [lessonId, churchId],
       );
 
       if (!result.affectedRows) {
@@ -736,24 +669,17 @@ class LessonController {
         });
       }
 
-      // -------------------------------------------------
-      // RESPONSE
-      // -------------------------------------------------
-
       return res.json({
         success: true,
 
         message: "Xóa bài học thành công",
 
-        id: Number(id),
+        id: lessonId,
       });
     } catch (error) {
       console.error("DELETE LESSON ERROR:", error);
 
-      // -------------------------------------------------
-      // FOREIGN KEY
-      // -------------------------------------------------
-
+      // Có question đang tham chiếu
       if (
         error.code === "ER_ROW_IS_REFERENCED_2" ||
         error.code === "ER_ROW_IS_REFERENCED"
@@ -773,10 +699,9 @@ class LessonController {
     }
   }
 
-  // =====================================================
-  // GET CATECHISM TYPES
-  // GET /api/lessons/types
-  // =====================================================
+  // =======================================================
+  // GET /lessons/types
+  // =======================================================
 
   async getTypes(req, res) {
     try {

@@ -314,6 +314,7 @@ class LessonController {
       }
 
       const { title, catechism_type } = req.body;
+      console.log(title, catechism_type);
 
       // ===================================================
       // VALIDATE TITLE

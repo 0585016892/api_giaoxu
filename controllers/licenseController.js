@@ -37,26 +37,7 @@ exports.getMyLicense = async (req, res) => {
     // ==========================================
     const [rows] = await db.query(
       `
-      SELECT
-        id,
-        name,
-        code,
-        type,
-        address,
-        phone,
-        email,
-        image,
-        is_active,
-
-        license_status,
-        trial_started_at,
-        trial_expires_at,
-        activated_at,
-
-        created_at,
-        updated_at
-
-      FROM churches
+      SELECT  * FROM churches
       WHERE id = ?
       LIMIT 1
       `,

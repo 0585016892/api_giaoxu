@@ -1,39 +1,68 @@
 const db = require("../config/db");
 
+// =========================================================
+// HELPERS
+// =========================================================
+
+/**
+ * Lấy church_id từ JWT
+ *
+ * KHÔNG lấy church_id từ:
+ * - req.query
+ * - req.body
+ * - req.params
+ *
+ * để tránh user truy cập dữ liệu giáo xứ khác.
+ */
+const getChurchId = (req) => {
+  const churchId = Number(req.user?.church_id || req.user?.parish_id);
+
+  if (!churchId || Number.isNaN(churchId)) {
+    return null;
+  }
+
+  return churchId;
+};
+
+/**
+ * Kiểm tra ID
+ */
+const isValidId = (id) => {
+  const number = Number(id);
+
+  return Number.isInteger(number) && number > 0;
+};
+
+/**
+ * Kiểm tra đáp án đúng
+ */
+const isValidCorrectAnswer = (answer) => {
+  return ["A", "B", "C", "D"].includes(String(answer || "").toUpperCase());
+};
+
+/**
+ * Chuẩn hóa đáp án
+ */
+const normalizeAnswer = (answer) => {
+  return String(answer || "")
+    .trim()
+    .toUpperCase();
+};
+
+// =========================================================
+// CONTROLLER
+// =========================================================
+
 class QuestionController {
-  // =========================================================
-  // HELPER
-  // =========================================================
-
-  getChurchId(req) {
-    const churchId = Number(req.user?.church_id || req.user?.parish_id);
-
-    if (!churchId || Number.isNaN(churchId)) {
-      return null;
-    }
-
-    return churchId;
-  }
-
-  isValidId(id) {
-    const number = Number(id);
-
-    return Number.isInteger(number) && number > 0;
-  }
-
-  isValidCorrectAnswer(answer) {
-    return ["A", "B", "C", "D"].includes(String(answer || "").toUpperCase());
-  }
-
-  // =========================================================
+  // =======================================================
   // GET /questions
   //
-  // CHỈ CÂU HỎI CỦA GIÁO XỨ HIỆN TẠI
-  // =========================================================
+  // Danh sách câu hỏi của giáo xứ hiện tại
+  // =======================================================
 
   async getAll(req, res) {
     try {
-      const churchId = this.getChurchId(req);
+      const churchId = getChurchId(req);
 
       if (!churchId) {
         return res.status(401).json({
@@ -42,32 +71,40 @@ class QuestionController {
         });
       }
 
+      // ---------------------------------------------------
+      // PAGINATION
+      // ---------------------------------------------------
+
       const page = Math.max(1, Number(req.query.page) || 1);
 
       const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 10));
 
       const offset = (page - 1) * limit;
 
+      // ---------------------------------------------------
+      // FILTER
+      // ---------------------------------------------------
+
       const lessonId = req.query.lesson_id;
 
       const search = String(req.query.search || "").trim();
 
-      // =====================================================
+      // ---------------------------------------------------
       // WHERE
-      // =====================================================
+      // ---------------------------------------------------
 
       const conditions = ["l.church_id = ?"];
 
       const params = [churchId];
 
-      // =====================================================
-      // LESSON FILTER
-      // =====================================================
+      // ---------------------------------------------------
+      // FILTER LESSON
+      // ---------------------------------------------------
 
       if (lessonId) {
         const lessonIdNumber = Number(lessonId);
 
-        if (!this.isValidId(lessonIdNumber)) {
+        if (!isValidId(lessonIdNumber)) {
           return res.status(400).json({
             success: false,
             message: "lesson_id không hợp lệ",
@@ -79,9 +116,9 @@ class QuestionController {
         params.push(lessonIdNumber);
       }
 
-      // =====================================================
+      // ---------------------------------------------------
       // SEARCH
-      // =====================================================
+      // ---------------------------------------------------
 
       if (search) {
         conditions.push(`
@@ -91,69 +128,75 @@ class QuestionController {
           )
         `);
 
-        params.push(`%${search}%`, `%${search}%`);
+        const keyword = `%${search}%`;
+
+        params.push(keyword, keyword);
       }
 
       const whereClause = `
         WHERE ${conditions.join(" AND ")}
       `;
 
-      // =====================================================
+      // ---------------------------------------------------
       // TOTAL
-      // =====================================================
+      // ---------------------------------------------------
 
       const [totalRows] = await db.query(
         `
-          SELECT COUNT(*) AS total
+        SELECT COUNT(*) AS total
 
-          FROM questions q
+        FROM questions q
 
-          INNER JOIN lessons l
-            ON l.id = q.lesson_id
+        INNER JOIN lessons l
+          ON l.id = q.lesson_id
 
-          ${whereClause}
-          `,
+        ${whereClause}
+        `,
         params,
       );
 
       const total = Number(totalRows[0]?.total || 0);
 
-      // =====================================================
+      // ---------------------------------------------------
       // DATA
-      // =====================================================
+      // ---------------------------------------------------
 
       const [rows] = await db.query(
         `
-          SELECT
-            q.id,
-            q.lesson_id,
+        SELECT
+          q.id,
+          q.lesson_id,
 
-            q.question,
+          q.question,
 
-            q.answer_a,
-            q.answer_b,
-            q.answer_c,
-            q.answer_d,
+          q.answer_a,
+          q.answer_b,
+          q.answer_c,
+          q.answer_d,
 
-            q.correct_answer,
+          q.correct_answer,
 
-            l.title AS lesson_title,
-            l.catechism_type
+          l.title AS lesson_title,
+          l.catechism_type
 
-          FROM questions q
+        FROM questions q
 
-          INNER JOIN lessons l
-            ON l.id = q.lesson_id
+        INNER JOIN lessons l
+          ON l.id = q.lesson_id
 
-          ${whereClause}
+        ${whereClause}
 
-          ORDER BY q.id ASC
+        ORDER BY q.id ASC
 
-          LIMIT ?
-          OFFSET ?
-          `,
+        LIMIT ?
+        OFFSET ?
+        `,
         [...params, limit, offset],
       );
+
+      // ---------------------------------------------------
+      // RESPONSE DATA
+      // ---------------------------------------------------
 
       const data = rows.map((row) => ({
         ...row,
@@ -185,13 +228,15 @@ class QuestionController {
     }
   }
 
-  // =========================================================
+  // =======================================================
   // GET /questions/:id
-  // =========================================================
+  //
+  // Chi tiết câu hỏi
+  // =======================================================
 
   async getById(req, res) {
     try {
-      const churchId = this.getChurchId(req);
+      const churchId = getChurchId(req);
 
       const questionId = Number(req.params.id);
 
@@ -202,7 +247,7 @@ class QuestionController {
         });
       }
 
-      if (!this.isValidId(questionId)) {
+      if (!isValidId(questionId)) {
         return res.status(400).json({
           success: false,
           message: "ID câu hỏi không hợp lệ",
@@ -211,32 +256,32 @@ class QuestionController {
 
       const [rows] = await db.query(
         `
-          SELECT
-            q.id,
-            q.lesson_id,
+        SELECT
+          q.id,
+          q.lesson_id,
 
-            q.question,
+          q.question,
 
-            q.answer_a,
-            q.answer_b,
-            q.answer_c,
-            q.answer_d,
+          q.answer_a,
+          q.answer_b,
+          q.answer_c,
+          q.answer_d,
 
-            q.correct_answer,
+          q.correct_answer,
 
-            l.title AS lesson_title,
-            l.catechism_type
+          l.title AS lesson_title,
+          l.catechism_type
 
-          FROM questions q
+        FROM questions q
 
-          INNER JOIN lessons l
-            ON l.id = q.lesson_id
+        INNER JOIN lessons l
+          ON l.id = q.lesson_id
 
-          WHERE q.id = ?
-            AND l.church_id = ?
+        WHERE q.id = ?
+          AND l.church_id = ?
 
-          LIMIT 1
-          `,
+        LIMIT 1
+        `,
         [questionId, churchId],
       );
 
@@ -268,13 +313,15 @@ class QuestionController {
     }
   }
 
-  // =========================================================
+  // =======================================================
   // POST /questions
-  // =========================================================
+  //
+  // Tạo câu hỏi
+  // =======================================================
 
   async create(req, res) {
     try {
-      const churchId = this.getChurchId(req);
+      const churchId = getChurchId(req);
 
       if (!churchId) {
         return res.status(401).json({
@@ -293,18 +340,11 @@ class QuestionController {
         correct_answer,
       } = req.body;
 
-      // =====================================================
-      // VALIDATE
-      // =====================================================
+      // ---------------------------------------------------
+      // NORMALIZE
+      // ---------------------------------------------------
 
       const lessonId = Number(lesson_id);
-
-      if (!this.isValidId(lessonId)) {
-        return res.status(400).json({
-          success: false,
-          message: "Bài học không hợp lệ",
-        });
-      }
 
       const cleanQuestion = String(question || "").trim();
 
@@ -316,7 +356,18 @@ class QuestionController {
 
       const answerD = String(answer_d || "").trim();
 
-      const correctAnswer = String(correct_answer || "").toUpperCase();
+      const correctAnswer = normalizeAnswer(correct_answer);
+
+      // ---------------------------------------------------
+      // VALIDATE
+      // ---------------------------------------------------
+
+      if (!isValidId(lessonId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Bài học không hợp lệ",
+        });
+      }
 
       if (!cleanQuestion || !answerA || !answerB || !answerC || !answerD) {
         return res.status(400).json({
@@ -325,16 +376,16 @@ class QuestionController {
         });
       }
 
-      if (!this.isValidCorrectAnswer(correctAnswer)) {
+      if (!isValidCorrectAnswer(correctAnswer)) {
         return res.status(400).json({
           success: false,
           message: "Đáp án đúng phải là A, B, C hoặc D",
         });
       }
 
-      // =====================================================
+      // ---------------------------------------------------
       // CHECK LESSON OWNERSHIP
-      // =====================================================
+      // ---------------------------------------------------
 
       const [lessonRows] = await db.query(
         `
@@ -360,9 +411,9 @@ class QuestionController {
         });
       }
 
-      // =====================================================
+      // ---------------------------------------------------
       // INSERT
-      // =====================================================
+      // ---------------------------------------------------
 
       const [result] = await db.query(
         `
@@ -407,13 +458,15 @@ class QuestionController {
     }
   }
 
-  // =========================================================
+  // =======================================================
   // PUT /questions/:id
-  // =========================================================
+  //
+  // Cập nhật câu hỏi
+  // =======================================================
 
   async update(req, res) {
     try {
-      const churchId = this.getChurchId(req);
+      const churchId = getChurchId(req);
 
       const questionId = Number(req.params.id);
 
@@ -424,7 +477,7 @@ class QuestionController {
         });
       }
 
-      if (!this.isValidId(questionId)) {
+      if (!isValidId(questionId)) {
         return res.status(400).json({
           success: false,
           message: "ID câu hỏi không hợp lệ",
@@ -441,6 +494,10 @@ class QuestionController {
         correct_answer,
       } = req.body;
 
+      // ---------------------------------------------------
+      // NORMALIZE
+      // ---------------------------------------------------
+
       const lessonId = Number(lesson_id);
 
       const cleanQuestion = String(question || "").trim();
@@ -453,13 +510,13 @@ class QuestionController {
 
       const answerD = String(answer_d || "").trim();
 
-      const correctAnswer = String(correct_answer || "").toUpperCase();
+      const correctAnswer = normalizeAnswer(correct_answer);
 
-      // =====================================================
+      // ---------------------------------------------------
       // VALIDATE
-      // =====================================================
+      // ---------------------------------------------------
 
-      if (!this.isValidId(lessonId)) {
+      if (!isValidId(lessonId)) {
         return res.status(400).json({
           success: false,
           message: "Bài học không hợp lệ",
@@ -473,16 +530,16 @@ class QuestionController {
         });
       }
 
-      if (!this.isValidCorrectAnswer(correctAnswer)) {
+      if (!isValidCorrectAnswer(correctAnswer)) {
         return res.status(400).json({
           success: false,
           message: "Đáp án đúng phải là A, B, C hoặc D",
         });
       }
 
-      // =====================================================
+      // ---------------------------------------------------
       // CHECK QUESTION OWNER
-      // =====================================================
+      // ---------------------------------------------------
 
       const [questionRows] = await db.query(
         `
@@ -517,9 +574,9 @@ class QuestionController {
         });
       }
 
-      // =====================================================
+      // ---------------------------------------------------
       // CHECK LESSON MỚI
-      // =====================================================
+      // ---------------------------------------------------
 
       const [lessonRows] = await db.query(
         `
@@ -542,9 +599,9 @@ class QuestionController {
         });
       }
 
-      // =====================================================
+      // ---------------------------------------------------
       // UPDATE
-      // =====================================================
+      // ---------------------------------------------------
 
       const [result] = await db.query(
         `
@@ -596,13 +653,15 @@ class QuestionController {
     }
   }
 
-  // =========================================================
+  // =======================================================
   // DELETE /questions/:id
-  // =========================================================
+  //
+  // Xóa câu hỏi
+  // =======================================================
 
   async delete(req, res) {
     try {
-      const churchId = this.getChurchId(req);
+      const churchId = getChurchId(req);
 
       const questionId = Number(req.params.id);
 
@@ -613,16 +672,16 @@ class QuestionController {
         });
       }
 
-      if (!this.isValidId(questionId)) {
+      if (!isValidId(questionId)) {
         return res.status(400).json({
           success: false,
           message: "ID câu hỏi không hợp lệ",
         });
       }
 
-      // =====================================================
+      // ---------------------------------------------------
       // DELETE + OWNERSHIP
-      // =====================================================
+      // ---------------------------------------------------
 
       const [result] = await db.query(
         `
@@ -665,15 +724,15 @@ class QuestionController {
     }
   }
 
-  // =========================================================
-  // GET /questions/exam?batch=1&limit=30
+  // =======================================================
+  // GET /questions/exam/generate
   //
-  // CHỈ TẠO ĐỀ TỪ CÂU HỎI CỦA GIÁO XỨ HIỆN TẠI
-  // =========================================================
+  // Tạo đề thi
+  // =======================================================
 
   async generateExam(req, res) {
     try {
-      const churchId = this.getChurchId(req);
+      const churchId = getChurchId(req);
 
       if (!churchId) {
         return res.status(401).json({
@@ -685,6 +744,10 @@ class QuestionController {
       const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 30));
 
       const batch = Number(req.query.batch);
+
+      // ---------------------------------------------------
+      // ĐỢT THI
+      // ---------------------------------------------------
 
       const batchRanges = {
         1: {
@@ -707,9 +770,9 @@ class QuestionController {
         });
       }
 
-      // =====================================================
-      // CHỈ LẤY CÂU HỎI CỦA GIÁO XỨ
-      // =====================================================
+      // ---------------------------------------------------
+      // GET QUESTIONS
+      // ---------------------------------------------------
 
       const [questions] = await db.query(
         `
@@ -769,15 +832,15 @@ class QuestionController {
     }
   }
 
-  // =========================================================
-  // POST /questions/submit-exam
+  // =======================================================
+  // POST /questions/exam/submit
   //
-  // CHỈ CHẤM CÂU HỎI CỦA GIÁO XỨ HIỆN TẠI
-  // =========================================================
+  // Chấm bài thi
+  // =======================================================
 
   async submitExam(req, res) {
     try {
-      const churchId = this.getChurchId(req);
+      const churchId = getChurchId(req);
 
       if (!churchId) {
         return res.status(401).json({
@@ -789,6 +852,10 @@ class QuestionController {
       const { batch, answers } = req.body;
 
       const batchNumber = Number(batch);
+
+      // ---------------------------------------------------
+      // ĐỢT THI
+      // ---------------------------------------------------
 
       const batchRanges = {
         1: {
@@ -811,9 +878,9 @@ class QuestionController {
         });
       }
 
-      // =====================================================
+      // ---------------------------------------------------
       // VALIDATE ANSWERS
-      // =====================================================
+      // ---------------------------------------------------
 
       if (!Array.isArray(answers) || answers.length === 0) {
         return res.status(400).json({
@@ -822,9 +889,9 @@ class QuestionController {
         });
       }
 
-      // =====================================================
+      // ---------------------------------------------------
       // QUESTION IDS
-      // =====================================================
+      // ---------------------------------------------------
 
       const questionIds = [
         ...new Set(
@@ -841,14 +908,11 @@ class QuestionController {
         });
       }
 
-      // =====================================================
+      // ---------------------------------------------------
       // GET QUESTIONS
       //
-      // RẤT QUAN TRỌNG:
-      // phải kiểm tra church_id ở đây
-      // để không thể gửi ID câu hỏi của
-      // giáo xứ khác lên để chấm.
-      // =====================================================
+      // Kiểm tra church_id
+      // ---------------------------------------------------
 
       const [questions] = await db.query(
         `
@@ -880,17 +944,17 @@ class QuestionController {
         [questionIds, churchId, range.from, range.to],
       );
 
-      // =====================================================
+      // ---------------------------------------------------
       // MAP
-      // =====================================================
+      // ---------------------------------------------------
 
       const questionMap = new Map(
         questions.map((question) => [Number(question.id), question]),
       );
 
-      // =====================================================
+      // ---------------------------------------------------
       // CHẤM
-      // =====================================================
+      // ---------------------------------------------------
 
       let correctCount = 0;
 
@@ -899,11 +963,11 @@ class QuestionController {
 
         const question = questionMap.get(questionId);
 
-        const selected = String(userAnswer?.selected || "").toUpperCase();
+        const selected = normalizeAnswer(userAnswer?.selected);
 
-        // ---------------------------------------------
-        // QUESTION KHÔNG HỢP LỆ
-        // ---------------------------------------------
+        // -------------------------------------------
+        // CÂU KHÔNG HỢP LỆ
+        // -------------------------------------------
 
         if (!question) {
           return {
@@ -926,11 +990,11 @@ class QuestionController {
           };
         }
 
-        // ---------------------------------------------
+        // -------------------------------------------
         // CHECK
-        // ---------------------------------------------
+        // -------------------------------------------
 
-        const isCorrect = selected === question.correct_answer;
+        const isCorrect = selected === normalizeAnswer(question.correct_answer);
 
         if (isCorrect) {
           correctCount++;
@@ -961,17 +1025,17 @@ class QuestionController {
         };
       });
 
-      // =====================================================
+      // ---------------------------------------------------
       // SCORE
-      // =====================================================
+      // ---------------------------------------------------
 
       const total = results.length;
 
       const score = total > 0 ? Math.round((correctCount / total) * 100) : 0;
 
-      // =====================================================
+      // ---------------------------------------------------
       // RESPONSE
-      // =====================================================
+      // ---------------------------------------------------
 
       return res.json({
         success: true,
@@ -1002,5 +1066,9 @@ class QuestionController {
     }
   }
 }
+
+// =========================================================
+// EXPORT
+// =========================================================
 
 module.exports = new QuestionController();

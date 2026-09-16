@@ -312,9 +312,12 @@ class LessonController {
           message: "Không xác định được giáo xứ của tài khoản",
         });
       }
+      console.log("BODY:", req.body);
 
       const { title, catechism_type } = req.body;
-      console.log(title, catechism_type);
+
+      console.log("TITLE:", title);
+      console.log("CATECHISM TYPE:", catechism_type);
 
       // ===================================================
       // VALIDATE TITLE

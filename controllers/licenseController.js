@@ -156,6 +156,7 @@ exports.getMyLicense = async (req, res) => {
         address: church.address,
         phone: church.phone,
         email: church.email,
+        pastor_name: church.pastor_name,
 
         image: church.image,
 

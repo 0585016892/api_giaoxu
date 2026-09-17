@@ -24,6 +24,12 @@ router.put(
 router.get("/", verifyToken, adminController.getAllAdmins);
 router.get("/:id", verifyToken, adminController.getAdminById);
 router.patch("/:id/toggle", verifyToken, adminController.toggleActive);
+router.patch(
+  "/:id/toggle-catechits",
+  verifyToken,
+  adminController.toggleActiveCatechits,
+);
+
 router.put("/password/:id", verifyToken, adminController.changePassword);
 
 router.put(

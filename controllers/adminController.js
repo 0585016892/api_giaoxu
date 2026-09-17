@@ -1450,3 +1450,174 @@ exports.toggleActive = async (req, res) => {
     });
   }
 };
+exports.toggleActiveCatechits = async (req, res) => {
+  try {
+    // ID frontend gửi lên là ID của catechists
+    const catechistId = Number(req.params.id);
+
+    if (!Number.isInteger(catechistId) || catechistId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "ID giáo lý viên không hợp lệ",
+      });
+    }
+
+    console.log("=================================");
+    console.log("TOGGLE ACTIVE");
+    console.log("catechistId:", catechistId);
+
+    // =====================================================
+    // 1. LẤY GIÁO LÝ VIÊN
+    // =====================================================
+
+    const [catechists] = await db.query(
+      `
+      SELECT
+        id,
+        catechist_code,
+        full_name,
+        status
+      FROM catechists
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [catechistId],
+    );
+
+    console.log("CATECHIST:", catechists);
+
+    if (!catechists.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy giáo lý viên",
+      });
+    }
+
+    const catechist = catechists[0];
+
+    // =====================================================
+    // 2. TÌM TÀI KHOẢN ADMINS BẰNG catechist_code
+    // =====================================================
+
+    const [admins] = await db.query(
+      `
+      SELECT
+        id,
+        username,
+        full_name,
+        role,
+        church_id,
+        is_active
+      FROM admins
+      WHERE username = ?
+      LIMIT 1
+      `,
+      [catechist.catechist_code],
+    );
+
+    console.log("ADMIN:", admins);
+
+    if (!admins.length) {
+      return res.status(404).json({
+        success: false,
+        message:
+          `Không tìm thấy tài khoản đăng nhập ` +
+          `cho mã ${catechist.catechist_code}`,
+      });
+    }
+
+    const admin = admins[0];
+
+    console.log("ADMIN ID:", admin.id);
+    console.log("ADMIN USERNAME:", admin.username);
+    console.log("ADMIN CURRENT STATUS:", admin.is_active);
+
+    // =====================================================
+    // 3. ĐẢO TRẠNG THÁI
+    // =====================================================
+
+    const newStatus = admin.is_active ? 0 : 1;
+
+    const catechistStatus = newStatus ? "active" : "inactive";
+
+    console.log(`🔄 Admin ${admin.id}: ${admin.is_active} -> ${newStatus}`);
+
+    console.log(
+      `👤 Catechist ${catechist.id}: ${catechist.status} -> ${catechistStatus}`,
+    );
+
+    // =====================================================
+    // 4. UPDATE ADMINS
+    // =====================================================
+
+    const [adminResult] = await db.query(
+      `
+      UPDATE admins
+      SET is_active = ?
+      WHERE id = ?
+      `,
+      [newStatus, admin.id],
+    );
+
+    console.log("ADMIN UPDATE:", adminResult);
+
+    // =====================================================
+    // 5. UPDATE CATECHISTS
+    // =====================================================
+
+    const [catechistResult] = await db.query(
+      `
+      UPDATE catechists
+      SET status = ?
+      WHERE id = ?
+      `,
+      [catechistStatus, catechistId],
+    );
+
+    console.log("CATECHIST UPDATE:", catechistResult);
+
+    // =====================================================
+    // 6. GHI LOG
+    // =====================================================
+
+    await writeLog({
+      admin_id: req.user?.id,
+      action: "TOGGLE_ACTIVE",
+      target_type: "admins",
+      target_id: admin.id,
+      description:
+        `${newStatus ? "Mở khóa" : "Khóa"} ${admin.full_name} ` +
+        `(${admin.username})`,
+      ip_address: req.ip,
+    });
+
+    // =====================================================
+    // 7. RESPONSE
+    // =====================================================
+
+    return res.json({
+      success: true,
+
+      message: newStatus ? "Đã mở khóa tài khoản" : "Đã khóa tài khoản",
+
+      // admins
+      admin_id: admin.id,
+      is_active: newStatus,
+
+      // catechists
+      catechist_id: catechist.id,
+      catechist_code: catechist.catechist_code,
+      catechist_status: catechistStatus,
+
+      admin_updated: adminResult.affectedRows > 0,
+      catechist_updated: catechistResult.affectedRows > 0,
+    });
+  } catch (err) {
+    console.error("❌ TOGGLE ACTIVE ERROR:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: err.message,
+    });
+  }
+};

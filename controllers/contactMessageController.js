@@ -144,3 +144,39 @@ ID góp ý: ${contactId}
     });
   }
 };
+exports.checkFeedback = async (req, res) => {
+  try {
+    const email = String(req.query.email || "")
+      .trim()
+      .toLowerCase();
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu email",
+      });
+    }
+
+    const [rows] = await db.query(
+      `
+      SELECT id
+      FROM contact_messages
+      WHERE LOWER(email) = ?
+      LIMIT 1
+      `,
+      [email],
+    );
+
+    return res.json({
+      success: true,
+      hasFeedback: rows.length > 0,
+    });
+  } catch (error) {
+    console.error("❌ CHECK FEEDBACK ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể kiểm tra trạng thái góp ý",
+    });
+  }
+};

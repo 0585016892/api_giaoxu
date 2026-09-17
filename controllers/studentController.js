@@ -1655,106 +1655,93 @@ exports.updateStudent = async (req, res) => {
     // UPDATE STUDENT
     // =====================================================
 
-    const [result] = await connection.query(
+    const [result] = await connection.execute(
       `
-          UPDATE students
-          SET
-            name = ?,
-            gender = ?,
-            date_of_birth = ?,
-            birth_place = ?,
-            nationality = ?,
-            phone = ?,
-            email = ?,
-            address = ?,
-            parish = ?,
+    UPDATE students
+    SET
+      name = ?,
+      gender = ?,
+      date_of_birth = ?,
+      birth_place = ?,
+      nationality = ?,
+      phone = ?,
+      email = ?,
+      address = ?,
+      parish = ?,
 
-            father_name = ?,
-            father_phone = ?,
+      father_name = ?,
+      father_phone = ?,
+      mother_name = ?,
+      mother_phone = ?,
+      guardian_name = ?,
+      guardian_phone = ?,
+      guardian_relationship = ?,
 
-            mother_name = ?,
-            mother_phone = ?,
+      baptism_name = ?,
+      baptism_date = ?,
+      baptism_place = ?,
+      baptism_parish = ?,
+      baptism_certificate_no = ?,
 
-            guardian_name = ?,
-            guardian_phone = ?,
-            guardian_relationship = ?,
+      saint_name = ?,
+      first_communion_date = ?,
+      first_communion_place = ?,
 
-            baptism_name = ?,
-            baptism_date = ?,
-            baptism_place = ?,
-            baptism_parish = ?,
-            baptism_certificate_no = ?,
+      confirmation_date = ?,
+      confirmation_place = ?,
+      confirmation_saint_name = ?,
 
-            saint_name = ?,
+      catechism_level = ?,
+      catechism_status = ?,
+      enrollment_date = ?,
 
-            first_communion_date = ?,
-            first_communion_place = ?,
+      note = ?,
+      status = ?,
+      avatar = ?
 
-            confirmation_date = ?,
-            confirmation_place = ?,
-            confirmation_saint_name = ?,
-
-            catechism_level = ?,
-            catechism_status = ?,
-            enrollment_date = ?,
-
-            note = ?,
-            avatar = ?,
-            status = ?,
-
-            updated_at = CURRENT_TIMESTAMP
-
-          WHERE id = ?
-            AND church_id = ?
-        `,
+    WHERE id = ?
+      AND church_id = ?
+  `,
       [
-        studentName,
+        name,
+        gender,
+        date_of_birth,
+        birth_place,
+        nationality,
+        phone,
+        email,
+        address,
+        parish,
 
-        normalizedGender,
+        father_name,
+        father_phone,
+        mother_name,
+        mother_phone,
+        guardian_name,
+        guardian_phone,
+        guardian_relationship,
 
-        date_of_birth || null,
-        birth_place || null,
-        nationality || "Việt Nam",
+        baptism_name,
+        baptism_date,
+        baptism_place,
+        baptism_parish,
+        baptism_certificate_no,
 
-        phone || null,
-        email || null,
-        address || null,
-        parish || null,
+        saint_name,
+        first_communion_date,
+        first_communion_place,
 
-        father_name || null,
-        father_phone || null,
+        confirmation_date,
+        confirmation_place,
+        confirmation_saint_name,
 
-        mother_name || null,
-        mother_phone || null,
+        catechism_level,
+        catechism_status,
+        enrollment_date,
 
-        guardian_name || null,
-        guardian_phone || null,
-        guardian_relationship || null,
-
-        baptism_name || null,
-        baptism_date || null,
-        baptism_place || null,
-        baptism_parish || null,
-        baptism_certificate_no || null,
-
-        saint_name || null,
-
-        first_communion_date || null,
-        first_communion_place || null,
-
-        confirmation_date || null,
-        confirmation_place || null,
-        confirmation_saint_name || null,
-
-        catechism_level || null,
-        catechism_status || "new",
-        enrollment_date || null,
-
-        note || null,
-
+        note,
+        status,
         avatarValue,
-
-        status || "active",
 
         studentId,
         churchId,

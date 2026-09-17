@@ -1087,6 +1087,7 @@ exports.updateAdmin = async (req, res) => {
 exports.resetAdminPassword = async (req, res) => {
   try {
     const { password } = req.body;
+    console.log("resetAdminPassword:::", resetAdminPassword);
 
     const [admin] = await db.query("SELECT * FROM admins WHERE id=?", [
       req.params.id,

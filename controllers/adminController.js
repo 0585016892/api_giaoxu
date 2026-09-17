@@ -1173,7 +1173,149 @@ exports.resetAdminPassword = async (req, res) => {
     });
   }
 };
+exports.resetCatechitsPassword = async (req, res) => {
+  try {
+    const { password } = req.body;
 
+    // ID gửi từ frontend là ID của catechists
+    const catechistId = Number(req.params.id);
+
+    console.log("=================================");
+    console.log("RESET PASSWORD");
+    console.log("catechistId:", catechistId);
+    console.log("password:", password);
+
+    if (!Number.isInteger(catechistId) || catechistId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "ID giáo lý viên không hợp lệ",
+      });
+    }
+
+    if (!password || String(password).length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Mật khẩu tối thiểu 6 ký tự",
+      });
+    }
+
+    // 1. Lấy catechist_code từ bảng catechists
+    const [catechists] = await db.query(
+      `
+      SELECT
+        id,
+        catechist_code,
+        full_name
+      FROM catechists
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [catechistId],
+    );
+
+    console.log("CATECHIST:", catechists);
+
+    if (!catechists.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy giáo lý viên",
+      });
+    }
+
+    const catechist = catechists[0];
+
+    // 2. Dùng catechist_code tìm tài khoản trong admins
+    const [admins] = await db.query(
+      `
+      SELECT
+        id,
+        username,
+        full_name,
+        password
+      FROM admins
+      WHERE username = ?
+      LIMIT 1
+      `,
+      [catechist.catechist_code],
+    );
+
+    console.log("ADMIN:", admins);
+
+    if (!admins.length) {
+      return res.status(404).json({
+        success: false,
+        message:
+          `Không tìm thấy tài khoản đăng nhập ` +
+          `cho mã ${catechist.catechist_code}`,
+      });
+    }
+
+    const admin = admins[0];
+
+    console.log("ADMIN ID:", admin.id);
+    console.log("ADMIN USERNAME:", admin.username);
+
+    // 3. Hash password mới
+    const hash = await bcrypt.hash(String(password), 10);
+
+    console.log("NEW HASH:", hash);
+
+    // 4. Update đúng bảng admins
+    const [result] = await db.query(
+      `
+      UPDATE admins
+      SET password = ?
+      WHERE id = ?
+      `,
+      [hash, admin.id],
+    );
+
+    console.log("UPDATE RESULT:", result);
+
+    // 5. Kiểm tra lại
+    const [check] = await db.query(
+      `
+      SELECT
+        id,
+        username,
+        password
+      FROM admins
+      WHERE id = ?
+      `,
+      [admin.id],
+    );
+
+    console.log("PASSWORD AFTER UPDATE:", check[0]?.password);
+
+    // 6. Ghi log
+    await writeLog({
+      admin_id: req.user?.id,
+      action: "RESET_PASSWORD",
+      target_type: "admins",
+      target_id: admin.id,
+      description: `Reset password ${admin.full_name} ` + `(${admin.username})`,
+      ip_address: req.ip,
+    });
+
+    return res.json({
+      success: true,
+      message: "Đã đổi mật khẩu thành công",
+      affectedRows: result.affectedRows,
+
+      // trả về để debug, sau này có thể bỏ
+      catechist_id: catechist.id,
+      catechist_code: catechist.catechist_code,
+      admin_id: admin.id,
+    });
+  } catch (err) {
+    console.error("❌ RESET PASSWORD ERROR:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: err.message,
+    });
+  }
+};
 /* =========================================================
    DELETE ADMIN
 ========================================================= */

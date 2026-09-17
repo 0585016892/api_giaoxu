@@ -1,16 +1,10 @@
 const express = require("express");
-const multer = require("multer");
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 10 * 1024 * 1024,
-  },
-});
 const router = express.Router();
 
 const studentController = require("../controllers/studentController");
 const { verifyToken } = require("../middleware/authMiddleware");
+const uploadStudentAvatar = require("../middleware/uploadStudentAvatar");
 
 // =====================================================
 // TẤT CẢ API HỌC SINH ĐỀU PHẢI ĐĂNG NHẬP
@@ -29,7 +23,7 @@ router.post("/", verifyToken, studentController.createStudent);
 router.post(
   "/import-excel",
   verifyToken,
-  upload.single("file"),
+  uploadStudentAvatar.single("avatar"),
   studentController.importStudentsExcel,
 );
 

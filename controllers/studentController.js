@@ -1230,6 +1230,44 @@ exports.updateStudent = async (req, res) => {
 
   let transactionStarted = false;
 
+  // =====================================================
+  // HELPER XÓA FILE
+  // =====================================================
+
+  const deleteFile = (filePath) => {
+    if (!filePath) return;
+
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        console.log("🗑️ Deleted file:", filePath);
+      }
+    } catch (error) {
+      console.error("❌ DELETE FILE ERROR:", error.message);
+    }
+  };
+
+  const deleteUploadedFile = () => {
+    if (!req.file?.path) return;
+
+    deleteFile(req.file.path);
+  };
+
+  // =====================================================
+  // CHUYỂN AVATAR DB PATH -> FILE PATH
+  // =====================================================
+
+  const getAvatarFilePath = (avatar) => {
+    if (!avatar) return null;
+
+    let cleanPath = String(avatar);
+
+    // /uploads/students/xxx.jpg
+    cleanPath = cleanPath.replace(/^\/+/, "");
+
+    return path.join(process.cwd(), cleanPath);
+  };
+
   try {
     const { id } = req.params;
 
@@ -1237,23 +1275,55 @@ exports.updateStudent = async (req, res) => {
 
     const studentId = Number(id);
 
+    console.log("========== UPDATE STUDENT ==========");
+
+    console.log("STUDENT ID:", studentId);
+
+    console.log("CHURCH ID:", churchId);
+
+    console.log("BODY:", req.body);
+
+    console.log(
+      "FILE:",
+      req.file
+        ? {
+            filename: req.file.filename,
+            path: req.file.path,
+            mimetype: req.file.mimetype,
+            size: req.file.size,
+          }
+        : null,
+    );
+
+    // =====================================================
+    // VALIDATE ID
+    // =====================================================
+
     if (!Number.isInteger(studentId) || studentId <= 0) {
+      deleteUploadedFile();
+
       return res.status(400).json({
         success: false,
         message: "ID học sinh không hợp lệ",
       });
     }
 
+    // =====================================================
+    // VALIDATE CHURCH
+    // =====================================================
+
     if (!churchId) {
+      deleteUploadedFile();
+
       return res.status(403).json({
         success: false,
         message: "Tài khoản chưa được gán giáo xứ",
       });
     }
 
-    // =================================================
+    // =====================================================
     // KIỂM TRA HỌC SINH
-    // =================================================
+    // =====================================================
 
     const belongsToChurch = await checkStudentBelongsToChurch(
       studentId,
@@ -1261,11 +1331,49 @@ exports.updateStudent = async (req, res) => {
     );
 
     if (!belongsToChurch) {
+      deleteUploadedFile();
+
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy học sinh trong giáo xứ này",
       });
     }
+
+    // =====================================================
+    // LẤY HỌC SINH CŨ
+    // =====================================================
+
+    const [oldStudentRows] = await connection.query(
+      `
+          SELECT
+            id,
+            name,
+            avatar,
+            class_id
+          FROM students
+          WHERE id = ?
+            AND church_id = ?
+          LIMIT 1
+        `,
+      [studentId, churchId],
+    );
+
+    if (!oldStudentRows.length) {
+      deleteUploadedFile();
+
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy học sinh",
+      });
+    }
+
+    const oldStudent = oldStudentRows[0];
+
+    const oldAvatar = oldStudent.avatar || null;
+
+    // =====================================================
+    // BODY
+    // =====================================================
 
     const {
       name,
@@ -1277,60 +1385,104 @@ exports.updateStudent = async (req, res) => {
       email,
       address,
       parish,
+
       father_name,
       father_phone,
+
       mother_name,
       mother_phone,
+
       guardian_name,
       guardian_phone,
       guardian_relationship,
+
       baptism_name,
       baptism_date,
       baptism_place,
       baptism_parish,
       baptism_certificate_no,
+
       saint_name,
+
       first_communion_date,
       first_communion_place,
+
       confirmation_date,
       confirmation_place,
       confirmation_saint_name,
+
       catechism_level,
       catechism_status,
       enrollment_date,
+
       note,
-      avatar,
       status,
+
       class_id,
+
+      // Frontend có thể gửi:
+      // avatar = null / ""
+      // để yêu cầu xóa avatar
+      avatar,
     } = req.body;
 
-    // =================================================
+    // =====================================================
     // NAME
-    // =================================================
+    // =====================================================
 
     if (!name || !String(name).trim()) {
+      deleteUploadedFile();
+
       return res.status(400).json({
         success: false,
         message: "Họ tên học sinh là bắt buộc",
       });
     }
 
-    // =================================================
+    const studentName = String(name).trim();
+
+    // =====================================================
     // GENDER
-    // =================================================
+    // Frontend:
+    // male / female / other
+    //
+    // DB:
+    // Nam / Nữ / Khác
+    // =====================================================
 
-    const allowedGender = ["male", "female", "other"];
+    const genderMap = {
+      male: "Nam",
+      female: "Nữ",
+      other: "Khác",
 
-    if (gender && !allowedGender.includes(gender)) {
-      return res.status(400).json({
-        success: false,
-        message: "Giới tính không hợp lệ",
-      });
+      // Cho phép cả giá trị DB
+      Nam: "Nam",
+      Nữ: "Nữ",
+      Khác: "Khác",
+    };
+
+    let normalizedGender = null;
+
+    if (
+      gender !== undefined &&
+      gender !== null &&
+      String(gender).trim() !== ""
+    ) {
+      normalizedGender = genderMap[String(gender)];
+
+      if (!normalizedGender) {
+        deleteUploadedFile();
+
+        return res.status(400).json({
+          success: false,
+          message: "Giới tính không hợp lệ",
+        });
+      }
     }
 
-    // =================================================
+    // =====================================================
     // CATECHISM STATUS
-    // =================================================
+    // =====================================================
 
     const allowedCatechismStatus = [
       "new",
@@ -1344,15 +1496,17 @@ exports.updateStudent = async (req, res) => {
       catechism_status &&
       !allowedCatechismStatus.includes(catechism_status)
     ) {
+      deleteUploadedFile();
+
       return res.status(400).json({
         success: false,
         message: "Trạng thái học giáo lý không hợp lệ",
       });
     }
 
-    // =================================================
+    // =====================================================
     // STUDENT STATUS
-    // =================================================
+    // =====================================================
 
     const allowedStatus = [
       "active",
@@ -1363,27 +1517,26 @@ exports.updateStudent = async (req, res) => {
     ];
 
     if (status && !allowedStatus.includes(status)) {
+      deleteUploadedFile();
+
       return res.status(400).json({
         success: false,
         message: "Trạng thái học sinh không hợp lệ",
       });
     }
 
-    // =================================================
+    // =====================================================
     // CLASS
     //
-    // class_id undefined:
+    // undefined:
     //     Không đổi lớp
     //
-    // class_id = "":
+    // null / "":
     //     Bỏ lớp
     //
-    // class_id = null:
-    //     Bỏ lớp
-    //
-    // class_id hợp lệ:
+    // number:
     //     Đổi/gán lớp
-    // =================================================
+    // =====================================================
 
     let classId = undefined;
 
@@ -1394,6 +1547,8 @@ exports.updateStudent = async (req, res) => {
         classId = Number(class_id);
 
         if (!Number.isInteger(classId) || classId <= 0) {
+          deleteUploadedFile();
+
           return res.status(400).json({
             success: false,
             message: "class_id không hợp lệ",
@@ -1406,6 +1561,8 @@ exports.updateStudent = async (req, res) => {
         );
 
         if (!classBelongsToChurch) {
+          deleteUploadedFile();
+
           return res.status(403).json({
             success: false,
             message: "Lớp mới không thuộc giáo xứ của tài khoản",
@@ -1414,102 +1571,206 @@ exports.updateStudent = async (req, res) => {
       }
     }
 
-    // =================================================
+    // =====================================================
+    // AVATAR
+    // =====================================================
+
+    let avatarValue = oldAvatar;
+
+    let newAvatarPath = null;
+
+    let removeOldAvatar = false;
+
+    // -----------------------------------------------------
+    // TRƯỜNG HỢP 1:
+    // Có upload ảnh mới
+    // -----------------------------------------------------
+
+    if (req.file) {
+      // Kiểm tra MIME
+      const allowedMimeTypes = [
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+        "image/webp",
+      ];
+
+      if (!allowedMimeTypes.includes(req.file.mimetype)) {
+        deleteUploadedFile();
+
+        return res.status(400).json({
+          success: false,
+          message: "Chỉ hỗ trợ JPG, JPEG, PNG hoặc WEBP",
+        });
+      }
+
+      // Kiểm tra size
+      if (req.file.size > 5 * 1024 * 1024) {
+        deleteUploadedFile();
+
+        return res.status(400).json({
+          success: false,
+          message: "Ảnh không được vượt quá 5MB",
+        });
+      }
+
+      newAvatarPath = `/uploads/students/${req.file.filename}`;
+
+      avatarValue = newAvatarPath;
+
+      // Sau commit sẽ xóa avatar cũ
+      if (oldAvatar) {
+        removeOldAvatar = true;
+      }
+    }
+
+    // -----------------------------------------------------
+    // TRƯỜNG HỢP 2:
+    // Không upload ảnh mới nhưng yêu cầu xóa ảnh
+    // -----------------------------------------------------
+    else if (avatar === null || avatar === "") {
+      avatarValue = null;
+
+      if (oldAvatar) {
+        removeOldAvatar = true;
+      }
+    }
+
+    // -----------------------------------------------------
+    // TRƯỜNG HỢP 3:
+    // Không upload và không yêu cầu xóa
+    //
+    // => Giữ avatar cũ
+    // -----------------------------------------------------
+
+    // =====================================================
     // TRANSACTION
-    // =================================================
+    // =====================================================
 
     await connection.beginTransaction();
 
     transactionStarted = true;
 
-    // =================================================
+    // =====================================================
     // UPDATE STUDENT
-    // =================================================
+    // =====================================================
 
     const [result] = await connection.query(
       `
-        UPDATE students
-        SET
-          name = ?,
-          gender = ?,
-          date_of_birth = ?,
-          birth_place = ?,
-          nationality = ?,
-          phone = ?,
-          email = ?,
-          address = ?,
-          parish = ?,
-          father_name = ?,
-          father_phone = ?,
-          mother_name = ?,
-          mother_phone = ?,
-          guardian_name = ?,
-          guardian_phone = ?,
-          guardian_relationship = ?,
-          baptism_name = ?,
-          baptism_date = ?,
-          baptism_place = ?,
-          baptism_parish = ?,
-          baptism_certificate_no = ?,
-          saint_name = ?,
-          first_communion_date = ?,
-          first_communion_place = ?,
-          confirmation_date = ?,
-          confirmation_place = ?,
-          confirmation_saint_name = ?,
-          catechism_level = ?,
-          catechism_status = ?,
-          enrollment_date = ?,
-          note = ?,
-          avatar = ?,
-          status = ?,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-          AND church_id = ?
-      `,
+          UPDATE students
+          SET
+            name = ?,
+            gender = ?,
+            date_of_birth = ?,
+            birth_place = ?,
+            nationality = ?,
+            phone = ?,
+            email = ?,
+            address = ?,
+            parish = ?,
+
+            father_name = ?,
+            father_phone = ?,
+
+            mother_name = ?,
+            mother_phone = ?,
+
+            guardian_name = ?,
+            guardian_phone = ?,
+            guardian_relationship = ?,
+
+            baptism_name = ?,
+            baptism_date = ?,
+            baptism_place = ?,
+            baptism_parish = ?,
+            baptism_certificate_no = ?,
+
+            saint_name = ?,
+
+            first_communion_date = ?,
+            first_communion_place = ?,
+
+            confirmation_date = ?,
+            confirmation_place = ?,
+            confirmation_saint_name = ?,
+
+            catechism_level = ?,
+            catechism_status = ?,
+            enrollment_date = ?,
+
+            note = ?,
+            avatar = ?,
+            status = ?,
+
+            updated_at = CURRENT_TIMESTAMP
+
+          WHERE id = ?
+            AND church_id = ?
+        `,
       [
-        String(name).trim(),
-        gender || null,
+        studentName,
+
+        normalizedGender,
+
         date_of_birth || null,
         birth_place || null,
         nationality || "Việt Nam",
+
         phone || null,
         email || null,
         address || null,
         parish || null,
+
         father_name || null,
         father_phone || null,
+
         mother_name || null,
         mother_phone || null,
+
         guardian_name || null,
         guardian_phone || null,
         guardian_relationship || null,
+
         baptism_name || null,
         baptism_date || null,
         baptism_place || null,
         baptism_parish || null,
         baptism_certificate_no || null,
+
         saint_name || null,
+
         first_communion_date || null,
         first_communion_place || null,
+
         confirmation_date || null,
         confirmation_place || null,
         confirmation_saint_name || null,
+
         catechism_level || null,
         catechism_status || "new",
         enrollment_date || null,
+
         note || null,
-        avatar || null,
+
+        avatarValue,
+
         status || "active",
+
         studentId,
         churchId,
       ],
     );
 
+    // =====================================================
+    // CHECK UPDATE
+    // =====================================================
+
     if (!result.affectedRows) {
       await connection.rollback();
 
       transactionStarted = false;
+
+      deleteUploadedFile();
 
       return res.status(404).json({
         success: false,
@@ -1517,12 +1778,12 @@ exports.updateStudent = async (req, res) => {
       });
     }
 
-    // =================================================
+    // =====================================================
     // ĐỔI / GÁN / BỎ LỚP
-    // =================================================
+    // =====================================================
 
     if (classId !== undefined) {
-      // Xóa lớp cũ
+      // Xóa lớp hiện tại
       await connection.query(
         `
           DELETE FROM class_students
@@ -1531,7 +1792,7 @@ exports.updateStudent = async (req, res) => {
         [studentId],
       );
 
-      // Nếu có lớp mới thì thêm
+      // Nếu có lớp mới
       if (classId !== null) {
         await connection.query(
           `
@@ -1546,17 +1807,29 @@ exports.updateStudent = async (req, res) => {
       }
     }
 
-    // =================================================
+    // =====================================================
     // COMMIT
-    // =================================================
+    // =====================================================
 
     await connection.commit();
 
     transactionStarted = false;
 
-    // =================================================
+    // =====================================================
+    // XÓA AVATAR CŨ
+    //
+    // Chỉ xóa sau khi DB commit thành công.
+    // =====================================================
+
+    if (removeOldAvatar && oldAvatar && oldAvatar !== avatarValue) {
+      const oldAvatarPath = getAvatarFilePath(oldAvatar);
+
+      deleteFile(oldAvatarPath);
+    }
+
+    // =====================================================
     // ACTIVITY LOG
-    // =================================================
+    // =====================================================
 
     try {
       let classDescription = "";
@@ -1569,21 +1842,43 @@ exports.updateStudent = async (req, res) => {
         classDescription = `, chuyển sang lớp #${classId}`;
       }
 
+      let avatarDescription = "";
+
+      if (req.file) {
+        avatarDescription = ", cập nhật ảnh đại diện";
+      } else if (avatar === null || avatar === "") {
+        avatarDescription = ", xóa ảnh đại diện";
+      }
+
       await writeLog({
         admin_id: req.user?.id || null,
+
         action: "UPDATE_STUDENT",
+
         target_type: "students",
+
         target_id: studentId,
-        description: `Cập nhật học sinh #${studentId}${classDescription}, giáo xứ #${churchId}`,
+
+        description: `Cập nhật học sinh "${studentName}" (#${studentId})${classDescription}${avatarDescription}, giáo xứ #${churchId}`,
+
         ip_address: req.ip,
       });
     } catch (logError) {
       console.error("⚠️ UPDATE STUDENT ACTIVITY LOG ERROR:", logError.message);
     }
 
+    // =====================================================
+    // SUCCESS
+    // =====================================================
+
     console.log("✅ UPDATE STUDENT SUCCESS");
+
     console.log("Student ID:", studentId);
+
     console.log("Church ID:", churchId);
+
+    console.log("Avatar:", avatarValue);
+
     console.log(
       "New Class ID:",
       classId === undefined
@@ -1595,9 +1890,26 @@ exports.updateStudent = async (req, res) => {
 
     return res.json({
       success: true,
+
       message: "Cập nhật học sinh thành công",
+
+      data: {
+        id: studentId,
+
+        name: studentName,
+
+        avatar: avatarValue,
+
+        class_id: classId === undefined ? undefined : classId,
+
+        church_id: Number(churchId),
+      },
     });
   } catch (error) {
+    // =====================================================
+    // ROLLBACK
+    // =====================================================
+
     if (transactionStarted) {
       try {
         await connection.rollback();
@@ -1606,10 +1918,27 @@ exports.updateStudent = async (req, res) => {
       }
     }
 
+    // =====================================================
+    // XÓA FILE MỚI NẾU UPDATE THẤT BẠI
+    // =====================================================
+
+    deleteUploadedFile();
+
+    // =====================================================
+    // LOG ERROR
+    // =====================================================
+
     console.error("========== UPDATE STUDENT ERROR ==========");
+
     console.error("Message:", error.message);
+
     console.error("Code:", error.code);
+
     console.error("SQL:", error.sqlMessage);
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
 
     return res.status(500).json({
       success: false,
@@ -1622,7 +1951,6 @@ exports.updateStudent = async (req, res) => {
     connection.release();
   }
 };
-
 // =====================================================
 // IMPORT STUDENTS FROM EXCEL
 //

@@ -26,6 +26,11 @@ router.get("/:id", verifyToken, adminController.getAdminById);
 router.patch("/:id/toggle", verifyToken, adminController.toggleActive);
 router.put("/password/:id", verifyToken, adminController.changePassword);
 router.put(
+  "/password-cate/:id",
+  verifyToken,
+  adminController.resetCatechitsPassword,
+);
+router.put(
   "/:id/reset-password",
   verifyToken,
   adminController.resetAdminPassword,

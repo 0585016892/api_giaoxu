@@ -2,7 +2,8 @@ const db = require("../config/db");
 const XLSX = require("xlsx");
 const crypto = require("crypto");
 const { writeLog } = require("../utils/activityLogger");
-
+const fs = require("fs");
+const path = require("path");
 // =====================================================
 // HELPER: LẤY CHURCH ID TỪ TOKEN
 // =====================================================
@@ -10,8 +11,6 @@ const { writeLog } = require("../utils/activityLogger");
 const getChurchId = (req) => {
   return req.user?.church_id;
 };
-const fs = require("fs");
-const path = require("path");
 
 // =====================================================
 // HELPER: XÓA FILE UPLOAD
@@ -1225,13 +1224,17 @@ exports.createStudent = async (req, res) => {
 // - Có thể gửi null/"" để bỏ lớp
 // =====================================================
 
+// =====================================================
+// UPDATE STUDENT
+// =====================================================
+
 exports.updateStudent = async (req, res) => {
   const connection = await db.getConnection();
 
   let transactionStarted = false;
 
   // =====================================================
-  // HELPER
+  // HELPER: DELETE FILE
   // =====================================================
 
   const deleteFile = (filePath) => {
@@ -1240,6 +1243,7 @@ exports.updateStudent = async (req, res) => {
     try {
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
+
         console.log("🗑️ Deleted file:", filePath);
       }
     } catch (error) {
@@ -1247,7 +1251,10 @@ exports.updateStudent = async (req, res) => {
     }
   };
 
-  // Xóa file vừa upload nếu request thất bại
+  // =====================================================
+  // DELETE FILE VỪA UPLOAD NẾU REQUEST FAIL
+  // =====================================================
+
   const deleteUploadedFile = () => {
     if (!req.file?.path) return;
 
@@ -1255,7 +1262,7 @@ exports.updateStudent = async (req, res) => {
   };
 
   // =====================================================
-  // DB AVATAR PATH -> FILE PATH
+  // AVATAR DB PATH -> ABSOLUTE FILE PATH
   // =====================================================
 
   const getAvatarFilePath = (avatar) => {
@@ -1263,16 +1270,14 @@ exports.updateStudent = async (req, res) => {
 
     let cleanPath = String(avatar).trim();
 
-    // Nếu lưu dạng URL đầy đủ:
-    // http://domain.com/uploads/...
-    // thì chỉ lấy phần pathname
-    try {
-      if (/^https?:\/\//i.test(cleanPath)) {
+    // Nếu DB lưu full URL
+    if (/^https?:\/\//i.test(cleanPath)) {
+      try {
         const url = new URL(cleanPath);
         cleanPath = url.pathname;
+      } catch (error) {
+        return null;
       }
-    } catch (error) {
-      // Không làm gì, tiếp tục xử lý path bình thường
     }
 
     // Chuẩn hóa slash
@@ -1281,23 +1286,23 @@ exports.updateStudent = async (req, res) => {
     // Bỏ slash đầu
     cleanPath = cleanPath.replace(/^\/+/, "");
 
-    // Chỉ cho phép xóa file nằm trong uploads
+    // Chỉ cho phép xử lý file trong uploads
     if (!cleanPath.startsWith("uploads/")) {
       console.warn("⚠️ Avatar path không hợp lệ:", cleanPath);
 
       return null;
     }
 
-    const absolutePath = path.resolve(process.cwd(), cleanPath);
-
     const uploadsRoot = path.resolve(process.cwd(), "uploads");
+
+    const absolutePath = path.resolve(process.cwd(), cleanPath);
 
     // Chống path traversal
     if (
       absolutePath !== uploadsRoot &&
       !absolutePath.startsWith(`${uploadsRoot}${path.sep}`)
     ) {
-      console.warn("⚠️ Không cho phép xóa file ngoài uploads:", absolutePath);
+      console.warn("⚠️ Avatar path nằm ngoài uploads:", absolutePath);
 
       return null;
     }
@@ -1306,28 +1311,42 @@ exports.updateStudent = async (req, res) => {
   };
 
   // =====================================================
-  // EMPTY STRING -> NULL
+  // EMPTY VALUE -> NULL
   // =====================================================
 
-  const valueOrNull = (value) => {
-    if (value === undefined || value === null || String(value).trim() === "") {
+  const normalizeValue = (value) => {
+    if (value === undefined || value === null) {
       return null;
     }
 
-    return String(value).trim();
+    const stringValue = String(value).trim();
+
+    if (!stringValue) {
+      return null;
+    }
+
+    return stringValue;
   };
 
   try {
+    // =====================================================
+    // PARAMS
+    // =====================================================
+
     const { id } = req.params;
+
+    const studentId = Number(id);
 
     const churchId = getChurchId(req);
 
-    const studentId = Number(id);
+    console.log("==========================================");
 
     console.log("========== UPDATE STUDENT ==========");
 
     console.log("STUDENT ID:", studentId);
+
     console.log("CHURCH ID:", churchId);
+
     console.log("BODY:", req.body);
 
     console.log(
@@ -1343,7 +1362,7 @@ exports.updateStudent = async (req, res) => {
     );
 
     // =====================================================
-    // VALIDATE ID
+    // VALIDATE STUDENT ID
     // =====================================================
 
     if (!Number.isInteger(studentId) || studentId <= 0) {
@@ -1369,7 +1388,7 @@ exports.updateStudent = async (req, res) => {
     }
 
     // =====================================================
-    // CHECK STUDENT
+    // CHECK STUDENT BELONGS TO CHURCH
     // =====================================================
 
     const belongsToChurch = await checkStudentBelongsToChurch(
@@ -1388,15 +1407,20 @@ exports.updateStudent = async (req, res) => {
 
     // =====================================================
     // GET OLD STUDENT
+    //
+    // QUAN TRỌNG:
+    // KHÔNG CÓ class_id Ở ĐÂY
     // =====================================================
 
-    const [oldStudentRows] = await connection.query(
+    const [oldStudentRows] = await connection.execute(
       `
           SELECT
             id,
             name,
             avatar,
-            class_id
+            gender,
+            status,
+            catechism_status
           FROM students
           WHERE id = ?
             AND church_id = ?
@@ -1465,12 +1489,10 @@ exports.updateStudent = async (req, res) => {
       note,
       status,
 
+      // class_id chỉ dùng để cập nhật
+      // bảng class_students
       class_id,
 
-      // avatar:
-      // ""
-      // null
-      // hoặc không gửi
       avatar,
     } = req.body;
 
@@ -1478,7 +1500,7 @@ exports.updateStudent = async (req, res) => {
     // NAME
     // =====================================================
 
-    if (!name || !String(name).trim()) {
+    if (name === undefined || name === null || !String(name).trim()) {
       deleteUploadedFile();
 
       return res.status(400).json({
@@ -1503,7 +1525,7 @@ exports.updateStudent = async (req, res) => {
       Khác: "Khác",
     };
 
-    let normalizedGender = null;
+    let normalizedGender = oldStudent.gender || "Khác";
 
     if (
       gender !== undefined &&
@@ -1520,20 +1542,6 @@ exports.updateStudent = async (req, res) => {
           message: "Giới tính không hợp lệ",
         });
       }
-    } else {
-      // Nếu không gửi gender thì giữ gender cũ
-      const [genderRows] = await connection.query(
-        `
-            SELECT gender
-            FROM students
-            WHERE id = ?
-              AND church_id = ?
-            LIMIT 1
-          `,
-        [studentId, churchId],
-      );
-
-      normalizedGender = genderRows[0]?.gender || "Khác";
     }
 
     // =====================================================
@@ -1548,10 +1556,14 @@ exports.updateStudent = async (req, res) => {
       "dropped",
     ];
 
-    if (
-      catechism_status &&
-      !allowedCatechismStatus.includes(catechism_status)
-    ) {
+    const normalizedCatechismStatus =
+      catechism_status === undefined ||
+      catechism_status === null ||
+      String(catechism_status).trim() === ""
+        ? oldStudent.catechism_status || "new"
+        : String(catechism_status).trim();
+
+    if (!allowedCatechismStatus.includes(normalizedCatechismStatus)) {
       deleteUploadedFile();
 
       return res.status(400).json({
@@ -1572,7 +1584,12 @@ exports.updateStudent = async (req, res) => {
       "dropped",
     ];
 
-    if (status && !allowedStatus.includes(status)) {
+    const normalizedStatus =
+      status === undefined || status === null || String(status).trim() === ""
+        ? oldStudent.status || "active"
+        : String(status).trim();
+
+    if (!allowedStatus.includes(normalizedStatus)) {
       deleteUploadedFile();
 
       return res.status(400).json({
@@ -1584,12 +1601,17 @@ exports.updateStudent = async (req, res) => {
     // =====================================================
     // CLASS
     //
-    // undefined -> không đổi
-    // "" / null -> bỏ lớp
-    // number -> đổi/gán lớp
+    // undefined:
+    //   Không thay đổi lớp
+    //
+    // "" / null:
+    //   Bỏ lớp
+    //
+    // number:
+    //   Đổi / gán lớp
     // =====================================================
 
-    let classId = undefined;
+    let classId;
 
     if (class_id !== undefined) {
       if (class_id === null || String(class_id).trim() === "") {
@@ -1605,6 +1627,10 @@ exports.updateStudent = async (req, res) => {
             message: "class_id không hợp lệ",
           });
         }
+
+        // =================================================
+        // CHECK CLASS BELONGS TO CHURCH
+        // =================================================
 
         const classBelongsToChurch = await checkClassBelongsToChurch(
           classId,
@@ -1630,11 +1656,9 @@ exports.updateStudent = async (req, res) => {
 
     let removeOldAvatar = false;
 
-    let newAvatarPath = null;
-
-    // -----------------------------------------------------
-    // CÓ ẢNH MỚI
-    // -----------------------------------------------------
+    // =====================================================
+    // UPLOAD ẢNH MỚI
+    // =====================================================
 
     if (req.file) {
       const allowedMimeTypes = [
@@ -1662,18 +1686,16 @@ exports.updateStudent = async (req, res) => {
         });
       }
 
-      newAvatarPath = `/uploads/students/${req.file.filename}`;
+      avatarValue = `/uploads/students/${req.file.filename}`;
 
-      avatarValue = newAvatarPath;
-
-      if (oldAvatar && oldAvatar !== newAvatarPath) {
+      if (oldAvatar && oldAvatar !== avatarValue) {
         removeOldAvatar = true;
       }
     }
 
-    // -----------------------------------------------------
+    // =====================================================
     // XÓA AVATAR
-    // -----------------------------------------------------
+    // =====================================================
     else if (avatar === null || avatar === "") {
       avatarValue = null;
 
@@ -1682,82 +1704,74 @@ exports.updateStudent = async (req, res) => {
       }
     }
 
-    // -----------------------------------------------------
-    // KHÔNG GỬI GÌ
-    //
-    // => GIỮ AVATAR CŨ
-    // -----------------------------------------------------
-
     // =====================================================
     // NORMALIZE DATA
     // =====================================================
 
-    const normalizedName = studentName;
+    const normalizedBirthDate = normalizeValue(date_of_birth);
 
-    const normalizedBirthDate = valueOrNull(date_of_birth);
+    const normalizedBirthPlace = normalizeValue(birth_place);
 
-    const normalizedBirthPlace = valueOrNull(birth_place);
+    const normalizedNationality = normalizeValue(nationality) || "Việt Nam";
 
-    const normalizedNationality = valueOrNull(nationality) || "Việt Nam";
+    const normalizedPhone = normalizeValue(phone);
 
-    const normalizedPhone = valueOrNull(phone);
+    const normalizedEmail = normalizeValue(email);
 
-    const normalizedEmail = valueOrNull(email);
+    const normalizedAddress = normalizeValue(address);
 
-    const normalizedAddress = valueOrNull(address);
+    const normalizedParish = normalizeValue(parish);
 
-    const normalizedParish = valueOrNull(parish);
+    const normalizedFatherName = normalizeValue(father_name);
 
-    const normalizedFatherName = valueOrNull(father_name);
+    const normalizedFatherPhone = normalizeValue(father_phone);
 
-    const normalizedFatherPhone = valueOrNull(father_phone);
+    const normalizedMotherName = normalizeValue(mother_name);
 
-    const normalizedMotherName = valueOrNull(mother_name);
+    const normalizedMotherPhone = normalizeValue(mother_phone);
 
-    const normalizedMotherPhone = valueOrNull(mother_phone);
+    const normalizedGuardianName = normalizeValue(guardian_name);
 
-    const normalizedGuardianName = valueOrNull(guardian_name);
+    const normalizedGuardianPhone = normalizeValue(guardian_phone);
 
-    const normalizedGuardianPhone = valueOrNull(guardian_phone);
+    const normalizedGuardianRelationship = normalizeValue(
+      guardian_relationship,
+    );
 
-    const normalizedGuardianRelationship = valueOrNull(guardian_relationship);
+    const normalizedBaptismName = normalizeValue(baptism_name);
 
-    const normalizedBaptismName = valueOrNull(baptism_name);
+    const normalizedBaptismDate = normalizeValue(baptism_date);
 
-    const normalizedBaptismDate = valueOrNull(baptism_date);
+    const normalizedBaptismPlace = normalizeValue(baptism_place);
 
-    const normalizedBaptismPlace = valueOrNull(baptism_place);
+    const normalizedBaptismParish = normalizeValue(baptism_parish);
 
-    const normalizedBaptismParish = valueOrNull(baptism_parish);
+    const normalizedBaptismCertificateNo = normalizeValue(
+      baptism_certificate_no,
+    );
 
-    const normalizedBaptismCertificateNo = valueOrNull(baptism_certificate_no);
+    const normalizedSaintName = normalizeValue(saint_name);
 
-    const normalizedSaintName = valueOrNull(saint_name);
+    const normalizedFirstCommunionDate = normalizeValue(first_communion_date);
 
-    const normalizedFirstCommunionDate = valueOrNull(first_communion_date);
+    const normalizedFirstCommunionPlace = normalizeValue(first_communion_place);
 
-    const normalizedFirstCommunionPlace = valueOrNull(first_communion_place);
+    const normalizedConfirmationDate = normalizeValue(confirmation_date);
 
-    const normalizedConfirmationDate = valueOrNull(confirmation_date);
+    const normalizedConfirmationPlace = normalizeValue(confirmation_place);
 
-    const normalizedConfirmationPlace = valueOrNull(confirmation_place);
-
-    const normalizedConfirmationSaintName = valueOrNull(
+    const normalizedConfirmationSaintName = normalizeValue(
       confirmation_saint_name,
     );
 
-    const normalizedCatechismLevel = valueOrNull(catechism_level);
+    const normalizedCatechismLevel = normalizeValue(catechism_level);
 
-    const normalizedCatechismStatus = catechism_status || "new";
+    const normalizedEnrollmentDate = normalizeValue(enrollment_date);
 
-    const normalizedEnrollmentDate = valueOrNull(enrollment_date);
-
-    const normalizedNote = valueOrNull(note);
-
-    const normalizedStatus = status || "active";
+    const normalizedNote = normalizeValue(note);
 
     // =====================================================
-    // TRANSACTION
+    // START TRANSACTION
     // =====================================================
 
     await connection.beginTransaction();
@@ -1765,10 +1779,12 @@ exports.updateStudent = async (req, res) => {
     transactionStarted = true;
 
     // =====================================================
-    // UPDATE STUDENT
+    // UPDATE STUDENTS
+    //
+    // TUYỆT ĐỐI KHÔNG CÓ class_id
     // =====================================================
 
-    const [result] = await connection.execute(
+    const [updateResult] = await connection.execute(
       `
           UPDATE students
           SET
@@ -1819,7 +1835,7 @@ exports.updateStudent = async (req, res) => {
             AND church_id = ?
         `,
       [
-        normalizedName,
+        studentName,
         normalizedGender,
         normalizedBirthDate,
         normalizedBirthPlace,
@@ -1871,7 +1887,7 @@ exports.updateStudent = async (req, res) => {
     // CHECK UPDATE
     // =====================================================
 
-    if (!result.affectedRows) {
+    if (!updateResult.affectedRows) {
       await connection.rollback();
 
       transactionStarted = false;
@@ -1885,12 +1901,14 @@ exports.updateStudent = async (req, res) => {
     }
 
     // =====================================================
-    // CLASS
+    // UPDATE CLASS
+    //
+    // class_students mới là nơi lưu class_id
     // =====================================================
 
     if (classId !== undefined) {
-      // Xóa phân lớp hiện tại
-      await connection.query(
+      // Xóa phân lớp cũ
+      await connection.execute(
         `
           DELETE FROM class_students
           WHERE student_id = ?
@@ -1898,9 +1916,9 @@ exports.updateStudent = async (req, res) => {
         [studentId],
       );
 
-      // Gán lớp mới
+      // Có lớp mới thì thêm
       if (classId !== null) {
-        await connection.query(
+        await connection.execute(
           `
             INSERT INTO class_students (
               class_id,
@@ -1922,7 +1940,9 @@ exports.updateStudent = async (req, res) => {
     transactionStarted = false;
 
     // =====================================================
-    // XÓA AVATAR CŨ SAU COMMIT
+    // DELETE OLD AVATAR
+    //
+    // CHỈ XÓA SAU KHI DB COMMIT
     // =====================================================
 
     if (removeOldAvatar && oldAvatar && oldAvatar !== avatarValue) {
@@ -1980,15 +2000,21 @@ exports.updateStudent = async (req, res) => {
     // AVATAR URL
     // =====================================================
 
-    const avatarUrl = avatarValue
-      ? /^https?:\/\//i.test(String(avatarValue))
-        ? avatarValue
-        : `${req.protocol}://${req.get("host")}${avatarValue}`
-      : null;
+    let avatarUrl = null;
+
+    if (avatarValue) {
+      if (/^https?:\/\//i.test(String(avatarValue))) {
+        avatarUrl = avatarValue;
+      } else {
+        avatarUrl = `${req.protocol}://${req.get("host")}${avatarValue}`;
+      }
+    }
 
     // =====================================================
     // SUCCESS
     // =====================================================
+
+    console.log("==========================================");
 
     console.log("✅ UPDATE STUDENT SUCCESS");
 
@@ -1999,13 +2025,15 @@ exports.updateStudent = async (req, res) => {
     console.log("Avatar:", avatarValue);
 
     console.log(
-      "New Class ID:",
+      "Class:",
       classId === undefined
         ? "Không đổi"
         : classId === null
           ? "Bỏ lớp"
           : classId,
     );
+
+    console.log("==========================================");
 
     return res.json({
       success: true,
@@ -2035,19 +2063,21 @@ exports.updateStudent = async (req, res) => {
       try {
         await connection.rollback();
       } catch (rollbackError) {
-        console.error("ROLLBACK ERROR:", rollbackError.message);
+        console.error("❌ ROLLBACK ERROR:", rollbackError.message);
       }
     }
 
     // =====================================================
-    // XÓA FILE MỚI NẾU UPDATE THẤT BẠI
+    // DELETE NEW UPLOADED FILE
     // =====================================================
 
     deleteUploadedFile();
 
     // =====================================================
-    // LOG
+    // ERROR LOG
     // =====================================================
+
+    console.error("==========================================");
 
     console.error("========== UPDATE STUDENT ERROR ==========");
 
@@ -2058,6 +2088,8 @@ exports.updateStudent = async (req, res) => {
     console.error("SQL:", error.sqlMessage);
 
     console.error("Stack:", error.stack);
+
+    console.error("==========================================");
 
     // =====================================================
     // RESPONSE

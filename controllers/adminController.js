@@ -1087,36 +1087,90 @@ exports.updateAdmin = async (req, res) => {
 exports.resetAdminPassword = async (req, res) => {
   try {
     const { password } = req.body;
-    console.log("resetAdminPassword:::", password);
+    const adminId = Number(req.params.id);
 
-    const [admin] = await db.query("SELECT * FROM admins WHERE id=?", [
-      req.params.id,
-    ]);
+    console.log("=================================");
+    console.log("RESET PASSWORD");
+    console.log("adminId:", adminId);
+    console.log("password:", password);
 
-    if (!admin.length) {
-      return res.status(404).json({ message: "Not found" });
+    if (!password || password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Mật khẩu tối thiểu 6 ký tự",
+      });
     }
 
+    // 1. Kiểm tra admin tồn tại
+    const [admin] = await db.query(
+      `
+      SELECT id, username, full_name, password
+      FROM admins
+      WHERE id = ?
+      `,
+      [adminId],
+    );
+
+    console.log("ADMIN:", admin);
+
+    if (!admin.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy tài khoản",
+      });
+    }
+
+    // 2. Hash password mới
     const hash = await bcrypt.hash(password, 10);
 
-    await db.query("UPDATE admins SET password=? WHERE id=?", [
-      hash,
-      req.params.id,
-    ]);
+    console.log("NEW HASH:", hash);
 
+    // 3. Update
+    const [result] = await db.query(
+      `
+      UPDATE admins
+      SET password = ?
+      WHERE id = ?
+      `,
+      [hash, adminId],
+    );
+
+    console.log("UPDATE RESULT:", result);
+
+    // 4. Kiểm tra lại DB ngay sau UPDATE
+    const [check] = await db.query(
+      `
+      SELECT id, username, password
+      FROM admins
+      WHERE id = ?
+      `,
+      [adminId],
+    );
+
+    console.log("PASSWORD AFTER UPDATE:", check[0]?.password);
+
+    // 5. Log
     await writeLog({
       admin_id: req.user?.id,
       action: "RESET_PASSWORD",
       target_type: "admins",
-      target_id: req.params.id,
+      target_id: adminId,
       description: `Reset password ${admin[0].full_name}`,
       ip_address: req.ip,
     });
 
-    return res.json({ success: true });
+    return res.json({
+      success: true,
+      message: "Đã đổi mật khẩu",
+      affectedRows: result.affectedRows,
+    });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: err.message });
+    console.error("❌ RESET PASSWORD ERROR:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 };
 

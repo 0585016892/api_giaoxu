@@ -23,6 +23,7 @@ router.put(
 
 router.get("/", verifyToken, adminController.getAllAdmins);
 router.get("/:id", verifyToken, adminController.getAdminById);
+router.patch("/:id/toggle", verifyToken, adminController.toggleActive);
 router.put("/password/:id", verifyToken, adminController.changePassword);
 router.put(
   "/:id/reset-password",
@@ -32,6 +33,5 @@ router.put(
 router.delete("/:id", verifyToken, adminController.deleteAdmin);
 
 // khóa / mở tài khoản
-router.patch("/:id/toggle", verifyToken, adminController.toggleActive);
 
 module.exports = router;

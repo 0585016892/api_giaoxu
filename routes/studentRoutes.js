@@ -19,15 +19,25 @@ router.get(
 );
 router.get("/:id", verifyToken, studentController.getStudentById);
 
-router.post("/", verifyToken, studentController.createStudent);
+router.post(
+  "/",
+  uploadStudentAvatar.single("avatar"),
+  verifyToken,
+  studentController.createStudent,
+);
 router.post(
   "/import-excel",
   verifyToken,
-  uploadStudentAvatar.single("avatar"),
+
   studentController.importStudentsExcel,
 );
 
-router.put("/:id", verifyToken, studentController.updateStudent);
+router.put(
+  "/:id",
+  verifyToken,
+  uploadStudentAvatar.single("avatar"),
+  studentController.updateStudent,
+);
 
 router.delete("/:id", verifyToken, studentController.deleteStudent);
 

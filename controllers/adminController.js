@@ -3,6 +3,7 @@ const bcrypt = require("bcryptjs");
 const { writeLog } = require("../utils/activityLogger");
 const fs = require("fs");
 const path = require("path");
+const { log } = require("console");
 
 /* =========================================================
    CREATE ADMIN
@@ -1171,6 +1172,7 @@ exports.toggleActive = async (req, res) => {
 
     const admin = rows[0];
     const newStatus = admin.is_active ? 0 : 1;
+    console.log(newStatus);
 
     await db.query("UPDATE admins SET is_active=? WHERE id=?", [
       newStatus,

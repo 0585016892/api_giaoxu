@@ -1162,35 +1162,94 @@ exports.deleteAdmin = async (req, res) => {
 ========================================================= */
 exports.toggleActive = async (req, res) => {
   try {
-    const [rows] = await db.query("SELECT * FROM admins WHERE id=?", [
-      req.params.id,
-    ]);
+    const adminId = Number(req.params.id);
+
+    if (!Number.isInteger(adminId) || adminId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "ID tài khoản không hợp lệ",
+      });
+    }
+
+    // Lấy admin
+    const [rows] = await db.query(
+      `
+      SELECT
+        id,
+        username,
+        full_name,
+        role,
+        church_id,
+        is_active
+      FROM admins
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [adminId],
+    );
 
     if (!rows.length) {
-      return res.status(404).json({ message: "Not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy tài khoản",
+      });
     }
 
     const admin = rows[0];
+
+    // Đảo trạng thái admin
     const newStatus = admin.is_active ? 0 : 1;
-    console.log(newStatus);
 
-    await db.query("UPDATE admins SET is_active=? WHERE id=?", [
-      newStatus,
-      req.params.id,
-    ]);
+    // Trạng thái tương ứng của catechist
+    const catechistStatus = newStatus ? "active" : "inactive";
 
+    console.log(`🔄 Admin ${adminId}: ${admin.is_active} -> ${newStatus}`);
+
+    console.log(`👤 Catechist ${admin.username}: -> ${catechistStatus}`);
+
+    // Update admins
+    await db.query(
+      `
+      UPDATE admins
+      SET is_active = ?
+      WHERE id = ?
+      `,
+      [newStatus, adminId],
+    );
+
+    // Update catechists
+    const [catechistResult] = await db.query(
+      `
+      UPDATE catechists
+      SET status = ?
+      WHERE catechist_code = ?
+      `,
+      [catechistStatus, admin.username],
+    );
+
+    // Ghi log
     await writeLog({
       admin_id: req.user?.id,
       action: "TOGGLE_ACTIVE",
       target_type: "admins",
-      target_id: req.params.id,
-      description: `${newStatus ? "Bật" : "Tắt"} ${admin.full_name}`,
+      target_id: adminId,
+      description: `${newStatus ? "Mở khóa" : "Khóa"} ${admin.full_name}`,
       ip_address: req.ip,
     });
 
-    return res.json({ success: true, is_active: newStatus });
+    return res.json({
+      success: true,
+      message: newStatus ? "Đã mở khóa tài khoản" : "Đã khóa tài khoản",
+      is_active: newStatus,
+      catechist_status: catechistStatus,
+      catechist_updated: catechistResult.affectedRows > 0,
+    });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: err.message });
+    console.error("❌ TOGGLE ACTIVE ERROR:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 };

@@ -185,6 +185,10 @@ exports.createCatechist = async (req, res) => {
     console.log("📥 req.body:", req.body);
     console.log("👤 req.user:", req.user);
 
+    // =====================================================
+    // CHURCH ID
+    // =====================================================
+
     const churchId = getChurchId(req);
 
     console.log("⛪ CHURCH ID:", churchId);
@@ -195,6 +199,10 @@ exports.createCatechist = async (req, res) => {
         message: "Tài khoản chưa được gán giáo xứ",
       });
     }
+
+    // =====================================================
+    // GET BODY
+    // =====================================================
 
     const {
       holy_name,
@@ -224,7 +232,7 @@ exports.createCatechist = async (req, res) => {
       status,
       notes,
 
-      // Mật khẩu có thể truyền từ frontend
+      // Có thể truyền password từ frontend
       password,
     } = req.body;
 
@@ -314,6 +322,32 @@ exports.createCatechist = async (req, res) => {
     }
 
     // =====================================================
+    // KIỂM TRA CATECHIST CODE
+    //
+    // Phòng trường hợp generateCatechistCode()
+    // trả về mã đã tồn tại.
+    // =====================================================
+
+    const [existingCatechistCode] = await connection.query(
+      `
+      SELECT id
+      FROM catechists
+      WHERE catechist_code = ?
+      LIMIT 1
+      `,
+      [catechistCode],
+    );
+
+    if (existingCatechistCode.length > 0) {
+      await connection.rollback();
+
+      return res.status(409).json({
+        success: false,
+        message: `Mã Giáo lý viên "${catechistCode}" đã tồn tại, vui lòng thử lại`,
+      });
+    }
+
+    // =====================================================
     // INSERT CATECHIST
     // =====================================================
 
@@ -395,10 +429,49 @@ exports.createCatechist = async (req, res) => {
     console.log("✅ Catechist created:", catechistId);
 
     // =====================================================
-    // TẠO TÀI KHOẢN
+    // TẠO USERNAME
     //
-    // username = email
-    // role = catechist
+    // Username mặc định:
+    //     GL000001
+    //
+    // Nếu đã tồn tại:
+    //     GL000001_1
+    //     GL000001_2
+    //     GL000001_3
+    // =====================================================
+
+    let username = catechistCode;
+    let usernameIndex = 0;
+
+    while (true) {
+      const [existingUsername] = await connection.query(
+        `
+        SELECT id
+        FROM admins
+        WHERE username = ?
+        LIMIT 1
+        `,
+        [username],
+      );
+
+      if (existingUsername.length === 0) {
+        break;
+      }
+
+      usernameIndex++;
+      username = `${catechistCode}_${usernameIndex}`;
+    }
+
+    console.log("👤 Final username:", username);
+
+    // =====================================================
+    // TẠO TÀI KHOẢN ADMIN
+    //
+    // username = catechistCode
+    // nếu trùng => catechistCode_1 / _2 / ...
+    //
+    // role = teacher
+    // account_type = member
     // church_id = giáo xứ hiện tại
     //
     // KHÔNG CÓ catechist_id
@@ -427,8 +500,8 @@ exports.createCatechist = async (req, res) => {
     const adminValues = [
       churchId,
 
-      // Đăng nhập bằng email
-      catechistCode,
+      // Username đã được kiểm tra trùng
+      username,
 
       hashedPassword,
 
@@ -458,12 +531,19 @@ exports.createCatechist = async (req, res) => {
     await connection.commit();
 
     console.log("🎉 CREATE CATECHIST + ACCOUNT SUCCESS");
+
+    // =====================================================
+    // WRITE LOG
+    // =====================================================
+
     await writeLog({
       admin_id: req.user?.id || null,
       action: "CREATE",
       target_type: "catechist",
       target_id: catechistId,
-      description: `Thêm Giáo lý viên "${String(full_name).trim()}" - mã ${catechistCode}, tạo tài khoản đăng nhập ${cleanEmail}`,
+      description: `Thêm Giáo lý viên "${String(
+        full_name,
+      ).trim()}" - mã ${catechistCode}, tạo tài khoản đăng nhập ${cleanEmail}, username ${username}`,
       ip_address: req.ip,
     });
 
@@ -486,13 +566,16 @@ exports.createCatechist = async (req, res) => {
         account: {
           id: adminId,
           church_id: churchId,
-          username: cleanEmail,
+
+          // Username thực tế
+          username,
+
           email: cleanEmail,
-          role: "catechist",
+
+          role: "teacher",
         },
 
         // Cho frontend biết mật khẩu ban đầu
-        // để hiển thị cho admin.
         initial_password: accountPassword,
       },
     });
@@ -520,10 +603,14 @@ exports.createCatechist = async (req, res) => {
     if (error.code === "ER_DUP_ENTRY") {
       return res.status(409).json({
         success: false,
-        message: "Email hoặc mã Giáo lý viên đã tồn tại",
+        message: "Email, username hoặc mã Giáo lý viên đã tồn tại",
         errorCode: error.code,
       });
     }
+
+    // =====================================================
+    // RESPONSE ERROR
+    // =====================================================
 
     return res.status(500).json({
       success: false,
@@ -531,6 +618,10 @@ exports.createCatechist = async (req, res) => {
       errorCode: error.code,
     });
   } finally {
+    // =====================================================
+    // RELEASE CONNECTION
+    // =====================================================
+
     if (connection) {
       connection.release();
     }

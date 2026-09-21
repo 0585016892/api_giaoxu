@@ -17,7 +17,7 @@ const { verifyToken } = require("../middleware/authMiddleware");
 router.get(
   "/lesson/:lessonId",
   verifyToken,
-  lessonResourceController.getByLesson,
+  lessonResourceController.getByLessonQuestion,
 );
 /**
  * GET

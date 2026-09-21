@@ -251,7 +251,7 @@ exports.getById = async (req, res) => {
   }
 };
 // Lấy câu hỏi theo bài học
-exports.getByLesson = async (req, res) => {
+exports.getByLessonQuestion = async (req, res) => {
   try {
     const { lessonId } = req.params;
 

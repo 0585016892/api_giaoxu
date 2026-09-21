@@ -13,7 +13,12 @@ const { verifyToken } = require("../middleware/authMiddleware");
  * LESSON RESOURCE ROUTES
  * =========================================================
  */
-
+// Lấy câu hỏi theo bài học
+router.get(
+  "/lesson/:lessonId",
+  verifyToken,
+  lessonResourceController.getByLesson,
+);
 /**
  * GET
  * Danh sách tài nguyên của bài học

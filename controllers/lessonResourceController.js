@@ -250,7 +250,54 @@ exports.getById = async (req, res) => {
     });
   }
 };
+// Lấy câu hỏi theo bài học
+exports.getByLesson = async (req, res) => {
+  try {
+    const { lessonId } = req.params;
 
+    if (!lessonId || isNaN(Number(lessonId))) {
+      return res.status(400).json({
+        success: false,
+        message: "lessonId không hợp lệ",
+      });
+    }
+
+    const [questions] = await db.query(
+      `
+      SELECT
+        id,
+        lesson_id,
+        question,
+        answer_a,
+        answer_b,
+        answer_c,
+        answer_d,
+        correct_answer,
+        created_at,
+        updated_at
+      FROM questions
+      WHERE lesson_id = ?
+      ORDER BY id ASC
+      `,
+      [Number(lessonId)],
+    );
+
+    return res.json({
+      success: true,
+      lesson_id: Number(lessonId),
+      total: questions.length,
+      questions,
+    });
+  } catch (error) {
+    console.error("GET QUESTIONS BY LESSON ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể lấy câu hỏi của bài học",
+      error: error.message,
+    });
+  }
+};
 /**
  * =========================================================
  * UPLOAD + CREATE

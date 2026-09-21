@@ -5,30 +5,50 @@ const router = express.Router();
 const questionController = require("../controllers/questionController");
 const { verifyToken } = require("../middleware/authMiddleware");
 
-// Tất cả question API đều yêu cầu đăng nhập
-router.use(verifyToken);
+// =========================================================
+// QUIZ BÀI HỌC
+// =========================================================
+
+// GET /api/questions/play/:lessonId
+router.get("/play/:lessonId", verifyToken, questionController.getQuizByLesson);
+
+// POST /api/questions/play/:lessonId/submit
+router.post(
+  "/play/:lessonId/submit",
+  verifyToken,
+  questionController.submitQuiz,
+);
 
 // =========================================================
 // EXAM
-// Đặt trước /:id
 // =========================================================
 
-router.get("/exam/generate", questionController.generateExam);
+// GET /api/questions/exam/generate
+router.get("/exam/generate", verifyToken, questionController.generateExam);
 
-router.post("/exam/submit", questionController.submitExam);
+// POST /api/questions/exam/submit
+router.post("/exam/submit", verifyToken, questionController.submitExam);
 
 // =========================================================
 // QUESTIONS
 // =========================================================
 
-router.get("/", questionController.getAll);
+// GET /api/questions/lesson/:lessonId
+router.get("/lesson/:lessonId", verifyToken, questionController.getByLesson);
 
-router.get("/:id", questionController.getById);
+// GET /api/questions
+router.get("/", verifyToken, questionController.getAll);
 
-router.post("/", questionController.create);
+// GET /api/questions/:id
+router.get("/:id", verifyToken, questionController.getById);
 
-router.put("/:id", questionController.update);
+// POST /api/questions
+router.post("/", verifyToken, questionController.create);
 
-router.delete("/:id", questionController.delete);
+// PUT /api/questions/:id
+router.put("/:id", verifyToken, questionController.update);
+
+// DELETE /api/questions/:id
+router.delete("/:id", verifyToken, questionController.delete);
 
 module.exports = router;

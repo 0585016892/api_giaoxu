@@ -11,8 +11,6 @@ const db = require("../config/db");
  * - req.query
  * - req.body
  * - req.params
- *
- * để tránh user truy cập dữ liệu giáo xứ khác.
  */
 const getChurchId = (req) => {
   const churchId = Number(req.user?.church_id || req.user?.parish_id);
@@ -34,10 +32,14 @@ const isValidId = (id) => {
 };
 
 /**
- * Kiểm tra đáp án đúng
+ * Kiểm tra đáp án
  */
 const isValidCorrectAnswer = (answer) => {
-  return ["A", "B", "C", "D"].includes(String(answer || "").toUpperCase());
+  return ["A", "B", "C", "D"].includes(
+    String(answer || "")
+      .trim()
+      .toUpperCase(),
+  );
 };
 
 /**
@@ -47,6 +49,25 @@ const normalizeAnswer = (answer) => {
   return String(answer || "")
     .trim()
     .toUpperCase();
+};
+
+/**
+ * Lấy range đợt thi
+ */
+const getBatchRange = (batch) => {
+  const batchRanges = {
+    1: {
+      from: 1,
+      to: 19,
+    },
+
+    2: {
+      from: 20,
+      to: 37,
+    },
+  };
+
+  return batchRanges[Number(batch)] || null;
 };
 
 // =========================================================
@@ -194,10 +215,6 @@ class QuestionController {
         [...params, limit, offset],
       );
 
-      // ---------------------------------------------------
-      // RESPONSE DATA
-      // ---------------------------------------------------
-
       const data = rows.map((row) => ({
         ...row,
 
@@ -223,6 +240,485 @@ class QuestionController {
       return res.status(500).json({
         success: false,
         message: "Không thể lấy danh sách câu hỏi",
+        error: error.message,
+      });
+    }
+  }
+
+  // =======================================================
+  // GET /questions/lesson/:lessonId
+  //
+  // Lấy toàn bộ câu hỏi của một bài học
+  //
+  // Dùng cho:
+  // - Quản lý câu hỏi
+  // - Hiển thị số lượng câu hỏi
+  //
+  // API này CÓ correct_answer
+  // vì đây là API quản trị.
+  // =======================================================
+
+  async getByLesson(req, res) {
+    try {
+      const churchId = getChurchId(req);
+
+      const lessonId = Number(req.params.lessonId);
+
+      if (!churchId) {
+        return res.status(401).json({
+          success: false,
+          message: "Không xác định được giáo xứ",
+        });
+      }
+
+      if (!isValidId(lessonId)) {
+        return res.status(400).json({
+          success: false,
+          message: "lessonId không hợp lệ",
+        });
+      }
+
+      // ---------------------------------------------------
+      // CHECK LESSON
+      // ---------------------------------------------------
+
+      const [lessonRows] = await db.query(
+        `
+        SELECT
+          id,
+          title,
+          catechism_type,
+          church_id
+
+        FROM lessons
+
+        WHERE id = ?
+          AND church_id = ?
+
+        LIMIT 1
+        `,
+        [lessonId, churchId],
+      );
+
+      if (!lessonRows.length) {
+        return res.status(404).json({
+          success: false,
+          message: "Không tìm thấy bài học",
+        });
+      }
+
+      const lesson = lessonRows[0];
+
+      // ---------------------------------------------------
+      // QUESTIONS
+      // ---------------------------------------------------
+
+      const [questions] = await db.query(
+        `
+        SELECT
+          q.id,
+          q.lesson_id,
+
+          q.question,
+
+          q.answer_a,
+          q.answer_b,
+          q.answer_c,
+          q.answer_d,
+
+          q.correct_answer,
+
+          q.created_at,
+          q.updated_at
+
+        FROM questions q
+
+        WHERE q.lesson_id = ?
+
+        ORDER BY q.id ASC
+        `,
+        [lessonId],
+      );
+
+      return res.json({
+        success: true,
+
+        lesson: {
+          id: lesson.id,
+          title: lesson.title,
+          catechism_type: lesson.catechism_type,
+        },
+
+        total: questions.length,
+
+        questions,
+      });
+    } catch (error) {
+      console.error("GET QUESTIONS BY LESSON ERROR:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Không thể lấy câu hỏi của bài học",
+        error: error.message,
+      });
+    }
+  }
+
+  // =======================================================
+  // GET /questions/play/:lessonId
+  //
+  // Lấy dữ liệu để LÀM BÀI
+  //
+  // QUAN TRỌNG:
+  // KHÔNG trả correct_answer
+  // =======================================================
+
+  async getQuizByLesson(req, res) {
+    try {
+      const churchId = getChurchId(req);
+
+      const lessonId = Number(req.params.lessonId);
+
+      if (!churchId) {
+        return res.status(401).json({
+          success: false,
+          message: "Không xác định được giáo xứ",
+        });
+      }
+
+      if (!isValidId(lessonId)) {
+        return res.status(400).json({
+          success: false,
+          message: "lessonId không hợp lệ",
+        });
+      }
+
+      // ---------------------------------------------------
+      // CHECK LESSON OWNERSHIP
+      // ---------------------------------------------------
+
+      const [lessonRows] = await db.query(
+        `
+        SELECT
+          id,
+          title,
+          catechism_type,
+          church_id
+
+        FROM lessons
+
+        WHERE id = ?
+          AND church_id = ?
+
+        LIMIT 1
+        `,
+        [lessonId, churchId],
+      );
+
+      if (!lessonRows.length) {
+        return res.status(404).json({
+          success: false,
+          message: "Không tìm thấy bài học",
+        });
+      }
+
+      const lesson = lessonRows[0];
+
+      // ---------------------------------------------------
+      // GET QUESTIONS
+      //
+      // KHÔNG SELECT correct_answer
+      // ---------------------------------------------------
+
+      const [questions] = await db.query(
+        `
+        SELECT
+          q.id,
+          q.lesson_id,
+
+          q.question,
+
+          q.answer_a,
+          q.answer_b,
+          q.answer_c,
+          q.answer_d
+
+        FROM questions q
+
+        WHERE q.lesson_id = ?
+
+        ORDER BY q.id ASC
+        `,
+        [lessonId],
+      );
+
+      // ---------------------------------------------------
+      // RESPONSE
+      // ---------------------------------------------------
+
+      return res.json({
+        success: true,
+
+        lesson: {
+          id: lesson.id,
+          title: lesson.title,
+          catechism_type: lesson.catechism_type,
+        },
+
+        total: questions.length,
+
+        questions,
+      });
+    } catch (error) {
+      console.error("GET QUIZ BY LESSON ERROR:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Không thể tải câu hỏi bài học",
+        error: error.message,
+      });
+    }
+  }
+
+  // =======================================================
+  // POST /questions/play/:lessonId/submit
+  //
+  // Chấm bài câu hỏi của bài học
+  //
+  // BODY:
+  //
+  // {
+  //   answers: [
+  //     {
+  //       question_id: 1,
+  //       selected: "A"
+  //     }
+  //   ]
+  // }
+  // =======================================================
+
+  async submitQuiz(req, res) {
+    try {
+      const churchId = getChurchId(req);
+
+      const lessonId = Number(req.params.lessonId);
+
+      const { answers } = req.body;
+
+      if (!churchId) {
+        return res.status(401).json({
+          success: false,
+          message: "Không xác định được giáo xứ",
+        });
+      }
+
+      if (!isValidId(lessonId)) {
+        return res.status(400).json({
+          success: false,
+          message: "lessonId không hợp lệ",
+        });
+      }
+
+      if (!Array.isArray(answers)) {
+        return res.status(400).json({
+          success: false,
+          message: "Danh sách đáp án không hợp lệ",
+        });
+      }
+
+      // ---------------------------------------------------
+      // CHECK LESSON
+      // ---------------------------------------------------
+
+      const [lessonRows] = await db.query(
+        `
+        SELECT
+          id,
+          title,
+          catechism_type,
+          church_id
+
+        FROM lessons
+
+        WHERE id = ?
+          AND church_id = ?
+
+        LIMIT 1
+        `,
+        [lessonId, churchId],
+      );
+
+      if (!lessonRows.length) {
+        return res.status(404).json({
+          success: false,
+          message: "Không tìm thấy bài học",
+        });
+      }
+
+      const lesson = lessonRows[0];
+
+      // ---------------------------------------------------
+      // GET QUESTIONS
+      //
+      // Lấy đáp án đúng từ DB
+      // ---------------------------------------------------
+
+      const [questions] = await db.query(
+        `
+        SELECT
+          q.id,
+          q.lesson_id,
+          q.question,
+
+          q.answer_a,
+          q.answer_b,
+          q.answer_c,
+          q.answer_d,
+
+          q.correct_answer
+
+        FROM questions q
+
+        WHERE q.lesson_id = ?
+
+        ORDER BY q.id ASC
+        `,
+        [lessonId],
+      );
+
+      if (!questions.length) {
+        return res.status(400).json({
+          success: false,
+          message: "Bài học chưa có câu hỏi",
+        });
+      }
+
+      // ---------------------------------------------------
+      // MAP QUESTION
+      // ---------------------------------------------------
+
+      const questionMap = new Map(
+        questions.map((question) => [Number(question.id), question]),
+      );
+
+      // ---------------------------------------------------
+      // MAP ANSWERS
+      //
+      // Nếu frontend gửi trùng question_id
+      // thì lấy câu trả lời cuối cùng.
+      // ---------------------------------------------------
+
+      const answerMap = new Map();
+
+      answers.forEach((item) => {
+        const questionId = Number(item?.question_id);
+
+        const selected = normalizeAnswer(item?.selected);
+
+        if (isValidId(questionId) && ["A", "B", "C", "D"].includes(selected)) {
+          answerMap.set(questionId, selected);
+        }
+      });
+
+      // ---------------------------------------------------
+      // CHẤM TOÀN BỘ CÂU HỎI
+      // ---------------------------------------------------
+
+      let correctCount = 0;
+
+      let answeredCount = 0;
+
+      const results = questions.map((question, index) => {
+        const selected = answerMap.get(Number(question.id)) || null;
+
+        const isAnswered = Boolean(selected);
+
+        const isCorrect =
+          isAnswered && selected === normalizeAnswer(question.correct_answer);
+
+        if (isAnswered) {
+          answeredCount++;
+        }
+
+        if (isCorrect) {
+          correctCount++;
+        }
+
+        return {
+          question_id: question.id,
+
+          lesson_id: question.lesson_id,
+
+          question_number: index + 1,
+
+          question: question.question,
+
+          answer_a: question.answer_a,
+          answer_b: question.answer_b,
+          answer_c: question.answer_c,
+          answer_d: question.answer_d,
+
+          selected,
+
+          correct_answer: question.correct_answer,
+
+          isCorrect: Boolean(isCorrect),
+        };
+      });
+
+      // ---------------------------------------------------
+      // SCORE
+      // ---------------------------------------------------
+
+      const total = questions.length;
+
+      const wrongCount = total - correctCount - (total - answeredCount);
+
+      const unansweredCount = total - answeredCount;
+
+      const percentage =
+        total > 0 ? Number(((correctCount / total) * 100).toFixed(2)) : 0;
+
+      const score =
+        total > 0 ? Number(((correctCount / total) * 10).toFixed(2)) : 0;
+
+      // ---------------------------------------------------
+      // RESPONSE
+      // ---------------------------------------------------
+
+      return res.json({
+        success: true,
+
+        lesson: {
+          id: lesson.id,
+          title: lesson.title,
+          catechism_type: lesson.catechism_type,
+        },
+
+        summary: {
+          total,
+
+          answered: answeredCount,
+
+          unanswered: unansweredCount,
+
+          correct: correctCount,
+
+          wrong: Math.max(0, wrongCount),
+
+          percentage,
+
+          score,
+        },
+
+        results,
+      });
+    } catch (error) {
+      console.error("SUBMIT QUIZ ERROR:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Không thể chấm bài",
         error: error.message,
       });
     }
@@ -349,11 +845,8 @@ class QuestionController {
       const cleanQuestion = String(question || "").trim();
 
       const answerA = String(answer_a || "").trim();
-
       const answerB = String(answer_b || "").trim();
-
       const answerC = String(answer_c || "").trim();
-
       const answerD = String(answer_d || "").trim();
 
       const correctAnswer = normalizeAnswer(correct_answer);
@@ -389,18 +882,18 @@ class QuestionController {
 
       const [lessonRows] = await db.query(
         `
-          SELECT
-            id,
-            church_id,
-            title
+        SELECT
+          id,
+          church_id,
+          title
 
-          FROM lessons
+        FROM lessons
 
-          WHERE id = ?
-            AND church_id = ?
+        WHERE id = ?
+          AND church_id = ?
 
-          LIMIT 1
-          `,
+        LIMIT 1
+        `,
         [lessonId, churchId],
       );
 
@@ -417,20 +910,22 @@ class QuestionController {
 
       const [result] = await db.query(
         `
-          INSERT INTO questions (
-            lesson_id,
-            question,
-            answer_a,
-            answer_b,
-            answer_c,
-            answer_d,
-            correct_answer
-          )
+        INSERT INTO questions (
+          lesson_id,
+          church_id,
+          question,
+          answer_a,
+          answer_b,
+          answer_c,
+          answer_d,
+          correct_answer
+        )
 
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          `,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
         [
           lessonId,
+          churchId,
           cleanQuestion,
           answerA,
           answerB,
@@ -503,11 +998,8 @@ class QuestionController {
       const cleanQuestion = String(question || "").trim();
 
       const answerA = String(answer_a || "").trim();
-
       const answerB = String(answer_b || "").trim();
-
       const answerC = String(answer_c || "").trim();
-
       const answerD = String(answer_d || "").trim();
 
       const correctAnswer = normalizeAnswer(correct_answer);
@@ -543,20 +1035,21 @@ class QuestionController {
 
       const [questionRows] = await db.query(
         `
-          SELECT
-            q.id,
-            q.lesson_id,
-            l.church_id
+        SELECT
+          q.id,
+          q.lesson_id,
+          q.church_id,
+          l.church_id AS lesson_church_id
 
-          FROM questions q
+        FROM questions q
 
-          INNER JOIN lessons l
-            ON l.id = q.lesson_id
+        INNER JOIN lessons l
+          ON l.id = q.lesson_id
 
-          WHERE q.id = ?
+        WHERE q.id = ?
 
-          LIMIT 1
-          `,
+        LIMIT 1
+        `,
         [questionId],
       );
 
@@ -567,7 +1060,10 @@ class QuestionController {
         });
       }
 
-      if (Number(questionRows[0].church_id) !== Number(churchId)) {
+      const questionOwner =
+        questionRows[0].church_id ?? questionRows[0].lesson_church_id;
+
+      if (Number(questionOwner) !== Number(churchId)) {
         return res.status(403).json({
           success: false,
           message: "Bạn không có quyền sửa câu hỏi này",
@@ -580,15 +1076,15 @@ class QuestionController {
 
       const [lessonRows] = await db.query(
         `
-          SELECT id
+        SELECT id
 
-          FROM lessons
+        FROM lessons
 
-          WHERE id = ?
-            AND church_id = ?
+        WHERE id = ?
+          AND church_id = ?
 
-          LIMIT 1
-          `,
+        LIMIT 1
+        `,
         [lessonId, churchId],
       );
 
@@ -605,21 +1101,23 @@ class QuestionController {
 
       const [result] = await db.query(
         `
-          UPDATE questions
+        UPDATE questions
 
-          SET
-            lesson_id = ?,
-            question = ?,
-            answer_a = ?,
-            answer_b = ?,
-            answer_c = ?,
-            answer_d = ?,
-            correct_answer = ?
+        SET
+          lesson_id = ?,
+          church_id = ?,
+          question = ?,
+          answer_a = ?,
+          answer_b = ?,
+          answer_c = ?,
+          answer_d = ?,
+          correct_answer = ?
 
-          WHERE id = ?
-          `,
+        WHERE id = ?
+        `,
         [
           lessonId,
+          churchId,
           cleanQuestion,
           answerA,
           answerB,
@@ -685,16 +1183,16 @@ class QuestionController {
 
       const [result] = await db.query(
         `
-          DELETE q
+        DELETE q
 
-          FROM questions q
+        FROM questions q
 
-          INNER JOIN lessons l
-            ON l.id = q.lesson_id
+        INNER JOIN lessons l
+          ON l.id = q.lesson_id
 
-          WHERE q.id = ?
-            AND l.church_id = ?
-          `,
+        WHERE q.id = ?
+          AND l.church_id = ?
+        `,
         [questionId, churchId],
       );
 
@@ -745,23 +1243,7 @@ class QuestionController {
 
       const batch = Number(req.query.batch);
 
-      // ---------------------------------------------------
-      // ĐỢT THI
-      // ---------------------------------------------------
-
-      const batchRanges = {
-        1: {
-          from: 1,
-          to: 19,
-        },
-
-        2: {
-          from: 20,
-          to: 37,
-        },
-      };
-
-      const range = batchRanges[batch];
+      const range = getBatchRange(batch);
 
       if (!range) {
         return res.status(400).json({
@@ -776,34 +1258,34 @@ class QuestionController {
 
       const [questions] = await db.query(
         `
-          SELECT
-            q.id,
-            q.lesson_id,
+        SELECT
+          q.id,
+          q.lesson_id,
 
-            q.question,
+          q.question,
 
-            q.answer_a,
-            q.answer_b,
-            q.answer_c,
-            q.answer_d,
+          q.answer_a,
+          q.answer_b,
+          q.answer_c,
+          q.answer_d,
 
-            l.title AS lesson_title,
-            l.catechism_type
+          l.title AS lesson_title,
+          l.catechism_type
 
-          FROM questions q
+        FROM questions q
 
-          INNER JOIN lessons l
-            ON l.id = q.lesson_id
+        INNER JOIN lessons l
+          ON l.id = q.lesson_id
 
-          WHERE l.church_id = ?
+        WHERE l.church_id = ?
 
-            AND q.lesson_id BETWEEN ?
-            AND ?
+          AND q.lesson_id BETWEEN ?
+          AND ?
 
-          ORDER BY RAND()
+        ORDER BY RAND()
 
-          LIMIT ?
-          `,
+        LIMIT ?
+        `,
         [churchId, range.from, range.to, limit],
       );
 
@@ -853,23 +1335,7 @@ class QuestionController {
 
       const batchNumber = Number(batch);
 
-      // ---------------------------------------------------
-      // ĐỢT THI
-      // ---------------------------------------------------
-
-      const batchRanges = {
-        1: {
-          from: 1,
-          to: 19,
-        },
-
-        2: {
-          from: 20,
-          to: 37,
-        },
-      };
-
-      const range = batchRanges[batchNumber];
+      const range = getBatchRange(batchNumber);
 
       if (!range) {
         return res.status(400).json({
@@ -910,37 +1376,35 @@ class QuestionController {
 
       // ---------------------------------------------------
       // GET QUESTIONS
-      //
-      // Kiểm tra church_id
       // ---------------------------------------------------
 
       const [questions] = await db.query(
         `
-          SELECT
-            q.id,
-            q.lesson_id,
+        SELECT
+          q.id,
+          q.lesson_id,
 
-            q.question,
+          q.question,
 
-            q.answer_a,
-            q.answer_b,
-            q.answer_c,
-            q.answer_d,
+          q.answer_a,
+          q.answer_b,
+          q.answer_c,
+          q.answer_d,
 
-            q.correct_answer
+          q.correct_answer
 
-          FROM questions q
+        FROM questions q
 
-          INNER JOIN lessons l
-            ON l.id = q.lesson_id
+        INNER JOIN lessons l
+          ON l.id = q.lesson_id
 
-          WHERE q.id IN (?)
+        WHERE q.id IN (?)
 
-            AND l.church_id = ?
+          AND l.church_id = ?
 
-            AND q.lesson_id BETWEEN ?
-            AND ?
-          `,
+          AND q.lesson_id BETWEEN ?
+          AND ?
+        `,
         [questionIds, churchId, range.from, range.to],
       );
 
@@ -1008,11 +1472,8 @@ class QuestionController {
           question: question.question,
 
           answer_a: question.answer_a,
-
           answer_b: question.answer_b,
-
           answer_c: question.answer_c,
-
           answer_d: question.answer_d,
 
           selected,

@@ -1320,37 +1320,84 @@ exports.resetCatechitsPassword = async (req, res) => {
    DELETE ADMIN
 ========================================================= */
 exports.deleteAdmin = async (req, res) => {
+  let connection;
+
   try {
-    const [rows] = await db.query("SELECT * FROM admins WHERE id=?", [
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    // =====================================================
+    // 1. LẤY ADMIN
+    // =====================================================
+    const [rows] = await connection.query("SELECT * FROM admins WHERE id = ?", [
       req.params.id,
     ]);
 
     if (!rows.length) {
-      return res.status(404).json({ message: "Not found" });
+      await connection.rollback();
+
+      return res.status(404).json({
+        message: "Không tìm thấy tài khoản",
+      });
     }
 
     const admin = rows[0];
 
+    // =====================================================
+    // 2. XÓA CATECHIST THEO catechist_code = username
+    // =====================================================
+    await connection.query("DELETE FROM catechists WHERE catechist_code = ?", [
+      admin.username,
+    ]);
+
+    // =====================================================
+    // 3. XÓA AVATAR
+    // =====================================================
     if (admin.avatar) {
       const filePath = path.join(__dirname, "..", admin.avatar);
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
     }
 
-    await db.query("DELETE FROM admins WHERE id=?", [req.params.id]);
+    // =====================================================
+    // 4. XÓA ADMIN
+    // =====================================================
+    await connection.query("DELETE FROM admins WHERE id = ?", [req.params.id]);
 
+    // =====================================================
+    // 5. GHI LOG
+    // =====================================================
     await writeLog({
       admin_id: req.user?.id,
       action: "DELETE_ADMIN",
       target_type: "admins",
       target_id: req.params.id,
-      description: `Xóa ${admin.full_name}`,
+      description: `Xóa ${admin.full_name} (${admin.username})`,
       ip_address: req.ip,
     });
 
-    return res.json({ success: true });
+    await connection.commit();
+
+    return res.json({
+      success: true,
+      message: "Đã xóa tài khoản và giáo lý viên liên kết",
+    });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: err.message });
+    if (connection) {
+      await connection.rollback();
+    }
+
+    console.error("DELETE ADMIN ERROR:", err);
+
+    return res.status(500).json({
+      message: err.message,
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
   }
 };
 

@@ -3042,8 +3042,11 @@ exports.deleteStudent = async (req, res) => {
   let transactionStarted = false;
 
   try {
-    const studentId = Number(req.params.id);
+    // =====================================================
+    // 1. VALIDATE INPUT
+    // =====================================================
 
+    const studentId = Number(req.params.id);
     const churchId = getChurchId(req);
 
     if (!Number.isInteger(studentId) || studentId <= 0) {
@@ -3061,7 +3064,7 @@ exports.deleteStudent = async (req, res) => {
     }
 
     // =====================================================
-    // GET STUDENT
+    // 2. GET STUDENT
     // =====================================================
 
     const [studentRows] = await connection.query(
@@ -3088,8 +3091,16 @@ exports.deleteStudent = async (req, res) => {
 
     const studentData = studentRows[0];
 
+    console.log("========================================");
+    console.log("🗑️ DELETE STUDENT");
+    console.log("👤 Name:", studentData.name);
+    console.log("🆔 ID:", studentId);
+    console.log("🔢 Code:", studentData.code);
+    console.log("⛪ Church ID:", churchId);
+    console.log("========================================");
+
     // =====================================================
-    // TRANSACTION
+    // 3. START TRANSACTION
     // =====================================================
 
     await connection.beginTransaction();
@@ -3097,10 +3108,31 @@ exports.deleteStudent = async (req, res) => {
     transactionStarted = true;
 
     // =====================================================
-    // DELETE CLASS RELATION
+    // 4. DELETE ATTENDANCES
+    // =====================================================
+    // attendances hiện tại KHÔNG có ON DELETE CASCADE
+    // nên phải xóa thủ công trước khi xóa student.
+    //
+    // Có church_id để đảm bảo chỉ xóa dữ liệu
+    // thuộc giáo xứ hiện tại.
     // =====================================================
 
-    await connection.execute(
+    const [attendanceResult] = await connection.execute(
+      `
+        DELETE FROM attendances
+        WHERE student_id = ?
+          AND church_id = ?
+      `,
+      [studentId, churchId],
+    );
+
+    console.log(`🗑️ Attendances deleted: ${attendanceResult.affectedRows}`);
+
+    // =====================================================
+    // 5. DELETE CLASS RELATION
+    // =====================================================
+
+    const [classStudentResult] = await connection.execute(
       `
         DELETE FROM class_students
         WHERE student_id = ?
@@ -3108,11 +3140,15 @@ exports.deleteStudent = async (req, res) => {
       [studentId],
     );
 
+    console.log(
+      `🗑️ Class relations deleted: ${classStudentResult.affectedRows}`,
+    );
+
     // =====================================================
-    // DELETE STUDENT
+    // 6. DELETE STUDENT
     // =====================================================
 
-    const [result] = await connection.execute(
+    const [studentDeleteResult] = await connection.execute(
       `
         DELETE FROM students
         WHERE id = ?
@@ -3121,7 +3157,11 @@ exports.deleteStudent = async (req, res) => {
       [studentId, churchId],
     );
 
-    if (!result.affectedRows) {
+    // =====================================================
+    // 7. CHECK DELETE RESULT
+    // =====================================================
+
+    if (!studentDeleteResult.affectedRows) {
       await connection.rollback();
 
       transactionStarted = false;
@@ -3133,7 +3173,25 @@ exports.deleteStudent = async (req, res) => {
     }
 
     // =====================================================
-    // COMMIT
+    // 8. RESULTS
+    // =====================================================
+    //
+    // Bảng results có:
+    //
+    // FOREIGN KEY (student_id)
+    // REFERENCES students(id)
+    // ON DELETE CASCADE
+    //
+    // Vì vậy khi xóa students:
+    // => results.student_id tương ứng sẽ tự động bị xóa.
+    //
+    // KHÔNG cần DELETE results thủ công.
+    // =====================================================
+
+    console.log("🏆 Results: tự động xóa bởi ON DELETE CASCADE");
+
+    // =====================================================
+    // 9. COMMIT
     // =====================================================
 
     await connection.commit();
@@ -3141,20 +3199,27 @@ exports.deleteStudent = async (req, res) => {
     transactionStarted = false;
 
     // =====================================================
-    // DELETE AVATAR
-    // ONLY AFTER COMMIT
+    // 10. DELETE AVATAR
+    // =====================================================
+    // Chỉ xóa file sau khi DB đã commit thành công.
     // =====================================================
 
     if (studentData.avatar) {
-      const avatarPath = getAvatarFilePath(studentData.avatar);
+      try {
+        const avatarPath = getAvatarFilePath(studentData.avatar);
 
-      if (avatarPath) {
-        deleteFile(avatarPath);
+        if (avatarPath) {
+          deleteFile(avatarPath);
+
+          console.log("🖼️ Avatar deleted:", studentData.avatar);
+        }
+      } catch (avatarError) {
+        console.error("⚠️ DELETE STUDENT AVATAR ERROR:", avatarError.message);
       }
     }
 
     // =====================================================
-    // LOG
+    // 11. WRITE LOG
     // =====================================================
 
     try {
@@ -3167,7 +3232,12 @@ exports.deleteStudent = async (req, res) => {
 
         target_id: studentId,
 
-        description: `Xóa học sinh "${studentData.name}" (${studentData.code}), giáo xứ #${churchId}`,
+        description:
+          `Xóa học sinh "${studentData.name}" (${studentData.code}), ` +
+          `giáo xứ #${churchId}. ` +
+          `Đã xóa ${attendanceResult.affectedRows} bản ghi điểm danh, ` +
+          `${classStudentResult.affectedRows} quan hệ lớp; ` +
+          `kết quả học tập được xóa tự động theo ON DELETE CASCADE.`,
 
         ip_address: req.ip,
       });
@@ -3175,29 +3245,69 @@ exports.deleteStudent = async (req, res) => {
       console.error("⚠️ DELETE STUDENT LOG ERROR:", logError.message);
     }
 
+    // =====================================================
+    // 12. SUCCESS RESPONSE
+    // =====================================================
+
+    console.log("========================================");
     console.log("✅ DELETE STUDENT SUCCESS");
+    console.log("👤 Student:", studentData.name);
+    console.log("🆔 Student ID:", studentId);
+    console.log("⛪ Church ID:", churchId);
+    console.log("📋 Attendances:", attendanceResult.affectedRows);
+    console.log("🏫 Class relations:", classStudentResult.affectedRows);
+    console.log("🏆 Results:", "CASCADE");
+    console.log("========================================");
 
     return res.json({
       success: true,
 
-      message: "Đã xóa học sinh thành công",
+      message: "Đã xóa học sinh và toàn bộ dữ liệu liên quan",
+
+      data: {
+        student_id: studentId,
+        student_code: studentData.code,
+
+        deleted: {
+          student: studentDeleteResult.affectedRows,
+
+          attendances: attendanceResult.affectedRows,
+
+          class_students: classStudentResult.affectedRows,
+
+          results: "cascade",
+        },
+      },
     });
   } catch (error) {
+    // =====================================================
+    // ROLLBACK
+    // =====================================================
+
     if (transactionStarted) {
       try {
         await connection.rollback();
+
+        console.log("↩️ DELETE STUDENT TRANSACTION ROLLBACK");
       } catch (rollbackError) {
-        console.error("ROLLBACK ERROR:", rollbackError.message);
+        console.error("❌ ROLLBACK ERROR:", rollbackError.message);
       }
     }
+
+    // =====================================================
+    // ERROR LOG
+    // =====================================================
 
     console.error("========== DELETE STUDENT ERROR ==========");
 
     console.error("Message:", error.message);
-
     console.error("Code:", error.code);
-
     console.error("SQL:", error.sqlMessage);
+    console.error("Stack:", error.stack);
+
+    // =====================================================
+    // ERROR RESPONSE
+    // =====================================================
 
     return res.status(500).json({
       success: false,
@@ -3207,6 +3317,10 @@ exports.deleteStudent = async (req, res) => {
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   } finally {
+    // =====================================================
+    // RELEASE CONNECTION
+    // =====================================================
+
     connection.release();
   }
 };

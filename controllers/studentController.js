@@ -2662,63 +2662,60 @@ exports.importStudentsExcel = async (req, res) => {
         // INSERT STUDENT
         // =====================================================
 
+        // =====================================================
+        // INSERT STUDENT
+        // =====================================================
+
         const [result] = await connection.execute(
           `
-              INSERT INTO students (
-                church_id,
-                code,
-                qr_token,
-                name,
-                gender,
-                date_of_birth,
-                birth_place,
-                nationality,
-                phone,
-                email,
-                address,
-                parish,
-                father_name,
-                father_phone,
-                mother_name,
-                mother_phone,
-                guardian_name,
-                guardian_phone,
-                guardian_relationship,
-                baptism_name,
-                baptism_date,
-                baptism_place,
-                baptism_parish,
-                baptism_certificate_no,
-                saint_name,
-                first_communion_date,
-                first_communion_place,
-                confirmation_date,
-                confirmation_place,
-                confirmation_saint_name,
-                catechism_level,
-                catechism_status,
-                enrollment_date,
-                note,
-                avatar,
-                status
-              )
-              VALUES (
-                ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?,
-                ?, ?,
-                ?, ?,
-                ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                ?,
-                ?, ?,
-                ?, ?,
-                ?,
-                ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?
-              )
-            `,
+    INSERT INTO students (
+      church_id,
+      code,
+      qr_token,
+      name,
+      gender,
+      date_of_birth,
+      birth_place,
+      nationality,
+      phone,
+      email,
+      address,
+      parish,
+      father_name,
+      father_phone,
+      mother_name,
+      mother_phone,
+      guardian_name,
+      guardian_phone,
+      guardian_relationship,
+      baptism_name,
+      baptism_date,
+      baptism_place,
+      baptism_parish,
+      baptism_certificate_no,
+      saint_name,
+      first_communion_date,
+      first_communion_place,
+      confirmation_date,
+      confirmation_place,
+      confirmation_saint_name,
+      catechism_level,
+      catechism_status,
+      enrollment_date,
+      note,
+      avatar,
+      status
+    )
+    VALUES (
+      ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?
+    )
+  `,
           params,
         );
 

@@ -9,7 +9,13 @@ const { log } = require("console");
    CREATE ADMIN
 ========================================================= */
 exports.createAdmin = async (req, res) => {
+  let connection;
+
   try {
+    // ============================================================
+    // GET BODY
+    // ============================================================
+
     const {
       username,
       password,
@@ -29,10 +35,27 @@ exports.createAdmin = async (req, res) => {
       position,
       motto,
       bio,
+
+      // Thông tin GLV
+      gender,
+      parish,
+      diocese,
+      baptism_date,
+      baptism_place,
+      first_communion_date,
+      confirmation_date,
+      oath_date,
+      father_name,
+      father_phone,
+      mother_name,
+      mother_phone,
+      level,
+      status,
+      notes,
     } = req.body;
 
     // ============================================================
-    // 1. VALIDATE DỮ LIỆU BẮT BUỘC
+    // 1. VALIDATE BẮT BUỘC
     // ============================================================
 
     if (!username || !password || !email || !full_name || !church_id) {
@@ -45,9 +68,6 @@ exports.createAdmin = async (req, res) => {
 
     // ============================================================
     // 2. VALIDATE ACCOUNT TYPE
-    //
-    // DB:
-    // ENUM('member', 'vip')
     // ============================================================
 
     const allowedAccountTypes = ["member", "vip"];
@@ -69,6 +89,7 @@ exports.createAdmin = async (req, res) => {
       "liturgy_manager",
       "media_manager",
       "catechist",
+      "teacher",
     ];
 
     if (!allowedRoles.includes(role)) {
@@ -79,7 +100,20 @@ exports.createAdmin = async (req, res) => {
     }
 
     // ============================================================
-    // 4. KIỂM TRA GIÁO XỨ
+    // 4. CHURCH ID
+    // ============================================================
+
+    const churchId = Number(church_id);
+
+    if (!Number.isInteger(churchId) || churchId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Giáo xứ không hợp lệ",
+      });
+    }
+
+    // ============================================================
+    // 5. KIỂM TRA GIÁO XỨ
     // ============================================================
 
     const [churchRows] = await db.query(
@@ -89,7 +123,7 @@ exports.createAdmin = async (req, res) => {
       WHERE id = ?
       LIMIT 1
       `,
-      [church_id],
+      [churchId],
     );
 
     if (churchRows.length === 0) {
@@ -100,168 +134,596 @@ exports.createAdmin = async (req, res) => {
     }
 
     // ============================================================
-    // 5. CHUẨN HÓA USERNAME / EMAIL
+    // 6. CHUẨN HÓA
     // ============================================================
 
     const finalUsername = String(username).trim().toLowerCase();
+
     const finalEmail = String(email).trim().toLowerCase();
 
+    const finalFullName = String(full_name).trim();
+
     // ============================================================
-    // 6. KIỂM TRA USERNAME / EMAIL TRÙNG
-    //
-    // Username và Email là duy nhất toàn hệ thống.
+    // 7. CONNECTION
     // ============================================================
 
-    const [exist] = await db.query(
-      `
-      SELECT id, username, email
-      FROM admins
-      WHERE username = ?
-         OR email = ?
-      LIMIT 1
-      `,
-      [finalUsername, finalEmail],
-    );
+    connection = await db.getConnection();
 
-    if (exist.length > 0) {
-      if (
-        exist[0].username &&
-        exist[0].username.toLowerCase() === finalUsername
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Username đã tồn tại",
+    const MAX_RETRY = 5;
+
+    // ============================================================
+    // 8. TRANSACTION + RETRY
+    // ============================================================
+
+    for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
+      try {
+        console.log(
+          `========== CREATE ADMIN ATTEMPT ${attempt}/${MAX_RETRY} ==========`,
+        );
+
+        await connection.beginTransaction();
+
+        // ========================================================
+        // 9. CHECK USERNAME
+        // ========================================================
+
+        const [existingUsername] = await connection.query(
+          `
+            SELECT
+              id,
+              username,
+              email,
+              role
+            FROM admins
+            WHERE username = ?
+            LIMIT 1
+            `,
+          [finalUsername],
+        );
+
+        if (existingUsername.length > 0) {
+          await connection.rollback();
+
+          return res.status(409).json({
+            success: false,
+            message: `Username "${finalUsername}" đã tồn tại`,
+          });
+        }
+
+        // ========================================================
+        // 10. CHECK EMAIL
+        // ========================================================
+
+        const [existingEmail] = await connection.query(
+          `
+            SELECT
+              id,
+              username,
+              email,
+              role
+            FROM admins
+            WHERE email = ?
+            LIMIT 1
+            `,
+          [finalEmail],
+        );
+
+        if (existingEmail.length > 0) {
+          await connection.rollback();
+
+          return res.status(409).json({
+            success: false,
+            message: `Email "${finalEmail}" đã tồn tại`,
+          });
+        }
+
+        // ========================================================
+        // 11. HASH PASSWORD
+        // ========================================================
+
+        const hash = await bcrypt.hash(password, 10);
+
+        // ========================================================
+        // 12. AVATAR
+        // ========================================================
+
+        const avatar = req.file
+          ? `/uploads/avatars/${req.file.filename}`
+          : null;
+
+        // ========================================================
+        // 13. INSERT ADMIN
+        // ========================================================
+
+        const [adminResult] = await connection.query(
+          `
+            INSERT INTO admins (
+              church_id,
+              account_type,
+              username,
+              password,
+              role,
+
+              full_name,
+              saint_name,
+              email,
+              phone,
+              avatar,
+
+              birthday,
+              hometown,
+              address,
+
+              ordination_date,
+              position,
+              motto,
+              bio
+            )
+            VALUES (
+              ?, ?, ?, ?, ?,
+              ?, ?, ?, ?, ?,
+              ?, ?, ?,
+              ?, ?, ?, ?
+            )
+            `,
+          [
+            churchId,
+            account_type,
+            finalUsername,
+            hash,
+            role,
+
+            finalFullName,
+            saint_name?.trim() || null,
+            finalEmail,
+            phone?.trim() || null,
+            avatar,
+
+            birthday || null,
+            hometown?.trim() || null,
+            address?.trim() || null,
+
+            ordination_date || null,
+            position?.trim() || null,
+            motto?.trim() || null,
+            bio?.trim() || null,
+          ],
+        );
+
+        const adminId = adminResult.insertId;
+
+        console.log("✅ Admin created:", adminId);
+
+        // ========================================================
+        // 14. NẾU LÀ CATECHIST / TEACHER
+        //
+        // TẠO BẢN GHI CATECHIST
+        //
+        // username = catechist_code
+        //
+        // ========================================================
+
+        let catechistId = null;
+        let catechistCode = null;
+
+        if (role === "catechist" || role === "teacher") {
+          /*
+           * ------------------------------------------------------
+           * QUY TẮC:
+           *
+           * username nhập vào chính là base code.
+           *
+           * Ví dụ:
+           *
+           * GLV20260049
+           *
+           * Nếu đã tồn tại ở một trong hai bảng:
+           *
+           * GLV20260049_1
+           *
+           * ------------------------------------------------------
+           */
+
+          let candidateCode = finalUsername;
+          let codeIndex = 0;
+
+          while (true) {
+            const [existingCatechist] = await connection.query(
+              `
+              SELECT id
+              FROM catechists
+              WHERE catechist_code = ?
+              LIMIT 1
+              `,
+              [candidateCode],
+            );
+
+            const [existingAdminCode] = await connection.query(
+              `
+              SELECT id
+              FROM admins
+              WHERE username = ?
+              LIMIT 1
+              `,
+              [candidateCode],
+            );
+
+            /*
+             * Nếu candidate chính là username của admin
+             * vừa INSERT ở trên thì đây là trường hợp bình thường.
+             *
+             * Vì vậy nếu candidate === finalUsername
+             * và existingAdminCode là adminId hiện tại
+             * thì không xem là duplicate.
+             */
+
+            const adminCodeExistsOther =
+              existingAdminCode.length > 0 &&
+              Number(existingAdminCode[0].id) !== Number(adminId);
+
+            if (existingCatechist.length === 0 && !adminCodeExistsOther) {
+              break;
+            }
+
+            codeIndex++;
+
+            candidateCode = `${finalUsername}_${codeIndex}`;
+          }
+
+          catechistCode = candidateCode;
+
+          console.log("🔑 Catechist code:", catechistCode);
+
+          /*
+           * ------------------------------------------------------
+           * QUAN TRỌNG
+           *
+           * Nếu username frontend là:
+           *
+           * GLV20260049
+           *
+           * nhưng code đã tồn tại:
+           *
+           * catechists = GLV20260049
+           *
+           * thì:
+           *
+           * catechists = GLV20260049_1
+           * admins.username = GLV20260049
+           *
+           * Hai cái lúc này KHÔNG giống nhau.
+           *
+           * Vì vậy cần xử lý lại username của admin.
+           * ------------------------------------------------------
+           */
+
+          if (catechistCode !== finalUsername) {
+            /*
+             * Xóa admin vừa tạo
+             * rồi tạo lại bằng username cuối cùng.
+             */
+
+            await connection.query(
+              `
+              DELETE FROM admins
+              WHERE id = ?
+              `,
+              [adminId],
+            );
+
+            // -----------------------------------------------
+            // TẠO ADMIN LẠI VỚI USERNAME CUỐI CÙNG
+            // -----------------------------------------------
+
+            const [newAdminResult] = await connection.query(
+              `
+                INSERT INTO admins (
+                  church_id,
+                  account_type,
+                  username,
+                  password,
+                  role,
+
+                  full_name,
+                  saint_name,
+                  email,
+                  phone,
+                  avatar,
+
+                  birthday,
+                  hometown,
+                  address,
+
+                  ordination_date,
+                  position,
+                  motto,
+                  bio
+                )
+                VALUES (
+                  ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?, ?,
+                  ?, ?, ?,
+                  ?, ?, ?, ?
+                )
+                `,
+              [
+                churchId,
+                account_type,
+                catechistCode,
+                hash,
+                role,
+
+                finalFullName,
+                saint_name?.trim() || null,
+                finalEmail,
+                phone?.trim() || null,
+                avatar,
+
+                birthday || null,
+                hometown?.trim() || null,
+                address?.trim() || null,
+
+                ordination_date || null,
+                position?.trim() || null,
+                motto?.trim() || null,
+                bio?.trim() || null,
+              ],
+            );
+
+            // cập nhật ID admin
+            // eslint-disable-next-line no-param-reassign
+            var finalAdminId = newAdminResult.insertId;
+          } else {
+            var finalAdminId = adminId;
+          }
+
+          // ====================================================
+          // INSERT CATECHIST
+          // ====================================================
+
+          const catechistSql = `
+            INSERT INTO catechists (
+              church_id,
+              catechist_code,
+              holy_name,
+              full_name,
+              gender,
+              date_of_birth,
+              phone,
+              email,
+              address,
+              parish,
+              diocese,
+              baptism_date,
+              baptism_place,
+              first_communion_date,
+              confirmation_date,
+              oath_date,
+              father_name,
+              father_phone,
+              mother_name,
+              mother_phone,
+              level,
+              status,
+              notes
+            )
+            VALUES (
+              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+          `;
+
+          const catechistValues = [
+            churchId,
+            catechistCode,
+
+            saint_name?.trim() || null,
+            finalFullName,
+
+            gender || "Nam",
+
+            birthday || null,
+
+            phone?.trim() || null,
+            finalEmail,
+            address?.trim() || null,
+
+            parish?.trim() || null,
+            diocese?.trim() || null,
+
+            baptism_date || null,
+            baptism_place?.trim() || null,
+
+            first_communion_date || null,
+            confirmation_date || null,
+            oath_date || null,
+
+            father_name?.trim() || null,
+            father_phone?.trim() || null,
+
+            mother_name?.trim() || null,
+            mother_phone?.trim() || null,
+
+            level || "Dự bị",
+            status || "active",
+
+            notes?.trim() || null,
+          ];
+
+          const [catechistResult] = await connection.query(
+            catechistSql,
+            catechistValues,
+          );
+
+          catechistId = catechistResult.insertId;
+
+          console.log("✅ Catechist created:", catechistId);
+
+          /*
+           * Nếu dùng role teacher thì vẫn tạo catechist.
+           * Nếu mày chỉ muốn role catechist mới tạo GLV,
+           * đổi điều kiện phía trên thành:
+           *
+           * if (role === "catechist")
+           */
+        } else {
+          var finalAdminId = adminId;
+        }
+
+        // ========================================================
+        // COMMIT
+        // ========================================================
+
+        await connection.commit();
+
+        console.log("🎉 CREATE ADMIN SUCCESS");
+
+        // ========================================================
+        // AUDIT LOG
+        // ========================================================
+
+        try {
+          await writeLog({
+            admin_id: req.user?.id || null,
+
+            action:
+              role === "catechist" || role === "teacher"
+                ? "CREATE_CATECHIST"
+                : "CREATE_ADMIN",
+
+            target_type: "admins",
+
+            target_id: finalAdminId,
+
+            description:
+              `Tạo tài khoản ${finalFullName} ` +
+              `(@${catechistCode || finalUsername}), ` +
+              `role ${role}, ` +
+              `loại ${account_type}, ` +
+              `thuộc giáo xứ #${churchId}`,
+
+            ip_address: req.ip,
+          });
+        } catch (logError) {
+          console.error("⚠️ WRITE LOG ERROR:", logError.message);
+        }
+
+        // ========================================================
+        // RESPONSE
+        // ========================================================
+
+        return res.status(201).json({
+          success: true,
+
+          message:
+            role === "catechist" || role === "teacher"
+              ? "Tạo Giáo lý viên và tài khoản đăng nhập thành công"
+              : "Tạo tài khoản thành công",
+
+          data: {
+            id: finalAdminId,
+
+            church_id: churchId,
+
+            account_type,
+
+            username: catechistCode || finalUsername,
+
+            role,
+
+            full_name: finalFullName,
+
+            email: finalEmail,
+
+            ...(catechistId
+              ? {
+                  catechist: {
+                    id: catechistId,
+
+                    catechist_code: catechistCode,
+
+                    full_name: finalFullName,
+                  },
+                }
+              : {}),
+          },
         });
-      }
+      } catch (err) {
+        // ========================================================
+        // ROLLBACK
+        // ========================================================
 
-      if (exist[0].email && exist[0].email.toLowerCase() === finalEmail) {
-        return res.status(400).json({
-          success: false,
-          message: "Email đã tồn tại",
-        });
-      }
+        try {
+          await connection.rollback();
+        } catch (_) {}
 
-      return res.status(400).json({
-        success: false,
-        message: "Username hoặc Email đã tồn tại",
-      });
+        console.error(`❌ CREATE ADMIN ATTEMPT ${attempt} ERROR`);
+
+        console.error("Message:", err.message);
+
+        console.error("Code:", err.code);
+
+        console.error("SQL Message:", err.sqlMessage);
+
+        // ========================================================
+        // DUPLICATE
+        //
+        // Nếu 2 người cùng tạo một username.
+        // ========================================================
+
+        if (err.code === "ER_DUP_ENTRY" && attempt < MAX_RETRY) {
+          console.log("⚠️ Duplicate detected → retry");
+
+          continue;
+        }
+
+        if (err.code === "ER_DUP_ENTRY") {
+          return res.status(409).json({
+            success: false,
+            message: "Username, Email hoặc mã Giáo lý viên đã tồn tại",
+            errorCode: err.code,
+          });
+        }
+
+        throw err;
+      }
     }
 
     // ============================================================
-    // 7. HASH PASSWORD
+    // RETRY FAILED
     // ============================================================
 
-    const hash = await bcrypt.hash(password, 10);
-
-    // ============================================================
-    // 8. AVATAR
-    // ============================================================
-
-    const avatar = req.file ? `/uploads/avatars/${req.file.filename}` : null;
-
-    // ============================================================
-    // 9. INSERT ACCOUNT
-    // ============================================================
-
-    const [result] = await db.query(
-      `
-      INSERT INTO admins (
-        church_id,
-        account_type,
-        username,
-        password,
-        role,
-
-        full_name,
-        saint_name,
-        email,
-        phone,
-        avatar,
-
-        birthday,
-        hometown,
-        address,
-
-        ordination_date,
-        position,
-        motto,
-        bio
-      )
-      VALUES (
-        ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?,
-        ?, ?, ?,
-        ?, ?, ?, ?
-      )
-      `,
-      [
-        Number(church_id),
-        account_type,
-        finalUsername,
-        hash,
-        role,
-
-        full_name.trim(),
-        saint_name?.trim() || null,
-        finalEmail,
-        phone?.trim() || null,
-        avatar,
-
-        birthday || null,
-        hometown?.trim() || null,
-        address?.trim() || null,
-
-        ordination_date || null,
-        position?.trim() || null,
-        motto?.trim() || null,
-        bio?.trim() || null,
-      ],
-    );
-
-    // ============================================================
-    // 10. AUDIT LOG
-    // ============================================================
-
-    await writeLog({
-      admin_id: req.user?.id || null,
-      action: "CREATE_ADMIN",
-      target_type: "admins",
-      target_id: result.insertId,
-      description: `Tạo tài khoản ${full_name} (@${finalUsername}), loại ${account_type}, thuộc giáo xứ #${church_id}`,
-      ip_address: req.ip,
-    });
-
-    // ============================================================
-    // 12. RESPONSE
-    // ============================================================
-
-    return res.status(201).json({
-      success: true,
-      message: "Tạo tài khoản thành công",
-
-      data: {
-        id: result.insertId,
-        church_id: Number(church_id),
-        account_type,
-        username: finalUsername,
-        role,
-        full_name,
-        email: finalEmail,
-      },
+    return res.status(409).json({
+      success: false,
+      message: "Không thể tạo tài khoản sau nhiều lần thử",
     });
   } catch (err) {
+    // ============================================================
+    // ROLLBACK
+    // ============================================================
+
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (_) {}
+    }
+
     console.error("❌ createAdmin error:", err);
 
     // ============================================================
-    // MYSQL ENUM / UNIQUE ERROR
+    // MYSQL UNIQUE
     // ============================================================
 
     if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
-        message: "Username hoặc Email đã tồn tại",
+        message: "Username, Email hoặc mã Giáo lý viên đã tồn tại",
       });
     }
+
+    // ============================================================
+    // ENUM
+    // ============================================================
 
     if (err.code === "WARN_DATA_TRUNCATED") {
       return res.status(400).json({
@@ -270,10 +732,19 @@ exports.createAdmin = async (req, res) => {
       });
     }
 
+    // ============================================================
+    // RESPONSE
+    // ============================================================
+
     return res.status(500).json({
       success: false,
       message: err.message || "Không thể tạo tài khoản",
+      errorCode: err.code,
     });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
   }
 };
 exports.changePassword = async (req, res) => {

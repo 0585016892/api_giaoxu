@@ -994,13 +994,20 @@ exports.changeClassStudent = async (req, res) => {
   }
 };
 exports.changeClassStudents = async (req, res) => {
-  let connection;
+  let connection = null;
 
   try {
-    const { classId } = req.params;
     const { studentIds, newClassId } = req.body;
-
     const church_id = req.user?.church_id;
+
+    console.log("");
+    console.log("============================================================");
+    console.log("              BULK CHANGE STUDENTS CLASS");
+    console.log("============================================================");
+    console.log("👤 req.user:", req.user);
+    console.log("🏠 church_id:", church_id);
+    console.log("📚 studentIds:", studentIds);
+    console.log("➡️ newClassId:", newClassId);
 
     // =========================================================
     // KIỂM TRA GIÁO XỨ
@@ -1014,15 +1021,21 @@ exports.changeClassStudents = async (req, res) => {
     }
 
     // =========================================================
-    // VALIDATE
+    // VALIDATE newClassId
     // =========================================================
 
-    if (!classId || !newClassId) {
+    const targetClassId = Number(newClassId);
+
+    if (!Number.isInteger(targetClassId) || targetClassId <= 0) {
       return res.status(400).json({
         success: false,
-        message: "classId và newClassId là bắt buộc",
+        message: "newClassId không hợp lệ",
       });
     }
+
+    // =========================================================
+    // VALIDATE studentIds
+    // =========================================================
 
     if (!Array.isArray(studentIds) || studentIds.length === 0) {
       return res.status(400).json({
@@ -1031,7 +1044,10 @@ exports.changeClassStudents = async (req, res) => {
       });
     }
 
-    // Loại ID trùng
+    // =========================================================
+    // LOẠI ID TRÙNG / ID KHÔNG HỢP LỆ
+    // =========================================================
+
     const uniqueStudentIds = [
       ...new Set(
         studentIds
@@ -1047,49 +1063,18 @@ exports.changeClassStudents = async (req, res) => {
       });
     }
 
-    if (String(classId) === String(newClassId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Lớp mới phải khác lớp hiện tại",
-      });
-    }
+    console.log("✅ uniqueStudentIds:", uniqueStudentIds);
+
+    // =========================================================
+    // CONNECTION
+    // =========================================================
 
     connection = await db.getConnection();
 
     await connection.beginTransaction();
 
     // =========================================================
-    // LỚP CŨ
-    // =========================================================
-
-    const [oldClasses] = await connection.query(
-      `
-      SELECT
-        id,
-        name,
-        code,
-        church_id
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
-      `,
-      [classId, church_id],
-    );
-
-    if (!oldClasses.length) {
-      await connection.rollback();
-
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy lớp hiện tại trong giáo xứ",
-      });
-    }
-
-    const oldClass = oldClasses[0];
-
-    // =========================================================
-    // LỚP MỚI
+    // KIỂM TRA LỚP MỚI
     // =========================================================
 
     const [newClasses] = await connection.query(
@@ -1105,7 +1090,7 @@ exports.changeClassStudents = async (req, res) => {
         AND church_id = ?
       LIMIT 1
       `,
-      [newClassId, church_id],
+      [targetClassId, church_id],
     );
 
     if (!newClasses.length) {
@@ -1143,10 +1128,12 @@ exports.changeClassStudents = async (req, res) => {
     // KIỂM TRA HỌC SINH KHÔNG TỒN TẠI
     // =========================================================
 
-    const foundStudentIds = students.map((student) => Number(student.id));
+    const foundStudentIds = new Set(
+      students.map((student) => Number(student.id)),
+    );
 
     const notFoundStudentIds = uniqueStudentIds.filter(
-      (id) => !foundStudentIds.includes(Number(id)),
+      (id) => !foundStudentIds.has(Number(id)),
     );
 
     if (notFoundStudentIds.length) {
@@ -1162,104 +1149,150 @@ exports.changeClassStudents = async (req, res) => {
     }
 
     // =========================================================
-    // KIỂM TRA HỌC SINH THUỘC LỚP CŨ
+    // LẤY TẤT CẢ QUAN HỆ HIỆN TẠI
+    // =========================================================
+    //
+    // Một học sinh có thể:
+    //
+    // 1. Chưa có class_students
+    // 2. Đang ở lớp A
+    // 3. Đang ở lớp B
+    // 4. Đã có relation với lớp mới
+    //
     // =========================================================
 
-    const [oldRelations] = await connection.query(
+    const [relations] = await connection.query(
       `
       SELECT
         id,
-        class_id,
         student_id,
-        status
+        class_id,
+        status,
+        joined_at,
+        left_at
       FROM class_students
-      WHERE class_id = ?
-        AND student_id IN (${placeholders})
+      WHERE student_id IN (${placeholders})
       `,
-      [classId, ...uniqueStudentIds],
+      uniqueStudentIds,
     );
 
-    const oldRelationMap = new Map(
-      oldRelations.map((item) => [Number(item.student_id), item]),
-    );
+    // =========================================================
+    // MAP QUAN HỆ
+    // =========================================================
 
-    // Những học sinh không thuộc lớp cũ
-    const notInOldClass = uniqueStudentIds.filter(
-      (studentId) => !oldRelationMap.has(Number(studentId)),
-    );
+    const relationMap = new Map();
 
-    if (notInOldClass.length) {
-      await connection.rollback();
+    for (const relation of relations) {
+      const studentId = Number(relation.student_id);
 
-      return res.status(400).json({
-        success: false,
-        message: "Một số học sinh không thuộc lớp hiện tại",
-        data: {
-          not_in_old_class: notInOldClass,
-        },
-      });
+      if (!relationMap.has(studentId)) {
+        relationMap.set(studentId, []);
+      }
+
+      relationMap.get(studentId).push(relation);
     }
 
     // =========================================================
-    // KIỂM TRA ĐÃ CÓ TRONG LỚP MỚI
+    // PHÂN LOẠI
     // =========================================================
 
-    const [existingNewRelations] = await connection.query(
-      `
-      SELECT
-        id,
-        student_id,
-        status
-      FROM class_students
-      WHERE class_id = ?
-        AND student_id IN (${placeholders})
-      `,
-      [newClassId, ...uniqueStudentIds],
-    );
+    const toUpdate = [];
+    const toInsert = [];
+    const alreadyInTarget = [];
 
-    if (existingNewRelations.length) {
-      const alreadyInNewClass = existingNewRelations.map((item) =>
-        Number(item.student_id),
+    for (const studentId of uniqueStudentIds) {
+      const studentRelations = relationMap.get(studentId) || [];
+
+      // -------------------------------------------------------
+      // TÌM QUAN HỆ LỚP MỚI
+      // -------------------------------------------------------
+
+      const targetRelation = studentRelations.find(
+        (relation) => Number(relation.class_id) === Number(targetClassId),
       );
 
-      await connection.rollback();
+      if (targetRelation) {
+        alreadyInTarget.push(studentId);
+        continue;
+      }
 
-      return res.status(409).json({
-        success: false,
-        message: "Một số học sinh đã tồn tại trong lớp mới",
-        data: {
-          already_in_new_class: alreadyInNewClass,
-        },
-      });
+      // -------------------------------------------------------
+      // TÌM QUAN HỆ ĐANG HỌC
+      // -------------------------------------------------------
+      //
+      // Ưu tiên relation đang studying / chưa left
+      //
+      // -------------------------------------------------------
+
+      const activeRelation = studentRelations.find(
+        (relation) => relation.status === "studying" && !relation.left_at,
+      );
+
+      if (activeRelation) {
+        toUpdate.push({
+          studentId,
+          relationId: Number(activeRelation.id),
+          oldClassId: Number(activeRelation.class_id),
+        });
+
+        continue;
+      }
+
+      // -------------------------------------------------------
+      // KHÔNG CÓ LỚP ĐANG HỌC
+      // -------------------------------------------------------
+
+      toInsert.push(studentId);
+    }
+
+    console.log("📊 toUpdate:", toUpdate);
+    console.log("➕ toInsert:", toInsert);
+    console.log("⏭️ alreadyInTarget:", alreadyInTarget);
+
+    // =========================================================
+    // UPDATE HỌC SINH ĐÃ CÓ LỚP
+    // =========================================================
+
+    for (const item of toUpdate) {
+      await connection.query(
+        `
+        UPDATE class_students
+        SET
+          class_id = ?,
+          status = 'studying',
+          left_at = NULL
+        WHERE id = ?
+        `,
+        [targetClassId, item.relationId],
+      );
     }
 
     // =========================================================
-    // CHUYỂN TẤT CẢ HỌC SINH
+    // INSERT HỌC SINH CHƯA CÓ LỚP
     // =========================================================
 
-    const [result] = await connection.query(
-      `
-      UPDATE class_students
-
-      SET
-        class_id = ?,
-        status = 'studying',
-        left_at = NULL
-
-      WHERE class_id = ?
-        AND student_id IN (${placeholders})
-      `,
-      [newClassId, classId, ...uniqueStudentIds],
-    );
-
-    if (result.affectedRows !== uniqueStudentIds.length) {
-      await connection.rollback();
-
-      return res.status(400).json({
-        success: false,
-        message:
-          "Số lượng học sinh chuyển lớp không khớp. Dữ liệu đã được rollback.",
-      });
+    for (const studentId of toInsert) {
+      await connection.query(
+        `
+        INSERT INTO class_students
+        (
+          class_id,
+          student_id,
+          status,
+          joined_at,
+          left_at
+        )
+        VALUES
+        (
+          ?,
+          ?,
+          'studying',
+          NOW(),
+          NULL
+        )
+        `,
+        [targetClassId, studentId],
+      );
     }
 
     // =========================================================
@@ -1273,20 +1306,34 @@ exports.changeClassStudents = async (req, res) => {
     // =========================================================
 
     try {
-      const studentNames = students
-        .map((student) => `${student.name} (${student.code || "—"})`)
+      const studentMap = new Map(
+        students.map((student) => [Number(student.id), student]),
+      );
+
+      const studentNames = uniqueStudentIds
+        .map((studentId) => {
+          const student = studentMap.get(Number(studentId));
+
+          if (!student) {
+            return `#${studentId}`;
+          }
+
+          return `${student.name} (${student.code || "—"})`;
+        })
         .join(", ");
 
       await writeLog({
         admin_id: req.user?.id || null,
         action: "CHANGE_CLASS_STUDENTS",
         target_type: "class_students",
-        target_id: Number(newClassId),
+        target_id: targetClassId,
         description:
-          `Chuyển ${students.length} học sinh từ lớp ` +
-          `"${oldClass.name}" (${oldClass.code || "—"}) ` +
+          `Xếp/chuyển ${uniqueStudentIds.length} học sinh ` +
           `sang lớp "${newClass.name}" (${newClass.code || "—"}): ` +
           `${studentNames}. ` +
+          `Cập nhật: ${toUpdate.length}; ` +
+          `thêm mới: ${toInsert.length}; ` +
+          `đã có trong lớp: ${alreadyInTarget.length}. ` +
           `Thuộc giáo xứ #${church_id}`,
         ip_address: req.ip,
       });
@@ -1300,30 +1347,61 @@ exports.changeClassStudents = async (req, res) => {
 
     return res.json({
       success: true,
-      message: `Đã chuyển ${students.length} học sinh sang lớp mới`,
+
+      message:
+        alreadyInTarget.length > 0
+          ? `Đã xử lý ${uniqueStudentIds.length} học sinh`
+          : `Đã chuyển/xếp ${uniqueStudentIds.length} học sinh vào lớp mới`,
+
       data: {
         student_ids: uniqueStudentIds,
-        total_students: students.length,
 
-        old_class_id: Number(classId),
-        old_class_name: oldClass.name,
+        total_students: uniqueStudentIds.length,
 
-        new_class_id: Number(newClassId),
+        updated_students: toUpdate.map((item) => item.studentId),
+
+        inserted_students: toInsert,
+
+        already_in_target: alreadyInTarget,
+
+        updated_count: toUpdate.length,
+
+        inserted_count: toInsert.length,
+
+        already_in_target_count: alreadyInTarget.length,
+
+        new_class_id: targetClassId,
+
         new_class_name: newClass.name,
+
+        new_class_code: newClass.code || null,
       },
     });
   } catch (error) {
+    // =========================================================
+    // ROLLBACK
+    // =========================================================
+
     if (connection) {
       try {
         await connection.rollback();
       } catch (_) {}
     }
 
-    console.error("changeClassStudents error:", error);
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("❌ changeClassStudents ERROR");
+    console.error(
+      "============================================================",
+    );
+    console.error(error);
 
     return res.status(500).json({
       success: false,
       message: "Không thể chuyển học sinh sang lớp mới",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   } finally {
     if (connection) {

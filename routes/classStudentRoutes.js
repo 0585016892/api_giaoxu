@@ -74,7 +74,7 @@ router.put("/update/:classId/:studentId", controller.updateClassStudent);
 // =====================================================
 
 router.put("/:classId/:studentId/change-class", controller.changeClassStudent);
-
+router.put("/classes/:classId/change-students", controller.changeClassStudents);
 // =====================================================
 // XÓA HỌC SINH KHỎI LỚP
 // DELETE /api/class-students/:classId/:studentId

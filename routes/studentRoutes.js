@@ -49,7 +49,7 @@ router.get(
 );
 router.get(
   "/classes/:id/students",
-  authMiddleware,
+  verifyToken,
   studentController.getStudentsByClass,
 );
 // Chi tiết học sinh

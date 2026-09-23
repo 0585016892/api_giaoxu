@@ -314,6 +314,28 @@ exports.getByLessonQuestion = async (req, res) => {
  * =========================================================
  */
 
+/**
+ * =========================================================
+ * CREATE LESSON RESOURCE
+ *
+ * POST /api/lessons/:lessonId/resources
+ *
+ * Hỗ trợ:
+ * 1. Upload file
+ * 2. Thêm đường link
+ *
+ * FILE:
+ * - req.file
+ *
+ * LINK:
+ * - resource_type = "link"
+ * - external_url = "https://..."
+ *
+ * Không bắt buộc phải có file.
+ * Chỉ cần có FILE hoặc LINK.
+ * =========================================================
+ */
+
 exports.create = async (req, res) => {
   let uploadedFilePath = null;
 
@@ -326,20 +348,74 @@ exports.create = async (req, res) => {
     const {
       title,
       description,
+      resource_type,
       resource_category,
       sort_order = 0,
       visibility = "public",
       is_downloadable = 1,
+      external_url,
     } = req.body;
 
     /**
-     * Multer đã upload file
+     * =====================================================
+     * FILE
+     * =====================================================
      */
-    const file = req.file;
+
+    const file = req.file || null;
 
     /**
      * =====================================================
-     * VALIDATE
+     * NORMALIZE
+     * =====================================================
+     */
+
+    const normalizedTitle =
+      title !== undefined && title !== null ? String(title).trim() : "";
+
+    const normalizedExternalUrl =
+      external_url !== undefined && external_url !== null
+        ? String(external_url).trim()
+        : "";
+
+    /**
+     * =====================================================
+     * RESOURCE TYPE
+     *
+     * Nếu frontend truyền:
+     * resource_type = link
+     *
+     * => link
+     *
+     * Nếu có file:
+     * => file
+     *
+     * Nếu không truyền:
+     * tự xác định.
+     * =====================================================
+     */
+
+    let finalResourceType = resource_type
+      ? String(resource_type).trim().toLowerCase()
+      : "";
+
+    if (!finalResourceType) {
+      finalResourceType = normalizedExternalUrl ? "link" : "file";
+    }
+
+    /**
+     * Chỉ cho phép 2 loại hiện tại
+     */
+    if (!["file", "link"].includes(finalResourceType)) {
+      return res.status(400).json({
+        success: false,
+        message: "Loại tài nguyên không hợp lệ",
+      });
+    }
+
+    /**
+     * =====================================================
+     * VALIDATE LESSON ID
      * =====================================================
      */
 
@@ -350,10 +426,13 @@ exports.create = async (req, res) => {
       });
     }
 
-    if (!title || !title.trim()) {
-      /**
-       * Nếu đã upload file thì xóa
-       */
+    /**
+     * =====================================================
+     * VALIDATE TITLE
+     * =====================================================
+     */
+
+    if (!normalizedTitle) {
       if (file?.path) {
         removeFile(file.path);
       }
@@ -364,14 +443,93 @@ exports.create = async (req, res) => {
       });
     }
 
-    if (!file) {
+    /**
+     * =====================================================
+     * VALIDATE FILE / LINK
+     * =====================================================
+     *
+     * Phải có ít nhất một:
+     *
+     * file
+     * hoặc
+     * external_url
+     */
+
+    if (!file && !normalizedExternalUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng chọn file hoặc nhập đường link",
+      });
+    }
+
+    /**
+     * =====================================================
+     * KHÔNG CHO CẢ FILE + LINK
+     * =====================================================
+     */
+
+    if (file && normalizedExternalUrl) {
+      removeFile(file.path);
+
+      return res.status(400).json({
+        success: false,
+        message: "Chỉ được chọn file hoặc nhập đường link",
+      });
+    }
+
+    /**
+     * =====================================================
+     * VALIDATE RESOURCE TYPE
+     * =====================================================
+     */
+
+    if (finalResourceType === "file" && !file) {
       return res.status(400).json({
         success: false,
         message: "Vui lòng chọn file để tải lên",
       });
     }
 
-    uploadedFilePath = file.path;
+    if (finalResourceType === "link" && !normalizedExternalUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng nhập đường link",
+      });
+    }
+
+    /**
+     * =====================================================
+     * VALIDATE URL
+     * =====================================================
+     */
+
+    if (normalizedExternalUrl) {
+      try {
+        const parsedUrl = new URL(normalizedExternalUrl);
+
+        if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+          return res.status(400).json({
+            success: false,
+            message: "Đường link không hợp lệ",
+          });
+        }
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          message: "Đường link không hợp lệ",
+        });
+      }
+    }
+
+    /**
+     * =====================================================
+     * FILE PATH
+     * =====================================================
+     */
+
+    if (file?.path) {
+      uploadedFilePath = file.path;
+    }
 
     /**
      * =====================================================
@@ -397,7 +555,9 @@ exports.create = async (req, res) => {
     );
 
     if (!lessons.length) {
-      removeFile(uploadedFilePath);
+      if (uploadedFilePath) {
+        removeFile(uploadedFilePath);
+      }
 
       return res.status(404).json({
         success: false,
@@ -409,22 +569,69 @@ exports.create = async (req, res) => {
 
     /**
      * =====================================================
-     * FILE INFO
+     * CHURCH ID
      * =====================================================
      */
 
-    const fileType = detectFileType(file.originalname, file.mimetype);
-
-    /**
-     * Nếu lesson là global
-     * resource cũng global.
-     *
-     * Nếu lesson thuộc church
-     * resource thuộc church đó.
-     */
     const finalChurchId = lesson.church_id ?? churchId ?? null;
 
-    const fileUrl = buildFileUrl(req, lessonId, file.filename);
+    /**
+     * =====================================================
+     * FILE DATA
+     * =====================================================
+     */
+
+    let fileType = null;
+    let fileName = null;
+    let fileUrl = null;
+    let mimeType = null;
+    let fileSize = null;
+
+    if (file) {
+      fileType = detectFileType(file.originalname, file.mimetype);
+
+      fileName = file.originalname;
+
+      fileUrl = buildFileUrl(req, lessonId, file.filename);
+
+      mimeType = file.mimetype;
+
+      fileSize = file.size;
+    }
+
+    /**
+     * =====================================================
+     * LINK DATA
+     * =====================================================
+     *
+     * Link:
+     *
+     * file_type   = "link"
+     * file_name   = NULL
+     * file_url    = NULL
+     * external_url = URL
+     *
+     * =====================================================
+     */
+
+    if (finalResourceType === "link") {
+      fileType = "link";
+      fileName = null;
+      fileUrl = null;
+      mimeType = null;
+      fileSize = null;
+    }
+
+    /**
+     * =====================================================
+     * IS DOWNLOADABLE
+     *
+     * Link mặc định không cho download.
+     * =====================================================
+     */
+
+    const finalIsDownloadable =
+      finalResourceType === "link" ? 0 : is_downloadable ? 1 : 0;
 
     /**
      * =====================================================
@@ -470,13 +677,12 @@ exports.create = async (req, res) => {
 
         ?, ?,
 
-        'file',
-        ?,
+        ?, ?,
 
         ?, ?,
         ?,
 
-        NULL,
+        ?,
 
         ?, ?,
 
@@ -496,23 +702,26 @@ exports.create = async (req, res) => {
         lessonId,
         finalChurchId,
 
-        title.trim(),
+        normalizedTitle,
         description || null,
 
+        finalResourceType,
         resource_category || null,
 
         fileType,
-        file.originalname,
+        fileName,
         fileUrl,
 
-        file.mimetype,
-        file.size,
+        normalizedExternalUrl || null,
+
+        mimeType,
+        fileSize,
 
         Number(sort_order) || 0,
 
         visibility || "public",
 
-        is_downloadable ? 1 : 0,
+        finalIsDownloadable,
 
         userId,
       ],
@@ -534,10 +743,19 @@ exports.create = async (req, res) => {
       [result.insertId],
     );
 
+    /**
+     * =====================================================
+     * SUCCESS
+     * =====================================================
+     */
+
     return res.status(201).json({
       success: true,
 
-      message: "Đã tải tài liệu lên thành công",
+      message:
+        finalResourceType === "link"
+          ? "Đã thêm đường link thành công"
+          : "Đã tải tài liệu lên thành công",
 
       data: rows[0],
     });
@@ -545,16 +763,18 @@ exports.create = async (req, res) => {
     console.error("❌ create lessonResource:", error);
 
     /**
-     * Nếu DB lỗi sau khi file đã upload
-     * thì xóa file để tránh file rác.
+     * =====================================================
+     * CLEANUP FILE
+     * =====================================================
      */
+
     if (uploadedFilePath) {
       removeFile(uploadedFilePath);
     }
 
     return res.status(500).json({
       success: false,
-      message: "Không thể tải tài liệu lên",
+      message: "Không thể thêm tài nguyên",
     });
   }
 };
@@ -563,9 +783,17 @@ exports.create = async (req, res) => {
  * =========================================================
  * UPDATE METADATA
  *
- * Không upload file mới.
- *
  * PUT /api/lessons/resources/:id
+ *
+ * Có thể cập nhật:
+ * - title
+ * - description
+ * - category
+ * - sort_order
+ * - visibility
+ * - is_downloadable
+ * - is_active
+ * - external_url
  * =========================================================
  */
 
@@ -578,12 +806,20 @@ exports.update = async (req, res) => {
     const {
       title,
       description,
+      resource_type,
       resource_category,
       sort_order,
       visibility,
       is_downloadable,
       is_active,
+      external_url,
     } = req.body;
+
+    /**
+     * =====================================================
+     * FIND RESOURCE
+     * =====================================================
+     */
 
     const [rows] = await db.query(
       `
@@ -608,13 +844,140 @@ exports.update = async (req, res) => {
 
     const existing = rows[0];
 
+    /**
+     * =====================================================
+     * NORMALIZE
+     * =====================================================
+     */
+
+    const finalTitle =
+      title !== undefined ? String(title).trim() : existing.title;
+
+    const finalDescription =
+      description !== undefined ? description : existing.description;
+
+    const finalCategory =
+      resource_category !== undefined
+        ? resource_category
+        : existing.resource_category;
+
+    const finalSortOrder =
+      sort_order !== undefined ? Number(sort_order) || 0 : existing.sort_order;
+
+    const finalVisibility =
+      visibility !== undefined ? visibility : existing.visibility;
+
+    const finalIsDownloadable =
+      is_downloadable !== undefined
+        ? is_downloadable
+          ? 1
+          : 0
+        : existing.is_downloadable;
+
+    const finalIsActive =
+      is_active !== undefined ? (is_active ? 1 : 0) : existing.is_active;
+
+    const finalResourceType =
+      resource_type !== undefined
+        ? String(resource_type).trim().toLowerCase()
+        : existing.resource_type;
+
+    const finalExternalUrl =
+      external_url !== undefined
+        ? String(external_url).trim()
+        : existing.external_url;
+
+    /**
+     * =====================================================
+     * VALIDATE TITLE
+     * =====================================================
+     */
+
+    if (!finalTitle) {
+      return res.status(400).json({
+        success: false,
+        message: "Tên tài nguyên không được để trống",
+      });
+    }
+
+    /**
+     * =====================================================
+     * VALIDATE RESOURCE TYPE
+     * =====================================================
+     */
+
+    if (!["file", "link"].includes(finalResourceType)) {
+      return res.status(400).json({
+        success: false,
+        message: "Loại tài nguyên không hợp lệ",
+      });
+    }
+
+    /**
+     * =====================================================
+     * LINK
+     * =====================================================
+     */
+
+    if (finalResourceType === "link") {
+      if (!finalExternalUrl) {
+        return res.status(400).json({
+          success: false,
+          message: "Tài nguyên link phải có đường link",
+        });
+      }
+
+      try {
+        const parsedUrl = new URL(finalExternalUrl);
+
+        if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+          return res.status(400).json({
+            success: false,
+            message: "Đường link không hợp lệ",
+          });
+        }
+      } catch {
+        return res.status(400).json({
+          success: false,
+          message: "Đường link không hợp lệ",
+        });
+      }
+    }
+
+    /**
+     * =====================================================
+     * FILE
+     * =====================================================
+     */
+
+    if (finalResourceType === "file") {
+      /**
+       * Nếu chuyển từ link -> file
+       * mà không upload file mới thì không thể.
+       */
+      if (existing.resource_type === "link" && !existing.file_url) {
+        return res.status(400).json({
+          success: false,
+          message: "Không thể chuyển link thành file nếu chưa tải file mới lên",
+        });
+      }
+    }
+
+    /**
+     * =====================================================
+     * UPDATE
+     * =====================================================
+     */
+
     await db.query(
       `
       UPDATE lesson_resources
       SET
         title = ?,
         description = ?,
+        resource_type = ?,
         resource_category = ?,
+        external_url = ?,
         sort_order = ?,
         visibility = ?,
         is_downloadable = ?,
@@ -622,31 +985,33 @@ exports.update = async (req, res) => {
       WHERE id = ?
       `,
       [
-        title !== undefined ? String(title).trim() : existing.title,
+        finalTitle,
 
-        description !== undefined ? description : existing.description,
+        finalDescription,
 
-        resource_category !== undefined
-          ? resource_category
-          : existing.resource_category,
+        finalResourceType,
 
-        sort_order !== undefined
-          ? Number(sort_order) || 0
-          : existing.sort_order,
+        finalCategory,
 
-        visibility !== undefined ? visibility : existing.visibility,
+        finalResourceType === "link" ? finalExternalUrl : null,
 
-        is_downloadable !== undefined
-          ? is_downloadable
-            ? 1
-            : 0
-          : existing.is_downloadable,
+        finalSortOrder,
 
-        is_active !== undefined ? (is_active ? 1 : 0) : existing.is_active,
+        finalVisibility,
+
+        finalResourceType === "link" ? 0 : finalIsDownloadable,
+
+        finalIsActive,
 
         id,
       ],
     );
+
+    /**
+     * =====================================================
+     * GET UPDATED
+     * =====================================================
+     */
 
     const [updated] = await db.query(
       `

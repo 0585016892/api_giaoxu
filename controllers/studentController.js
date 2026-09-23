@@ -678,7 +678,213 @@ exports.getStudentsByTeacher = async (req, res) => {
     });
   }
 };
+exports.getStudentsByClass = async (req, res) => {
+  try {
+    // =====================================================
+    // 1. GET AUTH INFO
+    // =====================================================
 
+    const adminId = req.user?.id;
+    const churchId = req.user?.church_id;
+
+    const classId = Number(req.params.id);
+
+    // =====================================================
+    // 2. VALIDATE
+    // =====================================================
+
+    if (!adminId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được tài khoản giáo viên",
+      });
+    }
+
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được gán giáo xứ",
+      });
+    }
+
+    if (!Number.isInteger(classId) || classId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "ID lớp không hợp lệ",
+      });
+    }
+
+    // =====================================================
+    // 3. GET TEACHER / CATECHIST
+    // =====================================================
+
+    const [teacherRows] = await db.query(
+      `
+        SELECT
+          a.id AS admin_id,
+          a.username,
+          a.role,
+          a.church_id,
+
+          ct.id AS catechist_id,
+          ct.catechist_code,
+          ct.full_name
+
+        FROM admins a
+
+        LEFT JOIN catechists ct
+          ON ct.catechist_code = a.username
+         AND ct.church_id = a.church_id
+
+        WHERE a.id = ?
+          AND a.church_id = ?
+
+        LIMIT 1
+      `,
+      [adminId, churchId],
+    );
+
+    if (!teacherRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy tài khoản giáo viên",
+      });
+    }
+
+    const teacher = teacherRows[0];
+
+    // =====================================================
+    // 4. CHECK CATECHIST
+    // =====================================================
+
+    if (!teacher.catechist_id) {
+      return res.status(404).json({
+        success: false,
+        message: "Tài khoản giáo viên chưa được liên kết với Giáo lý viên",
+      });
+    }
+
+    // =====================================================
+    // 5. CHECK TEACHER HAS THIS CLASS
+    // =====================================================
+
+    const [classRows] = await db.query(
+      `
+        SELECT
+          c.id,
+          c.name,
+          c.code,
+          c.church_id,
+
+          cc.catechist_id
+
+        FROM classes c
+
+        INNER JOIN catechist_classes cc
+          ON cc.class_id = c.id
+
+        WHERE c.id = ?
+          AND c.church_id = ?
+          AND cc.catechist_id = ?
+
+        LIMIT 1
+      `,
+      [classId, churchId, teacher.catechist_id],
+    );
+
+    if (!classRows.length) {
+      return res.status(403).json({
+        success: false,
+        message: "Bạn không được phân công hoặc không có quyền xem lớp này",
+      });
+    }
+
+    const classData = classRows[0];
+
+    // =====================================================
+    // 6. GET STUDENTS
+    // =====================================================
+
+    const [rows] = await db.query(
+      `
+        SELECT
+          s.*,
+
+          cs.status AS class_student_status,
+          cs.joined_at
+
+        FROM students s
+
+        INNER JOIN class_students cs
+          ON cs.student_id = s.id
+         AND cs.class_id = ?
+
+        WHERE s.church_id = ?
+
+        ORDER BY
+          s.name ASC,
+          s.id ASC
+      `,
+      [classId, churchId],
+    );
+
+    // =====================================================
+    // 7. AVATAR URL
+    // =====================================================
+
+    for (const student of rows) {
+      student.avatar_url = getAvatarUrl(req, student.avatar);
+    }
+
+    // =====================================================
+    // 8. RESPONSE
+    // =====================================================
+
+    return res.status(200).json({
+      success: true,
+
+      teacher: {
+        admin_id: teacher.admin_id,
+
+        catechist_id: teacher.catechist_id,
+
+        catechist_code: teacher.catechist_code,
+
+        full_name: teacher.full_name,
+      },
+
+      class: {
+        id: classData.id,
+
+        name: classData.name,
+
+        code: classData.code,
+      },
+
+      total: rows.length,
+
+      data: rows,
+    });
+  } catch (error) {
+    console.error("========== GET STUDENTS BY CLASS ERROR ==========");
+
+    console.error("Message:", error.message);
+
+    console.error("Code:", error.code);
+
+    console.error("SQL:", error.sqlMessage);
+
+    console.error("Stack:", error.stack);
+
+    return res.status(500).json({
+      success: false,
+
+      message: "Không thể lấy danh sách học sinh của lớp",
+
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
 // =====================================================
 // POST /api/students
 // CREATE STUDENT

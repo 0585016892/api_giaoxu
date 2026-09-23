@@ -47,7 +47,11 @@ router.get(
   verifyToken,
   studentController.getStudentsByTeacher,
 );
-
+router.get(
+  "/classes/:id/students",
+  authMiddleware,
+  studentController.getStudentsByClass,
+);
 // Chi tiết học sinh
 router.get("/:id", verifyToken, studentController.getStudentById);
 

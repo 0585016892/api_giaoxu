@@ -30,34 +30,57 @@ const deletePhysicalFile = (imagePath) => {
 // 1. GET ALL
 // SEARCH + FILTER + PAGINATION + SỐ LƯỢNG GIÁO DÂN
 // ======================================================
-
 exports.getAll = async (req, res) => {
   try {
+    // =====================================================
+    // QUERY PARAMS
+    // =====================================================
+
     let {
       page = 1,
       limit = 10,
-      keyword = "",
+      search = "",
       type,
       district,
       ward,
       is_active,
     } = req.query;
 
+    // =====================================================
+    // PARSE PAGINATION
+    // =====================================================
+
     page = parseInt(page, 10);
     limit = parseInt(limit, 10);
 
-    if (Number.isNaN(page) || page < 1) page = 1;
-    if (Number.isNaN(limit) || limit < 1) limit = 10;
+    if (Number.isNaN(page) || page < 1) {
+      page = 1;
+    }
+
+    if (Number.isNaN(limit) || limit < 1) {
+      limit = 10;
+    }
+
+    // Giới hạn số record mỗi trang nếu cần
+    // limit = Math.min(limit, 100);
 
     const offset = (page - 1) * limit;
 
+    // =====================================================
+    // WHERE
+    // =====================================================
+
     let where = "WHERE 1=1";
+
     const params = [];
 
     // =====================================================
     // SEARCH
     // =====================================================
-    if (keyword?.trim()) {
+
+    if (search && search.trim() !== "") {
+      const searchValue = `%${search.trim()}%`;
+
       where += `
         AND (
           c.name LIKE ?
@@ -67,59 +90,92 @@ exports.getAll = async (req, res) => {
         )
       `;
 
-      const search = `%${keyword.trim()}%`;
-
-      params.push(search, search, search, search);
+      params.push(searchValue, searchValue, searchValue, searchValue);
     }
 
     // =====================================================
     // TYPE
     // =====================================================
-    if (type) {
-      where += " AND c.type = ?";
-      params.push(type);
+
+    if (type && type.trim() !== "") {
+      where += `
+        AND c.type = ?
+      `;
+
+      params.push(type.trim());
     }
 
     // =====================================================
     // DISTRICT
     // =====================================================
-    if (district) {
-      where += " AND c.district = ?";
-      params.push(district);
+
+    if (district && district.trim() !== "") {
+      where += `
+        AND c.district = ?
+      `;
+
+      params.push(district.trim());
     }
 
     // =====================================================
     // WARD
     // =====================================================
-    if (ward) {
-      where += " AND c.ward = ?";
-      params.push(ward);
+
+    if (ward && ward.trim() !== "") {
+      where += `
+        AND c.ward = ?
+      `;
+
+      params.push(ward.trim());
     }
 
     // =====================================================
     // ACTIVE
     // =====================================================
-    if (is_active !== undefined && is_active !== "") {
-      where += " AND c.is_active = ?";
+
+    if (is_active !== undefined && is_active !== null && is_active !== "") {
+      where += `
+        AND c.is_active = ?
+      `;
+
       params.push(is_active);
     }
 
     // =====================================================
+    // DEBUG
+    // =====================================================
+
+    console.log("====================================");
+    console.log("GET ALL CHURCHES");
+    console.log("QUERY:", req.query);
+    console.log("SEARCH:", search);
+    console.log("TYPE:", type);
+    console.log("WHERE:", where);
+    console.log("PARAMS:", params);
+    console.log("PAGE:", page);
+    console.log("LIMIT:", limit);
+    console.log("OFFSET:", offset);
+    console.log("====================================");
+
+    // =====================================================
     // COUNT
     // =====================================================
-    const [[count]] = await db.query(
-      `
+
+    const countSql = `
       SELECT COUNT(*) AS total
       FROM churches c
       ${where}
-      `,
-      params,
-    );
+    `;
+
+    const [[countResult]] = await db.query(countSql, params);
+
+    const total = Number(countResult?.total || 0);
 
     // =====================================================
-    // DATA
+    // GET DATA
     // =====================================================
-    const sqlData = `
+
+    const dataSql = `
       SELECT
         c.*,
 
@@ -139,7 +195,12 @@ exports.getAll = async (req, res) => {
       LIMIT ? OFFSET ?
     `;
 
-    const [rows] = await db.query(sqlData, [...params, limit, offset]);
+    // Không được dùng params trực tiếp
+    // vì LIMIT/OFFSET phải thêm vào cuối
+
+    const dataParams = [...params, limit, offset];
+
+    const [rows] = await db.query(dataSql, dataParams);
 
     // =====================================================
     // PROCESS LICENSE
@@ -158,8 +219,10 @@ exports.getAll = async (req, res) => {
         // =================================================
         // ACTIVE
         // =================================================
+
         if (licenseStatus === "active") {
           isExpired = false;
+
           daysRemaining = null;
         }
 
@@ -170,11 +233,11 @@ exports.getAll = async (req, res) => {
           if (church.trial_expires_at) {
             const expiresAt = new Date(church.trial_expires_at);
 
-            if (expiresAt <= now) {
-              // ==========================================
-              // LAZY EXPIRE
-              // ==========================================
+            // =============================================
+            // TRIAL EXPIRED
+            // =============================================
 
+            if (expiresAt <= now) {
               await db.query(
                 `
                 UPDATE churches
@@ -190,25 +253,24 @@ exports.getAll = async (req, res) => {
               isExpired = true;
 
               daysRemaining = 0;
-            } else {
-              // ==========================================
-              // CALCULATE REMAINING DAYS
-              // ==========================================
+            }
 
+            // =============================================
+            // TRIAL STILL ACTIVE
+            // =============================================
+            else {
               const diffMs = expiresAt.getTime() - now.getTime();
 
               daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 
               isExpired = false;
             }
-          } else {
-            // Trial nhưng không có ngày hết hạn
-            licenseStatus = "expired";
+          }
 
-            isExpired = true;
-
-            daysRemaining = 0;
-
+          // =============================================
+          // TRIAL WITHOUT EXPIRATION DATE
+          // =============================================
+          else {
             await db.query(
               `
               UPDATE churches
@@ -218,6 +280,12 @@ exports.getAll = async (req, res) => {
               `,
               [church.id],
             );
+
+            licenseStatus = "expired";
+
+            isExpired = true;
+
+            daysRemaining = 0;
           }
         }
 
@@ -231,7 +299,7 @@ exports.getAll = async (req, res) => {
         }
 
         // =================================================
-        // RETURN CHURCH + LICENSE
+        // RETURN DATA
         // =================================================
 
         return {
@@ -239,9 +307,9 @@ exports.getAll = async (req, res) => {
 
           total_parishioners: Number(church.total_parishioners || 0),
 
-          // =================================================
+          // ===============================================
           // LICENSE
-          // =================================================
+          // ===============================================
 
           license_status: licenseStatus,
 
@@ -263,6 +331,12 @@ exports.getAll = async (req, res) => {
     );
 
     // =====================================================
+    // PAGINATION
+    // =====================================================
+
+    const totalPages = total > 0 ? Math.ceil(total / limit) : 0;
+
+    // =====================================================
     // RESPONSE
     // =====================================================
 
@@ -272,16 +346,20 @@ exports.getAll = async (req, res) => {
       data: processedRows,
 
       pagination: {
-        total: Number(count.total),
+        total,
 
         page,
 
         limit,
 
-        totalPages: Math.ceil(Number(count.total) / limit),
+        totalPages,
       },
     });
   } catch (err) {
+    // =====================================================
+    // ERROR
+    // =====================================================
+
     console.error("GET ALL CHURCHES ERROR:", err);
 
     return res.status(500).json({

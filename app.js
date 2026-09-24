@@ -49,6 +49,7 @@ const statisticsRoutes = require("./routes/statisticsRoutes");
 const emailRoutes = require("./routes/email");
 const contactMessageRoutes = require("./routes/contactMessageRoutes");
 const lessonResourceRoutes = require("./routes/lessonResourceRoutes");
+const gradingRuleRoutes = require("./routes/gradingRuleRoutes");
 
 // ===============================
 // APP
@@ -128,6 +129,8 @@ app.use("/api/statistics", statisticsRoutes);
 app.use("/api/email", emailRoutes);
 app.use("/api/contact-messages", contactMessageRoutes);
 app.use("/api/lesson-resources", lessonResourceRoutes);
+app.use("/api/grading-rules", gradingRuleRoutes);
+
 // ===============================
 // CORS MANAGEMENT
 // ===============================

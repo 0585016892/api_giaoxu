@@ -1,817 +1,1303 @@
 const db = require("../config/db");
 
 // =========================================================
-// HELPER
+// HELPERS
 // =========================================================
 
 const getChurchId = (req) => {
-  return req.user?.church_id;
-};
-
-const validateChurch = (req, res) => {
-  const churchId = getChurchId(req);
+  const churchId = req.user?.church_id;
 
   if (!churchId) {
-    res.status(403).json({
-      success: false,
-      message: "Tài khoản chưa được gán giáo xứ",
-    });
+    const error = new Error("Tài khoản chưa được gán giáo xứ");
+    error.statusCode = 403;
+    throw error;
+  }
 
+  return Number(churchId);
+};
+
+const getPagination = (req) => {
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+
+  const offset = (page - 1) * limit;
+
+  return {
+    page,
+    limit,
+    offset,
+  };
+};
+
+const isValidId = (value) => {
+  return Number.isInteger(Number(value)) && Number(value) > 0;
+};
+
+const normalizeNullable = (value) => {
+  if (value === undefined || value === null || value === "") {
     return null;
   }
 
-  return churchId;
+  return value;
 };
 
 // =========================================================
-// GET ALL RESULTS
-// GET /api/results
-//
-// GET /api/results?class_id=1
-//
-// Chỉ lấy dữ liệu của giáo xứ đang đăng nhập
+// STATISTICS
 // =========================================================
-const getResults = async (req, res) => {
+
+/**
+ * GET /api/results/statistics
+ *
+ * Thống kê kết quả của toàn giáo xứ
+ */
+exports.getResultStatistics = async (req, res) => {
   try {
-    console.log("\n");
-    console.log("============================================================");
-    console.log("📊 GET RESULTS - START");
-    console.log("============================================================");
+    const churchId = getChurchId(req);
 
-    // =====================================================
-    // 1. USER ĐĂNG NHẬP
-    // =====================================================
-
-    console.log("\n🔐 [1] AUTH USER");
-    console.log("req.user =", req.user);
-
-    const churchId = validateChurch(req, res);
-
-    console.log("⛪ churchId =", churchId);
-
-    if (!churchId) {
-      console.log("❌ Không xác định được churchId");
-      return;
-    }
-
-    // =====================================================
-    // 2. QUERY PARAM
-    // =====================================================
-
-    const { class_id } = req.query;
-
-    console.log("\n🏫 [2] QUERY");
-    console.log("class_id =", class_id);
-    console.log("class_id type =", typeof class_id);
-
-    // =====================================================
-    // 3. USERNAME
-    // =====================================================
-
-    const username = req.user?.username;
-
-    console.log("\n👤 [3] ACCOUNT");
-    console.log("username =", username);
-    console.log("role =", req.user?.role);
-    console.log("catechist_id JWT =", req.user?.catechist_id);
-    console.log("teacher_id JWT =", req.user?.teacher_id);
-
-    if (!username) {
-      console.log("❌ Không có username");
-
-      return res.status(401).json({
-        success: false,
-        message: "Không xác định được tài khoản giáo viên",
-      });
-    }
-
-    // =====================================================
-    // 4. TÌM GIÁO LÝ VIÊN
-    // =====================================================
-
-    console.log("\n👨‍🏫 [4] FIND CATECHIST");
-
-    const catechistSql = `
+    const [rows] = await db.query(
+      `
       SELECT
-        id,
-        catechist_code,
-        full_name,
-        church_id
-      FROM catechists
-      WHERE catechist_code = ?
-        AND church_id = ?
-      LIMIT 1
-    `;
+        COUNT(*) AS total_results,
 
-    console.log("SQL:");
-    console.log(catechistSql);
+        COUNT(DISTINCT student_id) AS total_students,
 
-    console.log("PARAMS:", [username, churchId]);
+        COUNT(DISTINCT grading_rule_item_id) AS total_rule_items,
 
-    const [catechists] = await db.query(catechistSql, [username, churchId]);
+        ROUND(AVG(score), 2) AS average_score,
 
-    console.log("catechists =", catechists);
+        MAX(score) AS highest_score,
 
-    if (!catechists.length) {
-      console.log("❌ Không tìm thấy giáo lý viên");
+        MIN(score) AS lowest_score,
 
-      return res.status(403).json({
-        success: false,
-        message: "Tài khoản chưa được liên kết với giáo lý viên",
-      });
-    }
+        SUM(
+          CASE
+            WHEN score >= 5 THEN 1
+            ELSE 0
+          END
+        ) AS passed_results,
 
-    const catechistId = catechists[0].id;
+        SUM(
+          CASE
+            WHEN score < 5 THEN 1
+            ELSE 0
+          END
+        ) AS failed_results
 
-    console.log("✅ catechistId =", catechistId);
-    console.log("✅ catechist_code =", catechists[0].catechist_code);
-    console.log("✅ catechist_name =", catechists[0].full_name);
+      FROM results
 
-    // =====================================================
-    // 5. KIỂM TRA GIÁO VIÊN ĐƯỢC PHÂN NHỮNG LỚP NÀO
-    // =====================================================
-
-    console.log("\n🏫 [5] ASSIGNED CLASSES");
-
-    const assignedClassSql = `
-      SELECT
-        ctc.catechist_id,
-        ctc.class_id,
-        c.id AS real_class_id,
-        c.name AS class_name,
-        c.church_id
-      FROM catechist_classes ctc
-
-      INNER JOIN classes c
-        ON c.id = ctc.class_id
-
-      WHERE ctc.catechist_id = ?
-        AND c.church_id = ?
-
-      ORDER BY c.id ASC
-    `;
-
-    console.log("SQL:");
-    console.log(assignedClassSql);
-
-    console.log("PARAMS:", [catechistId, churchId]);
-
-    const [assignedClasses] = await db.query(assignedClassSql, [
-      catechistId,
-      churchId,
-    ]);
-
-    console.log("📚 Tổng số lớp được phân:", assignedClasses.length);
-
-    console.table(assignedClasses);
-
-    // =====================================================
-    // 6. KIỂM TRA CLASS_ID ĐƯỢC CHỌN
-    // =====================================================
-
-    if (class_id) {
-      console.log("\n🎯 [6] CHECK SELECTED CLASS");
-
-      const selectedClass = assignedClasses.find(
-        (item) => String(item.class_id) === String(class_id),
-      );
-
-      if (!selectedClass) {
-        console.log("❌ CLASS KHÔNG THUỘC GIÁO VIÊN");
-
-        console.log("class_id yêu cầu =", class_id);
-
-        console.log(
-          "Các class giáo viên có =",
-          assignedClasses.map((item) => item.class_id),
-        );
-
-        return res.status(403).json({
-          success: false,
-          message: "Bạn không được phép xem bảng điểm của lớp này",
-        });
-      }
-
-      console.log("✅ CLASS HỢP LỆ");
-      console.log("class_id =", selectedClass.class_id);
-      console.log("class_name =", selectedClass.class_name);
-    }
-
-    // =====================================================
-    // 7. SQL LẤY HỌC SINH + ĐIỂM
-    // =====================================================
-
-    console.log("\n📊 [7] BUILD RESULTS SQL");
-
-    let sql = `
-      SELECT
-
-        s.id AS student_id,
-        s.name AS student_name,
-
-        c.id AS class_id,
-        c.name AS class_name,
-
-        COUNT(r.id) AS total_results,
-
-        COALESCE(
-          ROUND(AVG(r.score), 2),
-          0
-        ) AS average_score,
-
-        COALESCE(
-          MAX(r.score),
-          0
-        ) AS highest_score,
-
-        COALESCE(
-          MIN(r.score),
-          0
-        ) AS lowest_score,
-
-        MAX(r.exam_date) AS latest_exam_date
-
-      FROM catechist_classes ctc
-
-      INNER JOIN classes c
-        ON c.id = ctc.class_id
-       AND c.church_id = ?
-
-      INNER JOIN class_students cs
-        ON cs.class_id = c.id
-
-      INNER JOIN students s
-        ON s.id = cs.student_id
-
-      LEFT JOIN results r
-        ON r.student_id = s.id
-       AND r.church_id = c.church_id
-
-      WHERE ctc.catechist_id = ?
-    `;
-
-    const params = [churchId, catechistId];
-
-    // =====================================================
-    // 8. CLASS FILTER
-    // =====================================================
-
-    if (class_id) {
-      sql += `
-        AND c.id = ?
-      `;
-
-      params.push(class_id);
-    }
-
-    // =====================================================
-    // 9. GROUP
-    // =====================================================
-
-    sql += `
-      GROUP BY
-        s.id,
-        s.name,
-        c.id,
-        c.name
-
-      ORDER BY
-        c.name ASC,
-        s.name ASC
-    `;
-
-    // =====================================================
-    // 10. LOG SQL + PARAMS
-    // =====================================================
-
-    console.log("\n================ SQL =================");
-
-    console.log(sql);
-
-    console.log("\n================ PARAMS =================");
-
-    console.log(params);
-
-    // =====================================================
-    // 11. CHẠY QUERY
-    // =====================================================
-
-    console.log("\n🚀 [8] EXECUTE QUERY");
-
-    const [results] = await db.query(sql, params);
-
-    // =====================================================
-    // 12. KẾT QUẢ
-    // =====================================================
-
-    console.log("\n================ RESULT =================");
-
-    console.log("📊 Tổng số học sinh trả về:", results.length);
-
-    console.table(results);
-
-    // =====================================================
-    // 13. THỐNG KÊ THEO LỚP
-    // =====================================================
-
-    const classSummary = {};
-
-    results.forEach((item) => {
-      const key = item.class_id;
-
-      if (!classSummary[key]) {
-        classSummary[key] = {
-          class_id: item.class_id,
-          class_name: item.class_name,
-          total_students: 0,
-          students_have_results: 0,
-        };
-      }
-
-      classSummary[key].total_students++;
-
-      if (Number(item.total_results) > 0) {
-        classSummary[key].students_have_results++;
-      }
-    });
-
-    console.log("\n================ CLASS SUMMARY =================");
-
-    console.table(Object.values(classSummary));
-
-    // =====================================================
-    // 14. KIỂM TRA HỌC SINH CHƯA CÓ ĐIỂM
-    // =====================================================
-
-    const studentsWithoutResults = results.filter(
-      (item) => Number(item.total_results) === 0,
+      WHERE church_id = ?
+      `,
+      [churchId],
     );
 
-    console.log("\n📝 Học sinh chưa có điểm:", studentsWithoutResults.length);
+    const statistics = rows[0] || {
+      total_results: 0,
+      total_students: 0,
+      total_rule_items: 0,
+      average_score: 0,
+      highest_score: null,
+      lowest_score: null,
+      passed_results: 0,
+      failed_results: 0,
+    };
 
-    if (studentsWithoutResults.length > 0) {
-      console.table(
-        studentsWithoutResults.map((item) => ({
-          student_id: item.student_id,
-          student_name: item.student_name,
-          class_id: item.class_id,
-          class_name: item.class_name,
-        })),
-      );
-    }
+    const totalResults = Number(statistics.total_results || 0);
 
-    // =====================================================
-    // 15. KIỂM TRA HỌC SINH ĐÃ CÓ ĐIỂM
-    // =====================================================
+    statistics.pass_rate =
+      totalResults > 0
+        ? Number(
+            (
+              (Number(statistics.passed_results || 0) / totalResults) *
+              100
+            ).toFixed(2),
+          )
+        : 0;
 
-    const studentsWithResults = results.filter(
-      (item) => Number(item.total_results) > 0,
-    );
+    statistics.fail_rate =
+      totalResults > 0
+        ? Number(
+            (
+              (Number(statistics.failed_results || 0) / totalResults) *
+              100
+            ).toFixed(2),
+          )
+        : 0;
 
-    console.log("\n📚 Học sinh đã có điểm:", studentsWithResults.length);
-
-    // =====================================================
-    // 16. RESPONSE
-    // =====================================================
-
-    console.log("\n✅ [9] RESPONSE SUCCESS");
-
-    console.log("Tổng records:", results.length);
-
-    console.log("============================================================");
-
-    return res.status(200).json({
+    return res.json({
       success: true,
-      data: results,
+      data: statistics,
     });
   } catch (error) {
-    console.error("\n❌❌❌ GET RESULTS ERROR ❌❌❌");
+    console.error("❌ getResultStatistics:", error);
 
-    console.error(error);
-
-    console.error("message:", error.message);
-
-    console.error("code:", error.code);
-
-    console.error("sqlState:", error.sqlState);
-
-    console.error("sqlMessage:", error.sqlMessage);
-
-    console.error(
-      "============================================================",
-    );
-
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Không thể lấy danh sách bảng điểm",
-      error: error.message,
+      message: error.message || "Không thể lấy thống kê kết quả",
     });
   }
 };
 
 // =========================================================
-// GET RESULT BY ID
-// GET /api/results/:id
+// CLASS
 // =========================================================
 
-const getResultById = async (req, res) => {
+/**
+ * GET /api/results/class/:classId
+ *
+ * Bảng điểm của lớp
+ */
+exports.getResultsByClass = async (req, res) => {
   try {
-    const churchId = validateChurch(req, res);
+    const churchId = getChurchId(req);
 
-    if (!churchId) return;
+    const { classId } = req.params;
 
-    const { id } = req.params;
+    if (!isValidId(classId)) {
+      return res.status(400).json({
+        success: false,
+        message: "classId không hợp lệ",
+      });
+    }
 
-    const [results] = await db.query(
+    const { page, limit, offset } = getPagination(req);
+
+    const [rows] = await db.query(
       `
       SELECT
         r.id,
+
         r.church_id,
+
         r.student_id,
-        r.score,
-        r.exam_type,
-        r.exam_date,
-        r.note,
-        r.created_at,
-        r.updated_at,
+
+        s.code AS student_code,
 
         s.name AS student_name,
 
-        c.id AS class_id,
-        c.name AS class_name
+        s.gender,
+
+        r.grading_rule_id,
+
+        r.grading_rule_item_id,
+
+        gri.code AS item_code,
+
+        gri.name AS item_name,
+
+        gri.weight,
+
+        gri.max_score,
+
+        r.score,
+
+        r.exam_type,
+
+        r.exam_date,
+
+        r.note,
+
+        r.created_at,
+
+        r.updated_at
 
       FROM results r
 
       INNER JOIN students s
         ON s.id = r.student_id
+        AND s.church_id = r.church_id
 
-      LEFT JOIN class_students cs
-        ON cs.student_id = s.id
+      INNER JOIN class_students cs
+        ON cs.student_id = r.student_id
 
-      LEFT JOIN classes c
-        ON c.id = cs.class_id
-       AND c.church_id = r.church_id
+      INNER JOIN grading_rule_items gri
+        ON gri.id = r.grading_rule_item_id
+        AND gri.grading_rule_id = r.grading_rule_id
+
+      WHERE r.church_id = ?
+        AND cs.class_id = ?
+
+      ORDER BY
+        s.name ASC,
+        gri.sort_order ASC,
+        r.exam_date DESC,
+        r.id DESC
+
+      LIMIT ? OFFSET ?
+      `,
+      [churchId, Number(classId), limit, offset],
+    );
+
+    const [countRows] = await db.query(
+      `
+      SELECT COUNT(*) AS total
+
+      FROM results r
+
+      INNER JOIN class_students cs
+        ON cs.student_id = r.student_id
+
+      WHERE r.church_id = ?
+        AND cs.class_id = ?
+      `,
+      [churchId, Number(classId)],
+    );
+
+    const total = Number(countRows[0]?.total || 0);
+
+    return res.json({
+      success: true,
+      data: rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error("❌ getResultsByClass:", error);
+
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Không thể lấy bảng điểm của lớp",
+    });
+  }
+};
+
+/**
+ * GET /api/results/class/:classId/statistics
+ *
+ * Thống kê điểm của lớp
+ */
+exports.getClassStatistics = async (req, res) => {
+  try {
+    const churchId = getChurchId(req);
+
+    const { classId } = req.params;
+
+    if (!isValidId(classId)) {
+      return res.status(400).json({
+        success: false,
+        message: "classId không hợp lệ",
+      });
+    }
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        COUNT(r.id) AS total_results,
+
+        COUNT(DISTINCT r.student_id)
+          AS total_students,
+
+        ROUND(AVG(r.score), 2)
+          AS average_score,
+
+        MAX(r.score)
+          AS highest_score,
+
+        MIN(r.score)
+          AS lowest_score,
+
+        SUM(
+          CASE
+            WHEN r.score >= 5 THEN 1
+            ELSE 0
+          END
+        ) AS passed_results,
+
+        SUM(
+          CASE
+            WHEN r.score < 5 THEN 1
+            ELSE 0
+          END
+        ) AS failed_results
+
+      FROM results r
+
+      INNER JOIN class_students cs
+        ON cs.student_id = r.student_id
+
+      WHERE r.church_id = ?
+        AND cs.class_id = ?
+      `,
+      [churchId, Number(classId)],
+    );
+
+    const data = rows[0] || {};
+
+    const total = Number(data.total_results || 0);
+
+    data.pass_rate =
+      total > 0
+        ? Number(((Number(data.passed_results || 0) / total) * 100).toFixed(2))
+        : 0;
+
+    data.fail_rate =
+      total > 0
+        ? Number(((Number(data.failed_results || 0) / total) * 100).toFixed(2))
+        : 0;
+
+    return res.json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    console.error("❌ getClassStatistics:", error);
+
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Không thể lấy thống kê lớp",
+    });
+  }
+};
+
+// =========================================================
+// STUDENT
+// =========================================================
+
+/**
+ * GET /api/results/student/:studentId
+ *
+ * Toàn bộ điểm của học sinh
+ */
+exports.getResultsByStudent = async (req, res) => {
+  try {
+    const churchId = getChurchId(req);
+
+    const { studentId } = req.params;
+
+    if (!isValidId(studentId)) {
+      return res.status(400).json({
+        success: false,
+        message: "studentId không hợp lệ",
+      });
+    }
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        r.id,
+
+        r.church_id,
+
+        r.student_id,
+
+        s.code AS student_code,
+
+        s.name AS student_name,
+
+        r.grading_rule_id,
+
+        r.grading_rule_item_id,
+
+        gri.code AS item_code,
+
+        gri.name AS item_name,
+
+        gri.weight,
+
+        gri.max_score,
+
+        gri.sort_order,
+
+        gri.allow_multiple,
+
+        gri.aggregation_method,
+
+        r.score,
+
+        r.exam_type,
+
+        r.exam_date,
+
+        r.note,
+
+        r.created_at,
+
+        r.updated_at
+
+      FROM results r
+
+      INNER JOIN students s
+        ON s.id = r.student_id
+        AND s.church_id = r.church_id
+
+      INNER JOIN grading_rule_items gri
+        ON gri.id = r.grading_rule_item_id
+        AND gri.grading_rule_id = r.grading_rule_id
+
+      WHERE r.church_id = ?
+        AND r.student_id = ?
+
+      ORDER BY
+        gri.sort_order ASC,
+        r.exam_date DESC,
+        r.id DESC
+      `,
+      [churchId, Number(studentId)],
+    );
+
+    return res.json({
+      success: true,
+      data: rows,
+    });
+  } catch (error) {
+    console.error("❌ getResultsByStudent:", error);
+
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Không thể lấy điểm của học sinh",
+    });
+  }
+};
+
+/**
+ * GET /api/results/student/:studentId/statistics
+ *
+ * Thống kê điểm học sinh
+ */
+exports.getStudentStatistics = async (req, res) => {
+  try {
+    const churchId = getChurchId(req);
+
+    const { studentId } = req.params;
+
+    if (!isValidId(studentId)) {
+      return res.status(400).json({
+        success: false,
+        message: "studentId không hợp lệ",
+      });
+    }
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        COUNT(*) AS total_results,
+
+        COUNT(DISTINCT grading_rule_item_id)
+          AS total_items,
+
+        ROUND(AVG(score), 2)
+          AS average_score,
+
+        MAX(score)
+          AS highest_score,
+
+        MIN(score)
+          AS lowest_score,
+
+        SUM(
+          CASE
+            WHEN score >= 5 THEN 1
+            ELSE 0
+          END
+        ) AS passed_results,
+
+        SUM(
+          CASE
+            WHEN score < 5 THEN 1
+            ELSE 0
+          END
+        ) AS failed_results
+
+      FROM results
+
+      WHERE church_id = ?
+        AND student_id = ?
+      `,
+      [churchId, Number(studentId)],
+    );
+
+    const data = rows[0] || {};
+
+    const total = Number(data.total_results || 0);
+
+    data.pass_rate =
+      total > 0
+        ? Number(((Number(data.passed_results || 0) / total) * 100).toFixed(2))
+        : 0;
+
+    data.fail_rate =
+      total > 0
+        ? Number(((Number(data.failed_results || 0) / total) * 100).toFixed(2))
+        : 0;
+
+    return res.json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    console.error("❌ getStudentStatistics:", error);
+
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Không thể lấy thống kê học sinh",
+    });
+  }
+};
+
+// =========================================================
+// GRADING RULE
+// =========================================================
+
+/**
+ * GET /api/results/rule/:ruleId
+ *
+ * Lấy các kết quả thuộc một grading rule
+ */
+exports.getResultsByRule = async (req, res) => {
+  try {
+    const churchId = getChurchId(req);
+
+    const { ruleId } = req.params;
+
+    if (!isValidId(ruleId)) {
+      return res.status(400).json({
+        success: false,
+        message: "ruleId không hợp lệ",
+      });
+    }
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        r.id,
+
+        r.student_id,
+
+        s.code AS student_code,
+
+        s.name AS student_name,
+
+        r.grading_rule_id,
+
+        r.grading_rule_item_id,
+
+        gri.code AS item_code,
+
+        gri.name AS item_name,
+
+        gri.weight,
+
+        gri.max_score,
+
+        gri.sort_order,
+
+        r.score,
+
+        r.exam_type,
+
+        r.exam_date,
+
+        r.note,
+
+        r.created_at,
+
+        r.updated_at
+
+      FROM results r
+
+      INNER JOIN students s
+        ON s.id = r.student_id
+        AND s.church_id = r.church_id
+
+      INNER JOIN grading_rule_items gri
+        ON gri.id = r.grading_rule_item_id
+        AND gri.grading_rule_id = r.grading_rule_id
+
+      WHERE r.church_id = ?
+        AND r.grading_rule_id = ?
+
+      ORDER BY
+        s.name ASC,
+        gri.sort_order ASC,
+        r.exam_date DESC,
+        r.id DESC
+      `,
+      [churchId, Number(ruleId)],
+    );
+
+    return res.json({
+      success: true,
+      data: rows,
+    });
+  } catch (error) {
+    console.error("❌ getResultsByRule:", error);
+
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Không thể lấy kết quả theo bộ quy tắc",
+    });
+  }
+};
+
+/**
+ * GET /api/results/rule-item/:ruleItemId
+ *
+ * Lấy kết quả của một đầu điểm
+ */
+exports.getResultsByRuleItem = async (req, res) => {
+  try {
+    const churchId = getChurchId(req);
+
+    const { ruleItemId } = req.params;
+
+    if (!isValidId(ruleItemId)) {
+      return res.status(400).json({
+        success: false,
+        message: "ruleItemId không hợp lệ",
+      });
+    }
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        r.id,
+
+        r.student_id,
+
+        s.code AS student_code,
+
+        s.name AS student_name,
+
+        r.grading_rule_id,
+
+        r.grading_rule_item_id,
+
+        gri.code AS item_code,
+
+        gri.name AS item_name,
+
+        gri.weight,
+
+        gri.max_score,
+
+        r.score,
+
+        r.exam_type,
+
+        r.exam_date,
+
+        r.note,
+
+        r.created_at,
+
+        r.updated_at
+
+      FROM results r
+
+      INNER JOIN students s
+        ON s.id = r.student_id
+        AND s.church_id = r.church_id
+
+      INNER JOIN grading_rule_items gri
+        ON gri.id = r.grading_rule_item_id
+
+      WHERE r.church_id = ?
+        AND r.grading_rule_item_id = ?
+
+      ORDER BY
+        s.name ASC,
+        r.exam_date DESC,
+        r.id DESC
+      `,
+      [churchId, Number(ruleItemId)],
+    );
+
+    return res.json({
+      success: true,
+      data: rows,
+    });
+  } catch (error) {
+    console.error("❌ getResultsByRuleItem:", error);
+
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Không thể lấy kết quả theo đầu điểm",
+    });
+  }
+};
+
+// =========================================================
+// GET ALL
+// =========================================================
+
+/**
+ * GET /api/results
+ *
+ * Danh sách kết quả
+ *
+ * Query:
+ * ?page=1
+ * &limit=20
+ * &student_id=1
+ * &grading_rule_id=1
+ * &grading_rule_item_id=2
+ * &class_id=3
+ * &exam_type=paper
+ */
+exports.getResults = async (req, res) => {
+  try {
+    const churchId = getChurchId(req);
+
+    const { page, limit, offset } = getPagination(req);
+
+    const {
+      student_id,
+      grading_rule_id,
+      grading_rule_item_id,
+      class_id,
+      exam_type,
+    } = req.query;
+
+    const conditions = ["r.church_id = ?"];
+
+    const params = [churchId];
+
+    if (student_id) {
+      if (!isValidId(student_id)) {
+        return res.status(400).json({
+          success: false,
+          message: "student_id không hợp lệ",
+        });
+      }
+
+      conditions.push("r.student_id = ?");
+
+      params.push(Number(student_id));
+    }
+
+    if (grading_rule_id) {
+      if (!isValidId(grading_rule_id)) {
+        return res.status(400).json({
+          success: false,
+          message: "grading_rule_id không hợp lệ",
+        });
+      }
+
+      conditions.push("r.grading_rule_id = ?");
+
+      params.push(Number(grading_rule_id));
+    }
+
+    if (grading_rule_item_id) {
+      if (!isValidId(grading_rule_item_id)) {
+        return res.status(400).json({
+          success: false,
+          message: "grading_rule_item_id không hợp lệ",
+        });
+      }
+
+      conditions.push("r.grading_rule_item_id = ?");
+
+      params.push(Number(grading_rule_item_id));
+    }
+
+    if (class_id) {
+      if (!isValidId(class_id)) {
+        return res.status(400).json({
+          success: false,
+          message: "class_id không hợp lệ",
+        });
+      }
+
+      conditions.push(`
+        EXISTS (
+          SELECT 1
+          FROM class_students cs
+          WHERE cs.student_id = r.student_id
+            AND cs.class_id = ?
+        )
+      `);
+
+      params.push(Number(class_id));
+    }
+
+    if (exam_type) {
+      if (!["online", "paper"].includes(exam_type)) {
+        return res.status(400).json({
+          success: false,
+          message: "exam_type phải là online hoặc paper",
+        });
+      }
+
+      conditions.push("r.exam_type = ?");
+
+      params.push(exam_type);
+    }
+
+    const whereClause = conditions.join(" AND ");
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        r.id,
+
+        r.church_id,
+
+        r.student_id,
+
+        s.code AS student_code,
+
+        s.name AS student_name,
+
+        r.grading_rule_id,
+
+        r.grading_rule_item_id,
+
+        gri.code AS item_code,
+
+        gri.name AS item_name,
+
+        gri.weight,
+
+        gri.max_score,
+
+        gri.sort_order,
+
+        gri.allow_multiple,
+
+        gri.aggregation_method,
+
+        r.score,
+
+        r.exam_type,
+
+        r.exam_date,
+
+        r.note,
+
+        r.created_at,
+
+        r.updated_at
+
+      FROM results r
+
+      INNER JOIN students s
+        ON s.id = r.student_id
+        AND s.church_id = r.church_id
+
+      INNER JOIN grading_rule_items gri
+        ON gri.id = r.grading_rule_item_id
+        AND gri.grading_rule_id = r.grading_rule_id
+
+      WHERE ${whereClause}
+
+      ORDER BY
+        r.created_at DESC,
+        r.id DESC
+
+      LIMIT ? OFFSET ?
+      `,
+      [...params, limit, offset],
+    );
+
+    const countParams = [...params];
+
+    const [countRows] = await db.query(
+      `
+      SELECT COUNT(*) AS total
+
+      FROM results r
+
+      INNER JOIN students s
+        ON s.id = r.student_id
+        AND s.church_id = r.church_id
+
+      INNER JOIN grading_rule_items gri
+        ON gri.id = r.grading_rule_item_id
+        AND gri.grading_rule_id = r.grading_rule_id
+
+      WHERE ${whereClause}
+      `,
+      countParams,
+    );
+
+    const total = Number(countRows[0]?.total || 0);
+
+    return res.json({
+      success: true,
+      data: rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error("❌ getResults:", error);
+
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Không thể lấy danh sách kết quả",
+    });
+  }
+};
+
+// =========================================================
+// GET BY ID
+// =========================================================
+
+/**
+ * GET /api/results/:id
+ */
+exports.getResultById = async (req, res) => {
+  try {
+    const churchId = getChurchId(req);
+
+    const { id } = req.params;
+
+    if (!isValidId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "ID kết quả không hợp lệ",
+      });
+    }
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        r.id,
+
+        r.church_id,
+
+        r.student_id,
+
+        s.code AS student_code,
+
+        s.name AS student_name,
+
+        r.grading_rule_id,
+
+        r.grading_rule_item_id,
+
+        gri.code AS item_code,
+
+        gri.name AS item_name,
+
+        gri.weight,
+
+        gri.max_score,
+
+        gri.sort_order,
+
+        gri.allow_multiple,
+
+        gri.aggregation_method,
+
+        r.score,
+
+        r.exam_type,
+
+        r.exam_date,
+
+        r.note,
+
+        r.created_at,
+
+        r.updated_at
+
+      FROM results r
+
+      INNER JOIN students s
+        ON s.id = r.student_id
+        AND s.church_id = r.church_id
+
+      INNER JOIN grading_rule_items gri
+        ON gri.id = r.grading_rule_item_id
+        AND gri.grading_rule_id = r.grading_rule_id
 
       WHERE r.id = ?
         AND r.church_id = ?
 
       LIMIT 1
       `,
-      [id, churchId],
+      [Number(id), churchId],
     );
 
-    if (!results.length) {
+    if (!rows.length) {
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy kết quả",
       });
     }
 
-    res.status(200).json({
+    return res.json({
       success: true,
-      data: results[0],
+      data: rows[0],
     });
   } catch (error) {
-    console.error("GET RESULT BY ID ERROR:", error);
+    console.error("❌ getResultById:", error);
 
-    res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Không thể lấy kết quả",
-      error: error.message,
+      message: error.message || "Không thể lấy chi tiết kết quả",
     });
   }
 };
 
 // =========================================================
-// GET RESULTS BY STUDENT
-// GET /api/results/student/:studentId
+// CREATE
 // =========================================================
 
-const getResultsByStudent = async (req, res) => {
+/**
+ * POST /api/results
+ */
+exports.createResult = async (req, res) => {
   try {
-    const churchId = validateChurch(req, res);
+    const churchId = getChurchId(req);
 
-    if (!churchId) return;
+    const {
+      student_id,
+      grading_rule_id,
+      grading_rule_item_id,
+      score,
+      exam_type = "online",
+      exam_date,
+      note,
+    } = req.body;
 
-    const { studentId } = req.params;
+    // -----------------------------------------------------
+    // VALIDATION
+    // -----------------------------------------------------
 
-    const [results] = await db.query(
-      `
-      SELECT
-        r.id,
-        r.church_id,
-        r.student_id,
-        r.score,
-        r.exam_type,
-        r.exam_date,
-        r.note,
-        r.created_at,
-        r.updated_at,
-
-        s.name AS student_name,
-
-        c.id AS class_id,
-        c.name AS class_name
-
-      FROM results r
-
-      INNER JOIN students s
-        ON s.id = r.student_id
-
-      LEFT JOIN class_students cs
-        ON cs.student_id = s.id
-
-      LEFT JOIN classes c
-        ON c.id = cs.class_id
-       AND c.church_id = r.church_id
-
-      WHERE r.student_id = ?
-        AND r.church_id = ?
-
-      ORDER BY
-        r.exam_date DESC,
-        r.created_at DESC
-      `,
-      [studentId, churchId],
-    );
-
-    res.status(200).json({
-      success: true,
-      data: results,
-    });
-  } catch (error) {
-    console.error("GET RESULTS BY STUDENT ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Không thể lấy kết quả của học viên",
-      error: error.message,
-    });
-  }
-};
-
-// =========================================================
-// GET RESULTS BY CLASS
-// GET /api/results/class/:classId
-// =========================================================
-
-const getResultsByClass = async (req, res) => {
-  try {
-    const churchId = validateChurch(req, res);
-
-    if (!churchId) return;
-
-    const { classId } = req.params;
-
-    // =====================================================
-    // CHECK CLASS THUỘC GIÁO XỨ
-    // =====================================================
-
-    const [classes] = await db.query(
-      `
-      SELECT
-        id,
-        name,
-        church_id
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
-      `,
-      [classId, churchId],
-    );
-
-    if (!classes.length) {
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy lớp trong giáo xứ",
-      });
-    }
-
-    // =====================================================
-    // GET RESULTS
-    // =====================================================
-
-    const [results] = await db.query(
-      `
-      SELECT
-        s.id AS student_id,
-        s.name AS student_name,
-
-        c.id AS class_id,
-        c.name AS class_name,
-
-        COUNT(r.id) AS total_results,
-
-        COALESCE(
-          ROUND(AVG(r.score), 2),
-          0
-        ) AS average_score,
-
-        COALESCE(
-          MAX(r.score),
-          0
-        ) AS highest_score,
-
-        COALESCE(
-          MIN(r.score),
-          0
-        ) AS lowest_score,
-
-        MAX(r.exam_date) AS latest_exam_date
-
-      FROM class_students cs
-
-      INNER JOIN students s
-        ON s.id = cs.student_id
-
-      INNER JOIN classes c
-        ON c.id = cs.class_id
-
-      LEFT JOIN results r
-        ON r.student_id = s.id
-       AND r.church_id = ?
-
-      WHERE cs.class_id = ?
-        AND c.church_id = ?
-
-      GROUP BY
-        s.id,
-        s.name,
-        c.id,
-        c.name
-
-      ORDER BY
-        average_score DESC,
-        s.name ASC
-      `,
-      [churchId, classId, churchId],
-    );
-
-    res.status(200).json({
-      success: true,
-      class: classes[0],
-      data: results,
-    });
-  } catch (error) {
-    console.error("GET RESULTS BY CLASS ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Không thể lấy bảng điểm của lớp",
-      error: error.message,
-    });
-  }
-};
-
-// =========================================================
-// CREATE RESULT
-// POST /api/results
-// =========================================================
-
-const createResult = async (req, res) => {
-  try {
-    const churchId = validateChurch(req, res);
-
-    if (!churchId) return;
-
-    const { student_id, score, exam_type, exam_date, note } = req.body;
-
-    // =====================================================
-    // VALIDATE STUDENT
-    // =====================================================
-
-    if (student_id === undefined || student_id === null || student_id === "") {
+    if (!isValidId(student_id)) {
       return res.status(400).json({
         success: false,
-        message: "student_id là bắt buộc",
+        message: "student_id không hợp lệ",
       });
     }
 
-    // =====================================================
-    // VALIDATE SCORE
-    // =====================================================
+    if (!isValidId(grading_rule_id)) {
+      return res.status(400).json({
+        success: false,
+        message: "grading_rule_id không hợp lệ",
+      });
+    }
+
+    if (!isValidId(grading_rule_item_id)) {
+      return res.status(400).json({
+        success: false,
+        message: "grading_rule_item_id không hợp lệ",
+      });
+    }
 
     if (score === undefined || score === null || score === "") {
       return res.status(400).json({
         success: false,
-        message: "Điểm số là bắt buộc",
+        message: "Vui lòng nhập điểm",
       });
     }
 
     const numericScore = Number(score);
 
-    if (Number.isNaN(numericScore)) {
+    if (!Number.isFinite(numericScore)) {
       return res.status(400).json({
         success: false,
-        message: "Điểm phải là số",
+        message: "Điểm không hợp lệ",
       });
     }
 
-    if (numericScore < 0 || numericScore > 10) {
+    if (!["online", "paper"].includes(exam_type)) {
       return res.status(400).json({
         success: false,
-        message: "Điểm phải nằm trong khoảng 0 - 10",
+        message: "exam_type phải là online hoặc paper",
       });
     }
 
-    // =====================================================
-    // EXAM TYPE
-    // =====================================================
+    // -----------------------------------------------------
+    // CHECK STUDENT
+    // -----------------------------------------------------
 
-    const validExamType = exam_type || "online";
-
-    if (!["online", "paper"].includes(validExamType)) {
-      return res.status(400).json({
-        success: false,
-        message: "exam_type chỉ được là online hoặc paper",
-      });
-    }
-
-    // =====================================================
-    // CHECK STUDENT THUỘC GIÁO XỨ
-    //
-    // students -> class_students -> classes
-    // =====================================================
-
-    const [students] = await db.query(
+    const [studentRows] = await db.query(
       `
-      SELECT DISTINCT
-        s.id
-      FROM students s
+      SELECT
+        id,
+        name,
+        church_id
 
-      INNER JOIN class_students cs
-        ON cs.student_id = s.id
+      FROM students
 
-      INNER JOIN classes c
-        ON c.id = cs.class_id
-
-      WHERE s.id = ?
-        AND c.church_id = ?
+      WHERE id = ?
+        AND church_id = ?
 
       LIMIT 1
       `,
-      [student_id, churchId],
+      [Number(student_id), churchId],
     );
 
-    if (!students.length) {
+    if (!studentRows.length) {
       return res.status(404).json({
         success: false,
-        message: "Học viên không thuộc giáo xứ này",
+        message: "Không tìm thấy học sinh trong giáo xứ",
       });
     }
 
-    // =====================================================
-    // CREATE RESULT
-    // =====================================================
+    // -----------------------------------------------------
+    // CHECK RULE + ITEM
+    // -----------------------------------------------------
+
+    const [ruleRows] = await db.query(
+      `
+      SELECT
+        gr.id AS grading_rule_id,
+
+        gr.church_id,
+
+        gr.status,
+
+        gri.id AS grading_rule_item_id,
+
+        gri.name,
+
+        gri.code,
+
+        gri.max_score,
+
+        gri.allow_multiple,
+
+        gri.aggregation_method
+
+      FROM grading_rules gr
+
+      INNER JOIN grading_rule_items gri
+        ON gri.grading_rule_id = gr.id
+
+      WHERE gr.id = ?
+        AND gr.church_id = ?
+        AND gri.id = ?
+
+      LIMIT 1
+      `,
+      [Number(grading_rule_id), churchId, Number(grading_rule_item_id)],
+    );
+
+    if (!ruleRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Bộ quy tắc hoặc đầu điểm không tồn tại",
+      });
+    }
+
+    const ruleItem = ruleRows[0];
+
+    if (ruleItem.status !== "active") {
+      return res.status(400).json({
+        success: false,
+        message: "Bộ quy tắc tính điểm hiện không hoạt động",
+      });
+    }
+
+    const maxScore = Number(ruleItem.max_score);
+
+    if (numericScore < 0 || numericScore > maxScore) {
+      return res.status(400).json({
+        success: false,
+        message: `Điểm phải từ 0 đến ${maxScore}`,
+      });
+    }
+
+    // -----------------------------------------------------
+    // CHECK MULTIPLE
+    // -----------------------------------------------------
+
+    if (Number(ruleItem.allow_multiple) === 0) {
+      const [existingRows] = await db.query(
+        `
+        SELECT id
+
+        FROM results
+
+        WHERE church_id = ?
+          AND student_id = ?
+          AND grading_rule_id = ?
+          AND grading_rule_item_id = ?
+
+        LIMIT 1
+        `,
+        [
+          churchId,
+          Number(student_id),
+          Number(grading_rule_id),
+          Number(grading_rule_item_id),
+        ],
+      );
+
+      if (existingRows.length) {
+        return res.status(409).json({
+          success: false,
+          message: "Học sinh đã có điểm ở đầu điểm này",
+        });
+      }
+    }
+
+    // -----------------------------------------------------
+    // INSERT
+    // -----------------------------------------------------
 
     const [result] = await db.query(
       `
       INSERT INTO results (
         church_id,
         student_id,
+        grading_rule_id,
+        grading_rule_item_id,
         score,
         exam_type,
         exam_date,
         note
       )
-      VALUES (?, ?, ?, ?, ?, ?)
+
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         churchId,
-        student_id,
+        Number(student_id),
+        Number(grading_rule_id),
+        Number(grading_rule_item_id),
         numericScore,
-        validExamType,
-        exam_date || null,
-        note || null,
+        exam_type,
+        normalizeNullable(exam_date),
+        normalizeNullable(note),
       ],
     );
 
-    // =====================================================
+    // -----------------------------------------------------
     // GET CREATED RESULT
-    // =====================================================
+    // -----------------------------------------------------
 
-    const [createdResult] = await db.query(
+    const [rows] = await db.query(
       `
       SELECT
         r.*,
 
+        s.code AS student_code,
+
         s.name AS student_name,
 
-        c.id AS class_id,
-        c.name AS class_name
+        gri.code AS item_code,
+
+        gri.name AS item_name,
+
+        gri.weight,
+
+        gri.max_score,
+
+        gri.sort_order,
+
+        gri.allow_multiple,
+
+        gri.aggregation_method
 
       FROM results r
 
       INNER JOIN students s
         ON s.id = r.student_id
 
-      LEFT JOIN class_students cs
-        ON cs.student_id = s.id
-
-      LEFT JOIN classes c
-        ON c.id = cs.class_id
-       AND c.church_id = r.church_id
+      INNER JOIN grading_rule_items gri
+        ON gri.id = r.grading_rule_item_id
 
       WHERE r.id = ?
         AND r.church_id = ?
@@ -821,241 +1307,361 @@ const createResult = async (req, res) => {
       [result.insertId, churchId],
     );
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "Thêm kết quả thành công",
-      data: createdResult[0],
+      data: rows[0],
     });
   } catch (error) {
-    console.error("CREATE RESULT ERROR:", error);
+    console.error("❌ createResult:", error);
 
-    res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Không thể thêm kết quả",
-      error: error.message,
+      message: error.message || "Không thể thêm kết quả",
     });
   }
 };
 
 // =========================================================
-// UPDATE RESULT
-// PUT /api/results/:id
+// UPDATE
 // =========================================================
 
-const updateResult = async (req, res) => {
+/**
+ * PUT /api/results/:id
+ */
+exports.updateResult = async (req, res) => {
   try {
-    const churchId = validateChurch(req, res);
-
-    if (!churchId) return;
+    const churchId = getChurchId(req);
 
     const { id } = req.params;
 
-    const { student_id, score, exam_type, exam_date, note } = req.body;
+    if (!isValidId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "ID kết quả không hợp lệ",
+      });
+    }
 
-    // =====================================================
-    // CHECK RESULT THUỘC GIÁO XỨ
-    // =====================================================
+    // -----------------------------------------------------
+    // CHECK RESULT
+    // -----------------------------------------------------
 
-    const [existingResults] = await db.query(
+    const [existingRows] = await db.query(
       `
       SELECT *
+
       FROM results
+
       WHERE id = ?
         AND church_id = ?
+
       LIMIT 1
       `,
-      [id, churchId],
+      [Number(id), churchId],
     );
 
-    if (!existingResults.length) {
+    if (!existingRows.length) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy kết quả trong giáo xứ",
+        message: "Không tìm thấy kết quả",
       });
     }
 
-    const existingResult = existingResults[0];
+    const existing = existingRows[0];
 
-    // =====================================================
-    // STUDENT
-    // =====================================================
+    const {
+      score,
+      exam_type,
+      exam_date,
+      note,
+      grading_rule_id,
+      grading_rule_item_id,
+    } = req.body;
 
-    const finalStudentId =
-      student_id !== undefined && student_id !== null && student_id !== ""
-        ? student_id
-        : existingResult.student_id;
+    // -----------------------------------------------------
+    // UPDATE SCORE
+    // -----------------------------------------------------
 
-    // =====================================================
-    // SCORE
-    // =====================================================
+    let finalScore = existing.score;
 
-    const finalScore =
-      score !== undefined && score !== null && score !== ""
-        ? Number(score)
-        : Number(existingResult.score);
+    if (score !== undefined && score !== null && score !== "") {
+      const numericScore = Number(score);
 
-    if (Number.isNaN(finalScore)) {
+      if (!Number.isFinite(numericScore)) {
+        return res.status(400).json({
+          success: false,
+          message: "Điểm không hợp lệ",
+        });
+      }
+
+      finalScore = numericScore;
+    }
+
+    // -----------------------------------------------------
+    // FINAL RULE / ITEM
+    // -----------------------------------------------------
+
+    const finalRuleId =
+      grading_rule_id !== undefined
+        ? Number(grading_rule_id)
+        : Number(existing.grading_rule_id);
+
+    const finalRuleItemId =
+      grading_rule_item_id !== undefined
+        ? Number(grading_rule_item_id)
+        : Number(existing.grading_rule_item_id);
+
+    if (!isValidId(finalRuleId)) {
       return res.status(400).json({
         success: false,
-        message: "Điểm phải là số",
+        message: "grading_rule_id không hợp lệ",
       });
     }
 
-    if (finalScore < 0 || finalScore > 10) {
+    if (!isValidId(finalRuleItemId)) {
       return res.status(400).json({
         success: false,
-        message: "Điểm phải nằm trong khoảng 0 - 10",
+        message: "grading_rule_item_id không hợp lệ",
       });
     }
 
-    // =====================================================
-    // EXAM TYPE
-    // =====================================================
+    // -----------------------------------------------------
+    // CHECK RULE + ITEM
+    // -----------------------------------------------------
 
-    const finalExamType = exam_type || existingResult.exam_type;
-
-    if (!["online", "paper"].includes(finalExamType)) {
-      return res.status(400).json({
-        success: false,
-        message: "exam_type chỉ được là online hoặc paper",
-      });
-    }
-
-    // =====================================================
-    // CHECK STUDENT THUỘC GIÁO XỨ
-    // =====================================================
-
-    const [students] = await db.query(
+    const [ruleRows] = await db.query(
       `
-      SELECT DISTINCT
-        s.id
-      FROM students s
+      SELECT
+        gr.id AS grading_rule_id,
 
-      INNER JOIN class_students cs
-        ON cs.student_id = s.id
+        gr.church_id,
 
-      INNER JOIN classes c
-        ON c.id = cs.class_id
+        gr.status,
 
-      WHERE s.id = ?
-        AND c.church_id = ?
+        gri.id AS grading_rule_item_id,
+
+        gri.max_score,
+
+        gri.allow_multiple
+
+      FROM grading_rules gr
+
+      INNER JOIN grading_rule_items gri
+        ON gri.grading_rule_id = gr.id
+
+      WHERE gr.id = ?
+        AND gr.church_id = ?
+        AND gri.id = ?
 
       LIMIT 1
       `,
-      [finalStudentId, churchId],
+      [finalRuleId, churchId, finalRuleItemId],
     );
 
-    if (!students.length) {
+    if (!ruleRows.length) {
       return res.status(404).json({
         success: false,
-        message: "Học viên không thuộc giáo xứ này",
+        message: "Bộ quy tắc hoặc đầu điểm không tồn tại",
       });
     }
 
-    // =====================================================
+    const ruleItem = ruleRows[0];
+
+    if (ruleItem.status !== "active") {
+      return res.status(400).json({
+        success: false,
+        message: "Bộ quy tắc tính điểm hiện không hoạt động",
+      });
+    }
+
+    const maxScore = Number(ruleItem.max_score);
+
+    if (finalScore < 0 || finalScore > maxScore) {
+      return res.status(400).json({
+        success: false,
+        message: `Điểm phải từ 0 đến ${maxScore}`,
+      });
+    }
+
+    // -----------------------------------------------------
+    // CHECK DUPLICATE
+    // -----------------------------------------------------
+
+    if (Number(ruleItem.allow_multiple) === 0) {
+      const [duplicateRows] = await db.query(
+        `
+          SELECT id
+
+          FROM results
+
+          WHERE church_id = ?
+            AND student_id = ?
+            AND grading_rule_id = ?
+            AND grading_rule_item_id = ?
+            AND id <> ?
+
+          LIMIT 1
+          `,
+        [
+          churchId,
+          existing.student_id,
+          finalRuleId,
+          finalRuleItemId,
+          Number(id),
+        ],
+      );
+
+      if (duplicateRows.length) {
+        return res.status(409).json({
+          success: false,
+          message: "Học sinh đã có kết quả ở đầu điểm này",
+        });
+      }
+    }
+
+    // -----------------------------------------------------
+    // EXAM TYPE
+    // -----------------------------------------------------
+
+    const finalExamType =
+      exam_type !== undefined ? exam_type : existing.exam_type;
+
+    if (
+      finalExamType !== null &&
+      !["online", "paper"].includes(finalExamType)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "exam_type phải là online hoặc paper",
+      });
+    }
+
+    // -----------------------------------------------------
     // UPDATE
-    // =====================================================
+    // -----------------------------------------------------
 
     await db.query(
       `
       UPDATE results
+
       SET
-        student_id = ?,
+        grading_rule_id = ?,
+        grading_rule_item_id = ?,
         score = ?,
         exam_type = ?,
         exam_date = ?,
-        note = ?,
-        updated_at = CURRENT_TIMESTAMP
+        note = ?
 
       WHERE id = ?
         AND church_id = ?
       `,
       [
-        finalStudentId,
+        finalRuleId,
+        finalRuleItemId,
         finalScore,
         finalExamType,
-        exam_date !== undefined ? exam_date : existingResult.exam_date,
-        note !== undefined ? note : existingResult.note,
-        id,
+        normalizeNullable(
+          exam_date !== undefined ? exam_date : existing.exam_date,
+        ),
+        normalizeNullable(note !== undefined ? note : existing.note),
+        Number(id),
         churchId,
       ],
     );
 
-    // =====================================================
-    // GET UPDATED
-    // =====================================================
+    // -----------------------------------------------------
+    // RETURN UPDATED
+    // -----------------------------------------------------
 
-    const [updatedResults] = await db.query(
+    const [rows] = await db.query(
       `
       SELECT
         r.*,
 
+        s.code AS student_code,
+
         s.name AS student_name,
 
-        c.id AS class_id,
-        c.name AS class_name
+        gri.code AS item_code,
+
+        gri.name AS item_name,
+
+        gri.weight,
+
+        gri.max_score,
+
+        gri.sort_order,
+
+        gri.allow_multiple,
+
+        gri.aggregation_method
 
       FROM results r
 
       INNER JOIN students s
         ON s.id = r.student_id
 
-      LEFT JOIN class_students cs
-        ON cs.student_id = s.id
-
-      LEFT JOIN classes c
-        ON c.id = cs.class_id
-       AND c.church_id = r.church_id
+      INNER JOIN grading_rule_items gri
+        ON gri.id = r.grading_rule_item_id
 
       WHERE r.id = ?
         AND r.church_id = ?
 
       LIMIT 1
       `,
-      [id, churchId],
+      [Number(id), churchId],
     );
 
-    res.status(200).json({
+    return res.json({
       success: true,
       message: "Cập nhật kết quả thành công",
-      data: updatedResults[0],
+      data: rows[0],
     });
   } catch (error) {
-    console.error("UPDATE RESULT ERROR:", error);
+    console.error("❌ updateResult:", error);
 
-    res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Không thể cập nhật kết quả",
-      error: error.message,
+      message: error.message || "Không thể cập nhật kết quả",
     });
   }
 };
 
 // =========================================================
-// DELETE RESULT
-// DELETE /api/results/:id
+// DELETE
 // =========================================================
 
-const deleteResult = async (req, res) => {
+/**
+ * DELETE /api/results/:id
+ */
+exports.deleteResult = async (req, res) => {
   try {
-    const churchId = validateChurch(req, res);
-
-    if (!churchId) return;
+    const churchId = getChurchId(req);
 
     const { id } = req.params;
 
-    const [results] = await db.query(
+    if (!isValidId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "ID kết quả không hợp lệ",
+      });
+    }
+
+    const [existingRows] = await db.query(
       `
       SELECT id
+
       FROM results
+
       WHERE id = ?
         AND church_id = ?
+
       LIMIT 1
       `,
-      [id, churchId],
+      [Number(id), churchId],
     );
 
-    if (!results.length) {
+    if (!existingRows.length) {
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy kết quả",
@@ -1065,309 +1671,28 @@ const deleteResult = async (req, res) => {
     await db.query(
       `
       DELETE FROM results
+
       WHERE id = ?
         AND church_id = ?
       `,
-      [id, churchId],
+      [Number(id), churchId],
     );
 
-    res.status(200).json({
+    return res.json({
       success: true,
       message: "Xóa kết quả thành công",
     });
   } catch (error) {
-    console.error("DELETE RESULT ERROR:", error);
+    console.error("❌ deleteResult:", error);
 
-    res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Không thể xóa kết quả",
-      error: error.message,
+      message: error.message || "Không thể xóa kết quả",
     });
   }
 };
 
-// =========================================================
-// GET STATISTICS
-// GET /api/results/statistics
-// =========================================================
-
-const getResultStatistics = async (req, res) => {
-  try {
-    const churchId = validateChurch(req, res);
-
-    if (!churchId) return;
-
-    const [statistics] = await db.query(
-      `
-      SELECT
-        COUNT(*) AS total_results,
-
-        COUNT(
-          DISTINCT student_id
-        ) AS total_students,
-
-        COALESCE(
-          ROUND(AVG(score), 2),
-          0
-        ) AS average_score,
-
-        COALESCE(
-          MAX(score),
-          0
-        ) AS highest_score,
-
-        COALESCE(
-          MIN(score),
-          0
-        ) AS lowest_score,
-
-        SUM(
-          CASE
-            WHEN score >= 5 THEN 1
-            ELSE 0
-          END
-        ) AS passed,
-
-        SUM(
-          CASE
-            WHEN score < 5 THEN 1
-            ELSE 0
-          END
-        ) AS failed,
-
-        SUM(
-          CASE
-            WHEN exam_type = 'online' THEN 1
-            ELSE 0
-          END
-        ) AS online_results,
-
-        SUM(
-          CASE
-            WHEN exam_type = 'paper' THEN 1
-            ELSE 0
-          END
-        ) AS paper_results
-
-      FROM results
-
-      WHERE church_id = ?
-      `,
-      [churchId],
-    );
-
-    res.status(200).json({
-      success: true,
-      data: statistics[0],
-    });
-  } catch (error) {
-    console.error("GET RESULT STATISTICS ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Không thể lấy thống kê kết quả",
-      error: error.message,
-    });
-  }
-};
-
-// =========================================================
-// GET CLASS STATISTICS
-// GET /api/results/class/:classId/statistics
-// =========================================================
-
-const getClassStatistics = async (req, res) => {
-  try {
-    const churchId = validateChurch(req, res);
-
-    if (!churchId) return;
-
-    const { classId } = req.params;
-
-    // =====================================================
-    // CHECK CLASS
-    // =====================================================
-
-    const [classes] = await db.query(
-      `
-      SELECT
-        id,
-        name,
-        church_id
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
-      `,
-      [classId, churchId],
-    );
-
-    if (!classes.length) {
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy lớp",
-      });
-    }
-
-    // =====================================================
-    // STATISTICS - CHỈ LỚP ĐƯỢC CHỌN
-    // =====================================================
-
-    const [statistics] = await db.query(
-      `
-      SELECT
-
-        COUNT(DISTINCT cs.student_id)
-          AS total_students,
-
-        COUNT(r.id)
-          AS total_results,
-
-        COALESCE(
-          ROUND(AVG(r.score), 2),
-          0
-        ) AS average_score,
-
-        COALESCE(
-          MAX(r.score),
-          0
-        ) AS highest_score,
-
-        COALESCE(
-          MIN(r.score),
-          0
-        ) AS lowest_score,
-
-        COUNT(
-          DISTINCT CASE
-            WHEN r.score >= 5
-            THEN r.student_id
-          END
-        ) AS passed_students,
-
-        COUNT(
-          DISTINCT CASE
-            WHEN r.score < 5
-            THEN r.student_id
-          END
-        ) AS failed_students
-
-      FROM class_students cs
-
-      INNER JOIN classes c
-        ON c.id = cs.class_id
-       AND c.church_id = ?
-
-      LEFT JOIN results r
-        ON r.student_id = cs.student_id
-       AND r.church_id = ?
-
-      WHERE cs.class_id = ?
-      `,
-      [churchId, churchId, classId],
-    );
-
-    return res.status(200).json({
-      success: true,
-      class: classes[0],
-      data: {
-        total_students: Number(statistics[0].total_students) || 0,
-        total_results: Number(statistics[0].total_results) || 0,
-        average_score: Number(statistics[0].average_score) || 0,
-        highest_score: Number(statistics[0].highest_score) || 0,
-        lowest_score: Number(statistics[0].lowest_score) || 0,
-        passed_students: Number(statistics[0].passed_students) || 0,
-        failed_students: Number(statistics[0].failed_students) || 0,
-      },
-    });
-  } catch (error) {
-    console.error("GET CLASS STATISTICS ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Không thể lấy thống kê của lớp",
-      error: error.message,
-    });
-  }
-};
-
-// =========================================================
-// GET STUDENT STATISTICS
-// GET /api/results/student/:studentId/statistics
-// =========================================================
-
-const getStudentStatistics = async (req, res) => {
-  try {
-    const churchId = validateChurch(req, res);
-
-    if (!churchId) return;
-
-    const { studentId } = req.params;
-
-    const [statistics] = await db.query(
-      `
-      SELECT
-
-        COUNT(*) AS total_results,
-
-        COALESCE(
-          ROUND(AVG(score), 2),
-          0
-        ) AS average_score,
-
-        COALESCE(
-          MAX(score),
-          0
-        ) AS highest_score,
-
-        COALESCE(
-          MIN(score),
-          0
-        ) AS lowest_score,
-
-        SUM(
-          CASE
-            WHEN score >= 5 THEN 1
-            ELSE 0
-          END
-        ) AS passed,
-
-        SUM(
-          CASE
-            WHEN score < 5 THEN 1
-            ELSE 0
-          END
-        ) AS failed
-
-      FROM results
-
-      WHERE student_id = ?
-        AND church_id = ?
-      `,
-      [studentId, churchId],
-    );
-
-    res.status(200).json({
-      success: true,
-      data: statistics[0],
-    });
-  } catch (error) {
-    console.error("GET STUDENT RESULT STATISTICS ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Không thể lấy thống kê của học viên",
-      error: error.message,
-    });
-  }
-};
-
-// =========================================================
-// GET TOP 3 ALL STUDENTS
-// GET /api/results/leaderboard
-// =========================================================
-
-const getLeaderboard = async (req, res) => {
+exports.getLeaderboard = async (req, res) => {
   try {
     const churchId = validateChurch(req, res);
 
@@ -1454,7 +1779,7 @@ const getLeaderboard = async (req, res) => {
 // GET /api/results/class/:classId/leaderboard
 // =========================================================
 
-const getClassLeaderboard = async (req, res) => {
+exports.getClassLeaderboard = async (req, res) => {
   try {
     const churchId = validateChurch(req, res);
 
@@ -1567,26 +1892,4 @@ const getClassLeaderboard = async (req, res) => {
       error: error.message,
     });
   }
-};
-
-// =========================================================
-// EXPORT
-// =========================================================
-
-module.exports = {
-  getResults,
-  getResultById,
-  getResultsByStudent,
-  getResultsByClass,
-
-  createResult,
-  updateResult,
-  deleteResult,
-
-  getResultStatistics,
-  getClassStatistics,
-  getStudentStatistics,
-
-  getLeaderboard,
-  getClassLeaderboard,
 };

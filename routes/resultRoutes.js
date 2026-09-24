@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 
 const { verifyToken } = require("../middleware/authMiddleware");
+
 const resultController = require("../controllers/resultController");
 
 // =========================================================
@@ -15,12 +16,15 @@ router.use(verifyToken);
 // =========================================================
 // STATISTICS
 // =========================================================
-
-// Thống kê tổng quan
-router.get("/statistics", resultController.getResultStatistics);
-
 // Bảng xếp hạng toàn giáo xứ
 router.get("/leaderboard", resultController.getLeaderboard);
+
+// Top 3 của lớp
+router.get("/class/:classId/leaderboard", resultController.getClassLeaderboard);
+//
+
+// Thống kê tổng quan kết quả của giáo xứ
+router.get("/statistics", resultController.getResultStatistics);
 
 // =========================================================
 // CLASS
@@ -29,17 +33,14 @@ router.get("/leaderboard", resultController.getLeaderboard);
 // Bảng điểm của lớp
 router.get("/class/:classId", resultController.getResultsByClass);
 
-// Top 3 của lớp
-router.get("/class/:classId/leaderboard", resultController.getClassLeaderboard);
-
-// Thống kê lớp
+// Thống kê điểm của lớp
 router.get("/class/:classId/statistics", resultController.getClassStatistics);
 
 // =========================================================
 // STUDENT
 // =========================================================
 
-// Thống kê học sinh
+// Thống kê điểm của học sinh
 router.get(
   "/student/:studentId/statistics",
   resultController.getStudentStatistics,
@@ -47,6 +48,16 @@ router.get(
 
 // Toàn bộ điểm của học sinh
 router.get("/student/:studentId", resultController.getResultsByStudent);
+
+// =========================================================
+// GRADING RULE
+// =========================================================
+
+// Các kết quả thuộc một bộ quy tắc
+router.get("/rule/:ruleId", resultController.getResultsByRule);
+
+// Các kết quả thuộc một đầu điểm
+router.get("/rule-item/:ruleItemId", resultController.getResultsByRuleItem);
 
 // =========================================================
 // CRUD

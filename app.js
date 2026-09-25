@@ -50,6 +50,7 @@ const emailRoutes = require("./routes/email");
 const contactMessageRoutes = require("./routes/contactMessageRoutes");
 const lessonResourceRoutes = require("./routes/lessonResourceRoutes");
 const gradingRuleRoutes = require("./routes/gradingRuleRoutes");
+const licenseRegistrationRoutes = require("./routes/licenseRegistrationRoutes");
 
 // ===============================
 // APP
@@ -130,6 +131,7 @@ app.use("/api/email", emailRoutes);
 app.use("/api/contact-messages", contactMessageRoutes);
 app.use("/api/lesson-resources", lessonResourceRoutes);
 app.use("/api/grading-rules", gradingRuleRoutes);
+app.use("/api/license-regis", licenseRegistrationRoutes);
 
 // ===============================
 // CORS MANAGEMENT

@@ -84,5 +84,6 @@ router.put(
 
 // Xóa học sinh
 router.delete("/:id", verifyToken, studentController.deleteStudent);
+router.delete("/bulk", verifyToken, studentController.deleteStudentsBulk);
 
 module.exports = router;

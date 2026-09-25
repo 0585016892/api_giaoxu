@@ -3243,8 +3243,7 @@ exports.importStudentsExcel = async (req, res) => {
 // =====================================================
 
 exports.deleteStudent = async (req, res) => {
-  const connection = await db.getConnection();
-
+  let connection;
   let transactionStarted = false;
 
   try {
@@ -3270,10 +3269,16 @@ exports.deleteStudent = async (req, res) => {
     }
 
     // =====================================================
-    // 2. GET STUDENT
+    // 2. GET CONNECTION
     // =====================================================
 
-    const [studentRows] = await connection.query(
+    connection = await db.getConnection();
+
+    // =====================================================
+    // 3. GET STUDENT
+    // =====================================================
+
+    const [studentRows] = await connection.execute(
       `
         SELECT
           id,
@@ -3288,25 +3293,17 @@ exports.deleteStudent = async (req, res) => {
       [studentId, churchId],
     );
 
-    if (!studentRows.length) {
+    if (studentRows.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy học sinh trong giáo xứ này",
       });
     }
 
-    const studentData = studentRows[0];
-
-    console.log("========================================");
-    console.log("🗑️ DELETE STUDENT");
-    console.log("👤 Name:", studentData.name);
-    console.log("🆔 ID:", studentId);
-    console.log("🔢 Code:", studentData.code);
-    console.log("⛪ Church ID:", churchId);
-    console.log("========================================");
+    const student = studentRows[0];
 
     // =====================================================
-    // 3. START TRANSACTION
+    // 4. START TRANSACTION
     // =====================================================
 
     await connection.beginTransaction();
@@ -3314,13 +3311,7 @@ exports.deleteStudent = async (req, res) => {
     transactionStarted = true;
 
     // =====================================================
-    // 4. DELETE ATTENDANCES
-    // =====================================================
-    // attendances hiện tại KHÔNG có ON DELETE CASCADE
-    // nên phải xóa thủ công trước khi xóa student.
-    //
-    // Có church_id để đảm bảo chỉ xóa dữ liệu
-    // thuộc giáo xứ hiện tại.
+    // 5. DELETE ATTENDANCES
     // =====================================================
 
     const [attendanceResult] = await connection.execute(
@@ -3332,10 +3323,8 @@ exports.deleteStudent = async (req, res) => {
       [studentId, churchId],
     );
 
-    console.log(`🗑️ Attendances deleted: ${attendanceResult.affectedRows}`);
-
     // =====================================================
-    // 5. DELETE CLASS RELATION
+    // 6. DELETE CLASS RELATIONS
     // =====================================================
 
     const [classStudentResult] = await connection.execute(
@@ -3346,12 +3335,8 @@ exports.deleteStudent = async (req, res) => {
       [studentId],
     );
 
-    console.log(
-      `🗑️ Class relations deleted: ${classStudentResult.affectedRows}`,
-    );
-
     // =====================================================
-    // 6. DELETE STUDENT
+    // 7. DELETE STUDENT
     // =====================================================
 
     const [studentDeleteResult] = await connection.execute(
@@ -3364,40 +3349,28 @@ exports.deleteStudent = async (req, res) => {
     );
 
     // =====================================================
-    // 7. CHECK DELETE RESULT
+    // 8. CHECK DELETE
     // =====================================================
 
-    if (!studentDeleteResult.affectedRows) {
-      await connection.rollback();
-
-      transactionStarted = false;
-
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy học sinh",
-      });
+    if (studentDeleteResult.affectedRows !== 1) {
+      throw new Error("Không thể xóa học sinh");
     }
 
     // =====================================================
-    // 8. RESULTS
+    // 9. RESULTS
     // =====================================================
     //
-    // Bảng results có:
+    // results.student_id:
     //
     // FOREIGN KEY (student_id)
     // REFERENCES students(id)
     // ON DELETE CASCADE
     //
-    // Vì vậy khi xóa students:
-    // => results.student_id tương ứng sẽ tự động bị xóa.
-    //
-    // KHÔNG cần DELETE results thủ công.
+    // => Không cần DELETE results thủ công.
     // =====================================================
 
-    console.log("🏆 Results: tự động xóa bởi ON DELETE CASCADE");
-
     // =====================================================
-    // 9. COMMIT
+    // 10. COMMIT
     // =====================================================
 
     await connection.commit();
@@ -3405,19 +3378,19 @@ exports.deleteStudent = async (req, res) => {
     transactionStarted = false;
 
     // =====================================================
-    // 10. DELETE AVATAR
+    // 11. DELETE AVATAR
     // =====================================================
-    // Chỉ xóa file sau khi DB đã commit thành công.
+    //
+    // Chỉ xóa file sau khi DB commit thành công.
+    // Nếu xóa file lỗi cũng không rollback DB.
     // =====================================================
 
-    if (studentData.avatar) {
+    if (student.avatar) {
       try {
-        const avatarPath = getAvatarFilePath(studentData.avatar);
+        const avatarPath = getAvatarFilePath(student.avatar);
 
         if (avatarPath) {
           deleteFile(avatarPath);
-
-          console.log("🖼️ Avatar deleted:", studentData.avatar);
         }
       } catch (avatarError) {
         console.error("⚠️ DELETE STUDENT AVATAR ERROR:", avatarError.message);
@@ -3425,7 +3398,7 @@ exports.deleteStudent = async (req, res) => {
     }
 
     // =====================================================
-    // 11. WRITE LOG
+    // 12. WRITE LOG
     // =====================================================
 
     try {
@@ -3439,31 +3412,22 @@ exports.deleteStudent = async (req, res) => {
         target_id: studentId,
 
         description:
-          `Xóa học sinh "${studentData.name}" (${studentData.code}), ` +
+          `Xóa học sinh "${student.name}" (${student.code}), ` +
           `giáo xứ #${churchId}. ` +
           `Đã xóa ${attendanceResult.affectedRows} bản ghi điểm danh, ` +
           `${classStudentResult.affectedRows} quan hệ lớp; ` +
-          `kết quả học tập được xóa tự động theo ON DELETE CASCADE.`,
+          `kết quả học tập được xóa tự động.`,
 
         ip_address: req.ip,
       });
     } catch (logError) {
+      // Log lỗi không ảnh hưởng kết quả xóa
       console.error("⚠️ DELETE STUDENT LOG ERROR:", logError.message);
     }
 
     // =====================================================
-    // 12. SUCCESS RESPONSE
+    // 13. SUCCESS
     // =====================================================
-
-    console.log("========================================");
-    console.log("✅ DELETE STUDENT SUCCESS");
-    console.log("👤 Student:", studentData.name);
-    console.log("🆔 Student ID:", studentId);
-    console.log("⛪ Church ID:", churchId);
-    console.log("📋 Attendances:", attendanceResult.affectedRows);
-    console.log("🏫 Class relations:", classStudentResult.affectedRows);
-    console.log("🏆 Results:", "CASCADE");
-    console.log("========================================");
 
     return res.json({
       success: true,
@@ -3472,10 +3436,13 @@ exports.deleteStudent = async (req, res) => {
 
       data: {
         student_id: studentId,
-        student_code: studentData.code,
+
+        student_code: student.code,
+
+        student_name: student.name,
 
         deleted: {
-          student: studentDeleteResult.affectedRows,
+          student: 1,
 
           attendances: attendanceResult.affectedRows,
 
@@ -3490,7 +3457,7 @@ exports.deleteStudent = async (req, res) => {
     // ROLLBACK
     // =====================================================
 
-    if (transactionStarted) {
+    if (transactionStarted && connection) {
       try {
         await connection.rollback();
 
@@ -3505,11 +3472,9 @@ exports.deleteStudent = async (req, res) => {
     // =====================================================
 
     console.error("========== DELETE STUDENT ERROR ==========");
-
     console.error("Message:", error.message);
     console.error("Code:", error.code);
     console.error("SQL:", error.sqlMessage);
-    console.error("Stack:", error.stack);
 
     // =====================================================
     // ERROR RESPONSE
@@ -3527,6 +3492,278 @@ exports.deleteStudent = async (req, res) => {
     // RELEASE CONNECTION
     // =====================================================
 
+    if (connection) {
+      connection.release();
+    }
+  }
+};
+exports.deleteStudentsBulk = async (req, res) => {
+  const connection = await db.getConnection();
+
+  let transactionStarted = false;
+
+  try {
+    // =====================================================
+    // 1. VALIDATE
+    // =====================================================
+
+    const churchId = getChurchId(req);
+
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được gán giáo xứ",
+      });
+    }
+
+    let studentIds = req.body?.student_ids;
+
+    if (!Array.isArray(studentIds)) {
+      return res.status(400).json({
+        success: false,
+        message: "student_ids phải là một mảng",
+      });
+    }
+
+    // Convert + loại ID trùng
+    studentIds = [
+      ...new Set(
+        studentIds.map(Number).filter((id) => Number.isInteger(id) && id > 0),
+      ),
+    ];
+
+    if (!studentIds.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Chưa chọn học sinh cần xóa",
+      });
+    }
+
+    // Giới hạn mỗi lần
+    if (studentIds.length > 1000) {
+      return res.status(400).json({
+        success: false,
+        message: "Mỗi lần chỉ được xóa tối đa 1000 học sinh",
+      });
+    }
+
+    console.log("========================================");
+    console.log("🗑️ BULK DELETE STUDENTS");
+    console.log("⛪ Church:", churchId);
+    console.log("👥 Count:", studentIds.length);
+    console.log("========================================");
+
+    // =====================================================
+    // 2. PLACEHOLDERS
+    // =====================================================
+
+    const placeholders = studentIds.map(() => "?").join(",");
+
+    // =====================================================
+    // 3. GET STUDENTS
+    // =====================================================
+
+    const [students] = await connection.query(
+      `
+        SELECT
+          id,
+          code,
+          name,
+          avatar
+        FROM students
+        WHERE church_id = ?
+          AND id IN (${placeholders})
+      `,
+      [churchId, ...studentIds],
+    );
+
+    if (!students.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy học sinh nào trong giáo xứ này",
+      });
+    }
+
+    // Những ID thực sự tồn tại
+    const existingIds = students.map((student) => student.id);
+
+    const existingPlaceholders = existingIds.map(() => "?").join(",");
+
+    // =====================================================
+    // 4. START TRANSACTION
+    // =====================================================
+
+    await connection.beginTransaction();
+
+    transactionStarted = true;
+
+    // =====================================================
+    // 5. DELETE ATTENDANCES
+    // =====================================================
+
+    const [attendanceResult] = await connection.execute(
+      `
+        DELETE FROM attendances
+        WHERE church_id = ?
+          AND student_id IN (${existingPlaceholders})
+      `,
+      [churchId, ...existingIds],
+    );
+
+    // =====================================================
+    // 6. DELETE CLASS STUDENTS
+    // =====================================================
+
+    const [classStudentResult] = await connection.execute(
+      `
+        DELETE FROM class_students
+        WHERE student_id IN (${existingPlaceholders})
+      `,
+      [...existingIds],
+    );
+
+    // =====================================================
+    // 7. DELETE STUDENTS
+    // =====================================================
+
+    const [studentDeleteResult] = await connection.execute(
+      `
+        DELETE FROM students
+        WHERE church_id = ?
+          AND id IN (${existingPlaceholders})
+      `,
+      [churchId, ...existingIds],
+    );
+
+    // =====================================================
+    // 8. CHECK
+    // =====================================================
+
+    if (studentDeleteResult.affectedRows !== existingIds.length) {
+      throw new Error(
+        `Số học sinh xóa không khớp: expected=${existingIds.length}, actual=${studentDeleteResult.affectedRows}`,
+      );
+    }
+
+    // results.student_id ON DELETE CASCADE
+    // => tự động xóa results
+
+    // =====================================================
+    // 9. COMMIT
+    // =====================================================
+
+    await connection.commit();
+
+    transactionStarted = false;
+
+    // =====================================================
+    // 10. DELETE AVATAR SAU COMMIT
+    // =====================================================
+
+    let avatarDeleted = 0;
+
+    for (const student of students) {
+      if (!student.avatar) continue;
+
+      try {
+        const avatarPath = getAvatarFilePath(student.avatar);
+
+        if (avatarPath) {
+          deleteFile(avatarPath);
+          avatarDeleted++;
+        }
+      } catch (avatarError) {
+        console.error(
+          `⚠️ DELETE AVATAR ERROR [${student.id}]:`,
+          avatarError.message,
+        );
+      }
+    }
+
+    // =====================================================
+    // 11. WRITE ONE LOG
+    // =====================================================
+
+    try {
+      await writeLog({
+        admin_id: req.user?.id || null,
+
+        action: "DELETE_STUDENTS_BULK",
+
+        target_type: "students",
+
+        target_id: null,
+
+        description:
+          `Xóa ${studentDeleteResult.affectedRows} học sinh ` +
+          `tại giáo xứ #${churchId}. ` +
+          `Đã xóa ${attendanceResult.affectedRows} bản ghi điểm danh, ` +
+          `${classStudentResult.affectedRows} quan hệ lớp; ` +
+          `results được xóa tự động bằng ON DELETE CASCADE.`,
+
+        ip_address: req.ip,
+      });
+    } catch (logError) {
+      console.error("⚠️ BULK DELETE LOG ERROR:", logError.message);
+    }
+
+    // =====================================================
+    // 12. RESPONSE
+    // =====================================================
+
+    console.log("========================================");
+    console.log("✅ BULK DELETE SUCCESS");
+    console.log("👥 Students:", studentDeleteResult.affectedRows);
+    console.log("📋 Attendances:", attendanceResult.affectedRows);
+    console.log("🏫 Class relations:", classStudentResult.affectedRows);
+    console.log("🖼️ Avatars:", avatarDeleted);
+    console.log("🏆 Results:", "CASCADE");
+    console.log("========================================");
+
+    return res.json({
+      success: true,
+
+      message: `Đã xóa ${studentDeleteResult.affectedRows} học sinh`,
+
+      data: {
+        students: studentDeleteResult.affectedRows,
+
+        attendances: attendanceResult.affectedRows,
+
+        class_students: classStudentResult.affectedRows,
+
+        results: "cascade",
+
+        avatars: avatarDeleted,
+
+        skipped: studentIds.length - existingIds.length,
+      },
+    });
+  } catch (error) {
+    // =====================================================
+    // ROLLBACK
+    // =====================================================
+
+    if (transactionStarted) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("❌ BULK DELETE ROLLBACK ERROR:", rollbackError.message);
+      }
+    }
+
+    console.error("========== BULK DELETE STUDENTS ERROR ==========");
+
+    console.error("Message:", error.message);
+    console.error("Code:", error.code);
+    console.error("SQL:", error.sqlMessage);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể xóa danh sách học sinh",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  } finally {
     connection.release();
   }
 };

@@ -2132,9 +2132,14 @@ const scanQRCode = async (req, res) => {
 
     const classId = toPositiveInt(body.class_id);
 
-    const attendanceType = normalizeAttendanceType(
-      body.attendance_type || "catechism",
-    );
+    const attendanceType = normalizeAttendanceType(body.attendance_type);
+    console.log("========== QR ATTENDANCE ==========");
+    console.log("body:", body);
+    console.log("attendance_type:", body.attendance_type);
+    console.log("normalized:", attendanceType);
+    console.log("class_id:", classId);
+    console.log("qr_token:", maskedToken);
+    console.log("===================================");
 
     const qrToken = normalizeQrToken(body.qr_token);
 

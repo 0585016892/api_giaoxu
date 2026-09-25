@@ -17,6 +17,8 @@ const ALLOWED_CATECHISM_TYPES = [
   "kinh_thanh",
   "mua_chay",
   "mua_he",
+  "thang_tien",
+  "hiep_thong",
 ];
 
 const CATECHISM_TYPE_LABELS = {
@@ -32,6 +34,8 @@ const CATECHISM_TYPE_LABELS = {
   kinh_thanh: "Lớp Kinh Thánh",
   mua_chay: "Giáo lý Mùa Chay",
   mua_he: "Giáo lý Mùa Hè",
+  thang_tien: "Giáo lý Thăng Tiến",
+  hiep_thong: "Giáo lý Hiệp Thông",
 };
 
 // =========================================================

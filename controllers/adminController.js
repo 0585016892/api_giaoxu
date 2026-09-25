@@ -749,20 +749,53 @@ exports.createAdmin = async (req, res) => {
 };
 exports.changePassword = async (req, res) => {
   try {
-    const { password } = req.body;
+    const { oldPassword, newPassword } = req.body;
 
-    if (!password || password.length < 6) {
+    if (!oldPassword || !newPassword) {
       return res.status(400).json({
         success: false,
-        message: "Mật khẩu tối thiểu 6 ký tự",
+        message: "Vui lòng nhập đầy đủ mật khẩu cũ và mật khẩu mới",
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Mật khẩu mới tối thiểu 6 ký tự",
       });
     }
 
     const bcrypt = require("bcryptjs");
 
-    const hash = await bcrypt.hash(password, 10);
+    // Lấy tài khoản hiện tại
+    const [rows] = await db.query(
+      `SELECT id, password FROM admins WHERE id = ?`,
+      [req.params.id],
+    );
 
-    await db.query(`UPDATE admins SET password=? WHERE id=?`, [
+    if (!rows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy tài khoản",
+      });
+    }
+
+    const admin = rows[0];
+
+    // Kiểm tra mật khẩu cũ
+    const isMatch = await bcrypt.compare(oldPassword, admin.password);
+
+    if (!isMatch) {
+      return res.status(400).json({
+        success: false,
+        message: "Mật khẩu cũ không chính xác",
+      });
+    }
+
+    // Hash mật khẩu mới
+    const hash = await bcrypt.hash(newPassword, 10);
+
+    await db.query(`UPDATE admins SET password = ? WHERE id = ?`, [
       hash,
       req.params.id,
     ]);
@@ -782,6 +815,7 @@ exports.changePassword = async (req, res) => {
     });
   } catch (err) {
     console.error("CHANGE PASSWORD ERROR:", err);
+
     return res.status(500).json({
       success: false,
       message: err.message,

@@ -374,7 +374,7 @@ exports.createRegistration = async (req, res) => {
 
     const transferContent = buildTransferContent(church.name);
 
-    const paymentImage = req.file.path || req.file.filename || null;
+    const paymentImage = `/uploads/license-payments/${req.file.filename}`;
 
     if (!paymentImage) {
       return res.status(500).json({

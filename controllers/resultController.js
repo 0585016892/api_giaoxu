@@ -1694,7 +1694,7 @@ exports.deleteResult = async (req, res) => {
 
 exports.getLeaderboard = async (req, res) => {
   try {
-    const churchId = validateChurch(req, res);
+    const churchId = req.user?.church_id;
 
     if (!churchId) return;
 
@@ -1781,7 +1781,7 @@ exports.getLeaderboard = async (req, res) => {
 
 exports.getClassLeaderboard = async (req, res) => {
   try {
-    const churchId = validateChurch(req, res);
+    const churchId = req.user?.church_id;
 
     if (!churchId) return;
 

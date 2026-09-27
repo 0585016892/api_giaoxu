@@ -54,7 +54,11 @@ router.get(
 );
 // Chi tiết học sinh
 router.get("/:id", verifyToken, studentController.getStudentById);
-
+router.post(
+  "/export-excel",
+  verifyToken,
+  studentController.exportStudentsExcel,
+);
 // Thêm học sinh
 router.post(
   "/",

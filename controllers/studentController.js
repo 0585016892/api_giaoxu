@@ -4,7 +4,631 @@ const crypto = require("crypto");
 const { writeLog } = require("../utils/activityLogger");
 const fs = require("fs");
 const path = require("path");
+const ExcelJS = require("exceljs");
 
+/**
+ * =========================================================
+ * EXPORT FIELD CONFIG
+ * =========================================================
+ *
+ * FE chỉ được gửi các key ở đây.
+ * Không bao giờ dùng trực tiếp field FE gửi vào SQL.
+ */
+const STUDENT_EXPORT_FIELDS = {
+  code: {
+    sql: "s.code",
+    label: "Mã học sinh",
+    type: "text",
+  },
+
+  name: {
+    sql: "s.name",
+    label: "Họ và tên",
+    type: "text",
+  },
+
+  date_of_birth: {
+    sql: "s.date_of_birth",
+    label: "Ngày sinh",
+    type: "date",
+  },
+
+  gender: {
+    sql: "s.gender",
+    label: "Giới tính",
+    type: "gender",
+  },
+
+  nationality: {
+    sql: "s.nationality",
+    label: "Quốc tịch",
+    type: "text",
+  },
+
+  birth_place: {
+    sql: "s.birth_place",
+    label: "Nơi sinh",
+    type: "text",
+  },
+
+  saint_name: {
+    sql: "s.saint_name",
+    label: "Tên thánh",
+    type: "text",
+  },
+
+  phone: {
+    sql: "s.phone",
+    label: "Số điện thoại",
+    type: "text",
+  },
+
+  email: {
+    sql: "s.email",
+    label: "Email",
+    type: "text",
+  },
+
+  address: {
+    sql: "s.address",
+    label: "Địa chỉ",
+    type: "text",
+  },
+
+  parish: {
+    sql: "s.parish",
+    label: "Giáo xứ",
+    type: "text",
+  },
+
+  class_code: {
+    sql: "c.code",
+    label: "Mã lớp",
+    type: "text",
+  },
+
+  class_name: {
+    sql: "c.name",
+    label: "Tên lớp",
+    type: "text",
+  },
+
+  class_student_status: {
+    sql: "cs.status",
+    label: "Trạng thái học",
+    type: "class_student_status",
+  },
+
+  joined_at: {
+    sql: "cs.joined_at",
+    label: "Ngày vào lớp",
+    type: "date",
+  },
+
+  father_name: {
+    sql: "s.father_name",
+    label: "Tên cha",
+    type: "text",
+  },
+
+  father_phone: {
+    sql: "s.father_phone",
+    label: "SĐT cha",
+    type: "text",
+  },
+
+  mother_name: {
+    sql: "s.mother_name",
+    label: "Tên mẹ",
+    type: "text",
+  },
+
+  mother_phone: {
+    sql: "s.mother_phone",
+    label: "SĐT mẹ",
+    type: "text",
+  },
+
+  guardian_name: {
+    sql: "s.guardian_name",
+    label: "Người giám hộ",
+    type: "text",
+  },
+
+  guardian_phone: {
+    sql: "s.guardian_phone",
+    label: "SĐT người giám hộ",
+    type: "text",
+  },
+
+  guardian_relationship: {
+    sql: "s.guardian_relationship",
+    label: "Quan hệ giám hộ",
+    type: "text",
+  },
+
+  baptism_certificate_no: {
+    sql: "s.baptism_certificate_no",
+    label: "Số chứng chỉ Rửa tội",
+    type: "text",
+  },
+
+  baptism_date: {
+    sql: "s.baptism_date",
+    label: "Ngày Rửa tội",
+    type: "date",
+  },
+
+  baptism_name: {
+    sql: "s.baptism_name",
+    label: "Tên Rửa tội",
+    type: "text",
+  },
+
+  baptism_parish: {
+    sql: "s.baptism_parish",
+    label: "Giáo xứ Rửa tội",
+    type: "text",
+  },
+
+  baptism_place: {
+    sql: "s.baptism_place",
+    label: "Nơi Rửa tội",
+    type: "text",
+  },
+
+  confirmation_date: {
+    sql: "s.confirmation_date",
+    label: "Ngày Thêm sức",
+    type: "date",
+  },
+
+  confirmation_place: {
+    sql: "s.confirmation_place",
+    label: "Nơi Thêm sức",
+    type: "text",
+  },
+
+  confirmation_saint_name: {
+    sql: "s.confirmation_saint_name",
+    label: "Tên thánh Thêm sức",
+    type: "text",
+  },
+
+  first_communion_date: {
+    sql: "s.first_communion_date",
+    label: "Ngày Rước lễ lần đầu",
+    type: "date",
+  },
+
+  first_communion_place: {
+    sql: "s.first_communion_place",
+    label: "Nơi Rước lễ lần đầu",
+    type: "text",
+  },
+
+  catechism_level: {
+    sql: "s.catechism_level",
+    label: "Cấp giáo lý",
+    type: "text",
+  },
+
+  catechism_status: {
+    sql: "s.catechism_status",
+    label: "Trạng thái giáo lý",
+    type: "catechism_status",
+  },
+
+  enrollment_date: {
+    sql: "s.enrollment_date",
+    label: "Ngày nhập học",
+    type: "date",
+  },
+
+  note: {
+    sql: "s.note",
+    label: "Ghi chú",
+    type: "text",
+  },
+
+  status: {
+    sql: "s.status",
+    label: "Trạng thái",
+    type: "student_status",
+  },
+};
+
+/**
+ * =========================================================
+ * FORMAT VALUE
+ * =========================================================
+ */
+
+const formatExportValue = (value, type) => {
+  if (value === null || value === undefined || value === "") {
+    return "";
+  }
+
+  switch (type) {
+    case "date": {
+      const date = new Date(value);
+
+      if (Number.isNaN(date.getTime())) {
+        return "";
+      }
+
+      return date.toLocaleDateString("vi-VN");
+    }
+
+    case "gender": {
+      const map = {
+        male: "Nam",
+        female: "Nữ",
+        other: "Khác",
+      };
+
+      return map[value] || value;
+    }
+
+    case "class_student_status": {
+      const map = {
+        studying: "Đang học",
+        stopped: "Đã nghỉ",
+        transferred: "Đã chuyển lớp",
+        completed: "Đã hoàn thành",
+      };
+
+      return map[value] || value;
+    }
+
+    case "catechism_status": {
+      const map = {
+        new: "Mới",
+        studying: "Đang học",
+        completed: "Đã hoàn thành",
+        paused: "Tạm dừng",
+        dropped: "Đã nghỉ",
+      };
+
+      return map[value] || value;
+    }
+
+    case "student_status": {
+      const map = {
+        active: "Đang hoạt động",
+        inactive: "Không hoạt động",
+      };
+
+      return map[value] || value;
+    }
+
+    default:
+      return value;
+  }
+};
+/**
+ * =========================================================
+ * EXPORT STUDENTS EXCEL
+ * =========================================================
+ */
+
+exports.exportStudentsExcel = async (req, res) => {
+  const startedAt = Date.now();
+
+  try {
+    const churchId = getChurchId(req);
+
+    console.log("");
+    console.log("============================================================");
+    console.log("                  EXPORT STUDENTS EXCEL");
+    console.log("============================================================");
+
+    console.log("CHURCH ID:", churchId);
+
+    // =====================================================
+    // CHURCH
+    // =====================================================
+
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được gán giáo xứ",
+      });
+    }
+
+    const numericChurchId = Number(churchId);
+
+    if (!Number.isInteger(numericChurchId) || numericChurchId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Church ID không hợp lệ",
+      });
+    }
+
+    // =====================================================
+    // BODY
+    // =====================================================
+
+    const { student_ids, fields } = req.body;
+
+    // =====================================================
+    // STUDENT IDS
+    // =====================================================
+
+    if (!Array.isArray(student_ids) || student_ids.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng chọn ít nhất một học sinh",
+      });
+    }
+
+    // Giới hạn để tránh request quá lớn
+    if (student_ids.length > 5000) {
+      return res.status(400).json({
+        success: false,
+        message: "Chỉ được xuất tối đa 5000 học sinh mỗi lần",
+      });
+    }
+
+    const studentIds = [
+      ...new Set(
+        student_ids
+          .map((id) => Number(id))
+          .filter((id) => Number.isInteger(id) && id > 0),
+      ),
+    ];
+
+    if (studentIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Danh sách học sinh không hợp lệ",
+      });
+    }
+
+    if (studentIds.length !== student_ids.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Danh sách học sinh chứa ID không hợp lệ",
+      });
+    }
+
+    // =====================================================
+    // FIELDS
+    // =====================================================
+
+    if (!Array.isArray(fields) || fields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng chọn ít nhất một thông tin để xuất",
+      });
+    }
+
+    if (fields.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Số lượng trường dữ liệu không hợp lệ",
+      });
+    }
+
+    const uniqueFields = [...new Set(fields)];
+
+    const invalidFields = uniqueFields.filter(
+      (field) => !STUDENT_EXPORT_FIELDS[field],
+    );
+
+    if (invalidFields.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Có trường dữ liệu không được phép xuất",
+        invalid_fields: invalidFields,
+      });
+    }
+
+    // =====================================================
+    // BUILD SELECT
+    // =====================================================
+
+    const selectFields = uniqueFields.map((field) => {
+      const config = STUDENT_EXPORT_FIELDS[field];
+
+      return `${config.sql} AS \`${field}\``;
+    });
+
+    // Luôn lấy ID để kiểm tra số lượng kết quả,
+    // nhưng không đưa ID vào Excel nếu FE không chọn.
+    const sql = `
+      SELECT
+        s.id,
+
+        ${selectFields.join(",\n        ")}
+
+      FROM students s
+
+      LEFT JOIN class_students cs
+        ON cs.student_id = s.id
+
+      LEFT JOIN classes c
+        ON c.id = cs.class_id
+        AND c.church_id = s.church_id
+
+      WHERE s.church_id = ?
+
+      AND s.id IN (${studentIds.map(() => "?").join(", ")})
+
+      ORDER BY
+        s.created_at DESC,
+        s.id DESC
+    `;
+
+    const params = [numericChurchId, ...studentIds];
+
+    console.log("STUDENT IDS:", studentIds);
+    console.log("FIELDS:", uniqueFields);
+
+    // =====================================================
+    // QUERY
+    // =====================================================
+
+    const [rows] = await db.query(sql, params);
+
+    console.log("FOUND STUDENTS:", rows.length);
+
+    // =====================================================
+    // CHECK
+    // =====================================================
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy học sinh thuộc giáo xứ",
+      });
+    }
+
+    // =====================================================
+    // EXCEL
+    // =====================================================
+
+    const workbook = new ExcelJS.Workbook();
+
+    workbook.creator = "FaithEdu";
+    workbook.lastModifiedBy = "FaithEdu";
+
+    workbook.created = new Date();
+    workbook.modified = new Date();
+
+    const worksheet = workbook.addWorksheet("Danh sách học sinh");
+
+    // =====================================================
+    // COLUMNS
+    // =====================================================
+
+    worksheet.columns = uniqueFields.map((field) => {
+      const config = STUDENT_EXPORT_FIELDS[field];
+
+      return {
+        header: config.label,
+        key: field,
+        width: Math.max(15, Math.min(config.label.length + 8, 35)),
+      };
+    });
+
+    // =====================================================
+    // HEADER
+    // =====================================================
+
+    const headerRow = worksheet.getRow(1);
+
+    headerRow.font = {
+      bold: true,
+    };
+
+    headerRow.alignment = {
+      vertical: "middle",
+      horizontal: "center",
+      wrapText: true,
+    };
+
+    headerRow.height = 28;
+
+    // =====================================================
+    // DATA
+    // =====================================================
+
+    for (const row of rows) {
+      const excelRow = {};
+
+      for (const field of uniqueFields) {
+        const config = STUDENT_EXPORT_FIELDS[field];
+
+        excelRow[field] = formatExportValue(row[field], config.type);
+      }
+
+      worksheet.addRow(excelRow);
+    }
+
+    // =====================================================
+    // DATA STYLE
+    // =====================================================
+
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) {
+        return;
+      }
+
+      row.alignment = {
+        vertical: "middle",
+        wrapText: true,
+      };
+
+      row.height = 22;
+    });
+
+    // =====================================================
+    // FREEZE HEADER
+    // =====================================================
+
+    worksheet.views = [
+      {
+        state: "frozen",
+        ySplit: 1,
+      },
+    ];
+
+    // =====================================================
+    // AUTO FILTER
+    // =====================================================
+
+    worksheet.autoFilter = {
+      from: "A1",
+      to: `${worksheet.getColumn(worksheet.columnCount).letter}1`,
+    };
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
+
+    const filename = `danh_sach_hoc_sinh_${new Date()
+      .toISOString()
+      .slice(0, 10)}.xlsx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+
+    await workbook.xlsx.write(res);
+
+    const duration = Date.now() - startedAt;
+
+    console.log("EXPORT SUCCESS");
+    console.log("ROWS:", rows.length);
+    console.log("DURATION:", `${duration}ms`);
+
+    res.end();
+  } catch (error) {
+    console.error("========== EXPORT STUDENTS ERROR ==========");
+
+    console.error("Message:", error.message);
+    console.error("Code:", error.code);
+    console.error("SQL:", error.sqlMessage);
+    console.error("Stack:", error.stack);
+
+    // Nếu response đã bắt đầu thì không thể trả JSON nữa
+    if (res.headersSent) {
+      return res.end();
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể xuất danh sách học sinh",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
 // =====================================================
 // CONSTANTS
 // =====================================================

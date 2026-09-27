@@ -2172,7 +2172,7 @@ const scanQRCode = async (req, res) => {
      * FIND STUDENT BY QR
      *
      * QR token có thể đang nằm ở một trong các cột
-     * qr_token / qr_code tùy schema hiện tại.
+     * qr_token / qr_token tùy schema hiện tại.
      */
 
     const [studentRows] = await connection.execute(
@@ -2188,18 +2188,14 @@ const scanQRCode = async (req, res) => {
           ON cs.student_id = s.id
           AND cs.class_id = ?
 
-        WHERE
-          s.church_id = ?
-          AND (
-            s.qr_token = ?
-            OR s.qr_code = ?
-          )
-
+              WHERE
+            s.church_id = ?
+            AND s.qr_token = ?
         LIMIT 1
 
         FOR UPDATE
       `,
-      [classId, churchId, qrToken, qrToken],
+      [classId, churchId, qrToken],
     );
 
     if (!studentRows.length) {

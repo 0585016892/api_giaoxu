@@ -92,25 +92,26 @@ exports.getCatechistById = async (req, res) => {
       });
     }
 
+    // =========================================================
+    // LẤY THÔNG TIN GIÁO LÝ VIÊN
+    // =========================================================
     const [catechistRows] = await db.query(
       `
-  SELECT
-    c.*,
+      SELECT
+        c.*,
+        a.avatar AS avatar
 
-    -- Avatar lấy từ tài khoản admins
-    a.avatar AS avatar
+      FROM catechists c
 
-  FROM catechists c
+      LEFT JOIN admins a
+        ON a.username = c.catechist_code
+        AND a.church_id = c.church_id
 
-  LEFT JOIN admins a
-    ON a.username = c.catechist_code
-    AND a.church_id = c.church_id
+      WHERE c.id = ?
+        AND c.church_id = ?
 
-  WHERE c.id = ?
-    AND c.church_id = ?
-
-  LIMIT 1
-  `,
+      LIMIT 1
+      `,
       [id, churchId],
     );
 
@@ -121,9 +122,10 @@ exports.getCatechistById = async (req, res) => {
       });
     }
 
-    /**
-     * Lấy các lớp mà GLV đang dạy
-     */
+    // =========================================================
+    // LẤY CÁC LỚP GIÁO LÝ VIÊN ĐANG DẠY
+    // + LẤY PHÒNG TỪ class_schedules
+    // =========================================================
     const [classes] = await db.query(
       `
       SELECT
@@ -138,23 +140,50 @@ exports.getCatechistById = async (req, res) => {
         c.name AS class_name,
         c.category,
         c.description,
-        c.room,
-        c.church_id
+        c.church_id,
+
+        -- Thông tin lịch học đầu tiên
+        schedule.day_of_week,
+        schedule.start_time,
+        schedule.end_time,
+        schedule.room
 
       FROM catechist_classes cc
 
       INNER JOIN classes c
         ON c.id = cc.class_id
+        AND c.church_id = ?
+
+      LEFT JOIN (
+        SELECT
+          cs1.class_id,
+          cs1.day_of_week,
+          cs1.start_time,
+          cs1.end_time,
+          cs1.room
+
+        FROM class_schedules cs1
+
+        INNER JOIN (
+          SELECT
+            class_id,
+            MIN(id) AS min_id
+          FROM class_schedules
+          GROUP BY class_id
+        ) first_schedule
+          ON first_schedule.class_id = cs1.class_id
+          AND first_schedule.min_id = cs1.id
+      ) schedule
+        ON schedule.class_id = c.id
 
       WHERE cc.catechist_id = ?
-        AND c.church_id = ?
 
       ORDER BY c.id DESC
       `,
-      [id, churchId],
+      [churchId, id],
     );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       data: {
         ...catechistRows[0],
@@ -164,7 +193,7 @@ exports.getCatechistById = async (req, res) => {
   } catch (error) {
     console.error("❌ GET CATECHIST ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message,
     });

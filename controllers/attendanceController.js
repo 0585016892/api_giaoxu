@@ -469,10 +469,9 @@ const getAttendance = async (req, res) => {
     let whereSql = `
       WHERE
         cs.class_id = ?
-        AND s.church_id = ?
     `;
 
-    const params = [classId, churchId];
+    const params = [classId];
 
     if (search) {
       whereSql += `
@@ -549,56 +548,46 @@ const getAttendance = async (req, res) => {
 
     const [rows] = await db.execute(
       `
-        SELECT
-          s.id,
-          s.code,
-          s.name,
-          s.gender,
-          s.date_of_birth,
+    SELECT
+      s.id,
+      s.code,
+      s.name,
+      s.gender,
+      s.date_of_birth,
 
-          a.id AS attendance_id,
-          a.attendance_type,
-          a.status,
-          a.check_in_time,
-          a.note,
-          a.teacher_id,
-          a.attendance_date,
-          a.created_at,
-          a.updated_at
+      a.id AS attendance_id,
+      a.attendance_type,
+      a.status,
+      a.check_in_time,
+      a.note,
+      a.teacher_id,
+      a.attendance_date,
+      a.created_at,
+      a.updated_at
 
-        FROM class_students cs
+    FROM class_students cs
 
-        INNER JOIN students s
-          ON s.id = cs.student_id
-          AND s.church_id = ?
+    INNER JOIN students s
+      ON s.id = cs.student_id
+      AND s.church_id = ?
 
-        LEFT JOIN attendances a
-          ON a.student_id = s.id
-          AND a.class_id = ?
-          AND a.church_id = ?
-          AND a.attendance_date = ?
-          AND a.attendance_type = ?
+    LEFT JOIN attendances a
+      ON a.student_id = s.id
+      AND a.class_id = ?
+      AND a.church_id = ?
+      AND a.attendance_date = ?
+      AND a.attendance_type = ?
 
-        ${whereSql}
+    ${whereSql}
 
-        ORDER BY
-          s.name ASC,
-          s.id ASC
+    ORDER BY
+      s.name ASC,
+      s.id ASC
 
-        LIMIT ? OFFSET ?
-      `,
-      [
-        churchId,
-        classId,
-        churchId,
-        date,
-        attendanceType,
-        ...params,
-        limit,
-        offset,
-      ],
+    LIMIT ${limit} OFFSET ${offset}
+  `,
+      [churchId, classId, churchId, date, attendanceType, ...params],
     );
-
     /**
      * =====================================================
      * STATISTICS

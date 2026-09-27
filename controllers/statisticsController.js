@@ -523,7 +523,18 @@ const getStudentStatistics = async (req, res) => {
  *
  * Thống kê lớp hiện tại
  *
- * Không lọc tháng/năm.
+ * LƯU Ý:
+ * start_time / end_time / day_of_week
+ * KHÔNG còn lấy từ classes.
+ *
+ * Lấy từ:
+ * class_schedules
+ *
+ * Nếu một lớp có nhiều lịch:
+ * lấy lịch đầu tiên theo id ASC.
+ *
+ * Không JOIN trực tiếp class_schedules để tránh
+ * làm nhân bản lớp và sai COUNT học sinh.
  * =========================================================
  */
 const getClassStatistics = async (req, res) => {
@@ -547,9 +558,37 @@ const getClassStatistics = async (req, res) => {
         c.category,
         c.status,
 
-        c.day_of_week,
-        c.start_time,
-        c.end_time,
+        (
+          SELECT cschedule.day_of_week
+          FROM class_schedules cschedule
+          WHERE cschedule.class_id = c.id
+          ORDER BY cschedule.id ASC
+          LIMIT 1
+        ) AS day_of_week,
+
+        (
+          SELECT cschedule.start_time
+          FROM class_schedules cschedule
+          WHERE cschedule.class_id = c.id
+          ORDER BY cschedule.id ASC
+          LIMIT 1
+        ) AS start_time,
+
+        (
+          SELECT cschedule.end_time
+          FROM class_schedules cschedule
+          WHERE cschedule.class_id = c.id
+          ORDER BY cschedule.id ASC
+          LIMIT 1
+        ) AS end_time,
+
+        (
+          SELECT cschedule.room
+          FROM class_schedules cschedule
+          WHERE cschedule.class_id = c.id
+          ORDER BY cschedule.id ASC
+          LIMIT 1
+        ) AS room,
 
         COUNT(
           CASE
@@ -580,10 +619,7 @@ const getClassStatistics = async (req, res) => {
         c.name,
         c.code,
         c.category,
-        c.status,
-        c.day_of_week,
-        c.start_time,
-        c.end_time
+        c.status
 
       ORDER BY c.name ASC
       `,
@@ -604,11 +640,14 @@ const getClassStatistics = async (req, res) => {
 
         status: item.status,
 
-        day_of_week: item.day_of_week,
+        day_of_week:
+          item.day_of_week !== null ? Number(item.day_of_week) : null,
 
         start_time: item.start_time,
 
         end_time: item.end_time,
+
+        room: item.room,
 
         total_students: Number(item.total_students || 0),
 
@@ -649,7 +688,6 @@ const getClassStatistics = async (req, res) => {
  * ?attendance_type=catechism
  *
  * ?attendance_type=mass
- *
  * =========================================================
  */
 const getAttendanceStatistics = async (req, res) => {
@@ -671,10 +709,6 @@ const getAttendanceStatistics = async (req, res) => {
       class_id: classIdQuery,
       attendance_type: attendanceType,
     } = req.query;
-
-    // =====================================================
-    // PARSE
-    // =====================================================
 
     const month = monthQuery !== undefined ? toInt(monthQuery) : null;
 
@@ -756,7 +790,7 @@ const getAttendanceStatistics = async (req, res) => {
     }
 
     // =====================================================
-    // KHÔNG CHO DÙNG MONTH/YEAR VÀ FROM/TO CÙNG LÚC
+    // MONTH/YEAR + FROM/TO
     // =====================================================
 
     if (month !== null && year !== null && (from || to)) {
@@ -768,7 +802,7 @@ const getAttendanceStatistics = async (req, res) => {
     }
 
     // =====================================================
-    // VALIDATE CLASS ID
+    // VALIDATE CLASS
     // =====================================================
 
     if (classIdQuery !== undefined) {
@@ -779,10 +813,6 @@ const getAttendanceStatistics = async (req, res) => {
         });
       }
 
-      /**
-       * Quan trọng:
-       * Kiểm tra class có thuộc giáo xứ hiện tại hay không.
-       */
       const [[classExists]] = await db.query(
         `
         SELECT id
@@ -1095,13 +1125,9 @@ const getAttendanceStatistics = async (req, res) => {
     // =====================================================
 
     const total = Number(summary?.total || 0);
-
     const present = Number(summary?.present || 0);
-
     const absent = Number(summary?.absent || 0);
-
     const late = Number(summary?.late || 0);
-
     const excused = Number(summary?.excused || 0);
 
     // =====================================================
@@ -1110,7 +1136,6 @@ const getAttendanceStatistics = async (req, res) => {
 
     const daily = dailyRows.map((item) => {
       const itemTotal = Number(item.total || 0);
-
       const itemPresent = Number(item.present || 0);
 
       return {
@@ -1136,7 +1161,6 @@ const getAttendanceStatistics = async (req, res) => {
 
     const byClass = classRows.map((item) => {
       const itemTotal = Number(item.total || 0);
-
       const itemPresent = Number(item.present || 0);
 
       return {
@@ -1341,11 +1365,6 @@ const getCatechistStatistics = async (req, res) => {
 
 /**
  * =========================================================
- * EXPORT
- * =========================================================
- */
-/**
- * =========================================================
  * GET /api/statistics/attendance/students
  *
  * Thống kê chuyên cần CHI TIẾT THEO TỪNG HỌC SINH
@@ -1366,7 +1385,6 @@ const getCatechistStatistics = async (req, res) => {
  *
  * ?attendance_type=catechism
  * ?attendance_type=mass
- *
  * =========================================================
  */
 const getStudentAttendanceStatistics = async (req, res) => {
@@ -1473,7 +1491,7 @@ const getStudentAttendanceStatistics = async (req, res) => {
     }
 
     // =====================================================
-    // MONTH/YEAR VÀ FROM/TO KHÔNG DÙNG ĐỒNG THỜI
+    // MONTH/YEAR + FROM/TO
     // =====================================================
 
     if (month !== null && year !== null && (from || to)) {
@@ -1750,6 +1768,13 @@ const getStudentAttendanceStatistics = async (req, res) => {
     });
   }
 };
+
+/**
+ * =========================================================
+ * EXPORT
+ * =========================================================
+ */
+
 module.exports = {
   getOverview,
   getStudentStatistics,

@@ -551,51 +551,20 @@ const getClassStatistics = async (req, res) => {
     const [rows] = await db.query(
       `
       SELECT
-
         c.id,
         c.name,
         c.code,
         c.category,
         c.status,
 
-        (
-          SELECT cschedule.day_of_week
-          FROM class_schedules cschedule
-          WHERE cschedule.class_id = c.id
-          ORDER BY cschedule.id ASC
-          LIMIT 1
-        ) AS day_of_week,
-
-        (
-          SELECT cschedule.start_time
-          FROM class_schedules cschedule
-          WHERE cschedule.class_id = c.id
-          ORDER BY cschedule.id ASC
-          LIMIT 1
-        ) AS start_time,
-
-        (
-          SELECT cschedule.end_time
-          FROM class_schedules cschedule
-          WHERE cschedule.class_id = c.id
-          ORDER BY cschedule.id ASC
-          LIMIT 1
-        ) AS end_time,
-
-        (
-          SELECT cschedule.room
-          FROM class_schedules cschedule
-          WHERE cschedule.class_id = c.id
-          ORDER BY cschedule.id ASC
-          LIMIT 1
-        ) AS room,
+        schedule.day_of_week,
+        schedule.start_time,
+        schedule.end_time,
+        schedule.room,
 
         COUNT(
           CASE
-            WHEN cs.status IN (
-              'studying',
-              'completed'
-            )
+            WHEN cs.status IN ('studying', 'completed')
             THEN cs.student_id
           END
         ) AS total_students,
@@ -609,6 +578,27 @@ const getClassStatistics = async (req, res) => {
 
       FROM classes c
 
+      LEFT JOIN (
+        SELECT
+          cs1.class_id,
+          cs1.day_of_week,
+          cs1.start_time,
+          cs1.end_time,
+          cs1.room
+        FROM class_schedules cs1
+
+        INNER JOIN (
+          SELECT
+            class_id,
+            MIN(id) AS min_id
+          FROM class_schedules
+          GROUP BY class_id
+        ) first_schedule
+          ON first_schedule.class_id = cs1.class_id
+          AND first_schedule.min_id = cs1.id
+      ) schedule
+        ON schedule.class_id = c.id
+
       LEFT JOIN class_students cs
         ON cs.class_id = c.id
 
@@ -619,7 +609,11 @@ const getClassStatistics = async (req, res) => {
         c.name,
         c.code,
         c.category,
-        c.status
+        c.status,
+        schedule.day_of_week,
+        schedule.start_time,
+        schedule.end_time,
+        schedule.room
 
       ORDER BY c.name ASC
       `,
@@ -628,29 +622,21 @@ const getClassStatistics = async (req, res) => {
 
     return res.json({
       success: true,
-
       data: rows.map((item) => ({
         id: item.id,
-
         name: item.name,
-
         code: item.code,
-
         category: item.category,
-
         status: item.status,
 
         day_of_week:
           item.day_of_week !== null ? Number(item.day_of_week) : null,
 
         start_time: item.start_time,
-
         end_time: item.end_time,
-
         room: item.room,
 
         total_students: Number(item.total_students || 0),
-
         studying_students: Number(item.studying_students || 0),
       })),
     });
@@ -661,6 +647,8 @@ const getClassStatistics = async (req, res) => {
       success: false,
       message: "Lỗi khi lấy thống kê lớp.",
       error: error.message,
+      code: error.code,
+      sqlMessage: error.sqlMessage,
     });
   }
 };

@@ -523,7 +523,18 @@ const syncStudentParents = async ({
 
 exports.getStudents = async (req, res) => {
   try {
+    console.log("");
+    console.log("============================================================");
+    console.log("                       GET STUDENTS");
+    console.log("============================================================");
+
+    // =====================================================
+    // CHURCH
+    // =====================================================
+
     const churchId = getChurchId(req);
+
+    console.log("CHURCH ID:", churchId);
 
     if (!churchId) {
       return res.status(403).json({
@@ -531,6 +542,10 @@ exports.getStudents = async (req, res) => {
         message: "Không xác định được giáo xứ",
       });
     }
+
+    // =====================================================
+    // PAGINATION
+    // =====================================================
 
     const page = Math.max(1, Number(req.query.page) || 1);
 
@@ -541,17 +556,35 @@ exports.getStudents = async (req, res) => {
 
     const offset = (page - 1) * pageSize;
 
+    console.log("PAGE:", page);
+    console.log("PAGE SIZE:", pageSize);
+    console.log("OFFSET:", offset);
+
+    // =====================================================
+    // FILTER
+    // =====================================================
+
     const search = normalizeValue(req.query.search);
+
     const classId = toInt(req.query.class_id);
+
     const status = normalizeValue(req.query.status);
+
+    console.log("SEARCH:", search);
+    console.log("CLASS ID:", classId);
+    console.log("STATUS:", status);
+
+    // =====================================================
+    // WHERE
+    // =====================================================
 
     const where = ["s.church_id = ?"];
 
     const params = [churchId];
 
-    /**
-     * SEARCH
-     */
+    // =====================================================
+    // SEARCH
+    // =====================================================
 
     if (search) {
       where.push(`
@@ -581,26 +614,34 @@ exports.getStudents = async (req, res) => {
       );
     }
 
-    /**
-     * CLASS
-     */
+    // =====================================================
+    // CLASS FILTER
+    // =====================================================
 
     if (classId) {
       where.push(`
         EXISTS (
           SELECT 1
+
           FROM class_students cs_filter
+
+          INNER JOIN classes c_filter
+            ON c_filter.id = cs_filter.class_id
+
           WHERE cs_filter.student_id = s.id
+
             AND cs_filter.class_id = ?
+
+            AND c_filter.church_id = ?
         )
       `);
 
-      params.push(classId);
+      params.push(classId, churchId);
     }
 
-    /**
-     * STATUS
-     */
+    // =====================================================
+    // STATUS FILTER
+    // =====================================================
 
     if (status) {
       if (!VALID_STUDENT_STATUS.includes(status)) {
@@ -611,88 +652,167 @@ exports.getStudents = async (req, res) => {
       }
 
       where.push("s.status = ?");
+
       params.push(status);
     }
 
+    // =====================================================
+    // WHERE SQL
+    // =====================================================
+
     const whereSql = where.join(" AND ");
 
-    /**
-     * COUNT
-     */
+    console.log("WHERE SQL:", whereSql);
+
+    console.log("FILTER PARAMS:", params);
+
+    // =====================================================
+    // COUNT
+    // =====================================================
 
     const [countRows] = await db.execute(
       `
-        SELECT COUNT(*) AS total
-        FROM students s
-        WHERE ${whereSql}
-      `,
+          SELECT
+            COUNT(*) AS total
+
+          FROM students s
+
+          WHERE ${whereSql}
+        `,
       params,
     );
 
     const total = Number(countRows[0]?.total || 0);
 
-    /**
-     * DATA
-     */
+    console.log("TOTAL STUDENTS:", total);
 
-    const [rows] = await db.execute(
-      `
-        SELECT
-          s.*,
+    // =====================================================
+    // DATA
+    //
+    // LƯU Ý:
+    // LIMIT / OFFSET được nối trực tiếp sau khi
+    // đã ép kiểu số nguyên và giới hạn giá trị.
+    //
+    // Không dùng:
+    // LIMIT ? OFFSET ?
+    // =====================================================
 
-          (
-            SELECT GROUP_CONCAT(
+    const dataSql = `
+      SELECT
+        s.*,
+
+        (
+          SELECT
+            GROUP_CONCAT(
               DISTINCT c.id
               ORDER BY c.id
               SEPARATOR ','
             )
-            FROM class_students cs
-            INNER JOIN classes c
-              ON c.id = cs.class_id
-            WHERE cs.student_id = s.id
-              AND c.church_id = ?
-          ) AS class_ids,
 
-          (
-            SELECT GROUP_CONCAT(
+          FROM class_students cs
+
+          INNER JOIN classes c
+            ON c.id = cs.class_id
+
+          WHERE cs.student_id = s.id
+
+            AND c.church_id = ?
+        ) AS class_ids,
+
+        (
+          SELECT
+            GROUP_CONCAT(
               DISTINCT c.name
               ORDER BY c.name
               SEPARATOR ', '
             )
-            FROM class_students cs
-            INNER JOIN classes c
-              ON c.id = cs.class_id
-            WHERE cs.student_id = s.id
-              AND c.church_id = ?
-          ) AS class_names
 
-        FROM students s
+          FROM class_students cs
 
-        WHERE ${whereSql}
+          INNER JOIN classes c
+            ON c.id = cs.class_id
 
-        ORDER BY s.id DESC
+          WHERE cs.student_id = s.id
 
-        LIMIT ? OFFSET ?
-      `,
-      [churchId, churchId, ...params, pageSize, offset],
-    );
+            AND c.church_id = ?
+        ) AS class_names
+
+      FROM students s
+
+      WHERE ${whereSql}
+
+      ORDER BY s.id DESC
+
+      LIMIT ${pageSize}
+      OFFSET ${offset}
+    `;
+
+    // =====================================================
+    // DATA PARAMS
+    //
+    // 2 params đầu tiên cho:
+    // c.church_id = ?
+    // c.church_id = ?
+    //
+    // Sau đó mới đến params của WHERE
+    // =====================================================
+
+    const dataParams = [churchId, churchId, ...params];
+
+    console.log("DATA PARAMS:", dataParams);
+
+    console.log("LIMIT:", pageSize);
+
+    console.log("OFFSET:", offset);
+
+    // =====================================================
+    // QUERY DATA
+    // =====================================================
+
+    const [rows] = await db.execute(dataSql, dataParams);
+
+    console.log("ROWS RETURNED:", rows.length);
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
 
     return res.json({
       success: true,
+
       data: rows,
+
       pagination: {
         page,
+
         pageSize,
+
         total,
+
         totalPages: total > 0 ? Math.ceil(total / pageSize) : 0,
       },
     });
   } catch (error) {
-    console.error("❌ GET STUDENTS:", error);
+    // =====================================================
+    // ERROR
+    // =====================================================
+
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("                  GET STUDENTS ERROR");
+    console.error(
+      "============================================================",
+    );
+
+    console.error("ERROR:", error);
 
     return res.status(500).json({
       success: false,
+
       message: "Không thể lấy danh sách học sinh",
+
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }

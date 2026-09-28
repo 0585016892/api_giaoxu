@@ -62,11 +62,10 @@ router.post(
 // Thêm học sinh
 router.post(
   "/",
-  uploadStudentAvatar.single("avatar"),
   verifyToken,
+  uploadStudentAvatar.single("avatar"),
   studentController.createStudent,
 );
-
 // =====================================================
 // IMPORT HỌC SINH TỪ EXCEL
 // =====================================================

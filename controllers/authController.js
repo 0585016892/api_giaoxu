@@ -4,7 +4,10 @@ const jwt = require("jsonwebtoken");
 const { writeLog } = require("../utils/activityLogger");
 const { generateCatechistCode } = require("../utils/generateCode");
 exports.login = async (req, res) => {
-  console.log("===== LOGIN REQUEST =====");
+  console.log("");
+  console.log("============================================================");
+  console.log("                         LOGIN REQUEST");
+  console.log("============================================================");
 
   try {
     const { email, password } = req.body;
@@ -13,83 +16,99 @@ exports.login = async (req, res) => {
     // 1. VALIDATE
     // =====================================================
 
-    if (!email || !password) {
+    const loginValue = typeof email === "string" ? email.trim() : "";
+
+    if (!loginValue || !password) {
+      console.log("❌ LOGIN VALIDATION FAILED");
+
       return res.status(400).json({
         success: false,
-        message: "Email và password là bắt buộc",
+        message: "Email / số điện thoại và password là bắt buộc",
       });
     }
 
     // =====================================================
-    // 2. LẤY ADMIN + CATECHIST
+    // 2. TÌM ACCOUNT
     //
-    // QUAN HỆ:
-    // admins.username = catechists.catechist_code
+    // Có thể đăng nhập bằng:
     //
-    // Đồng thời phải cùng church_id
+    // - email
+    // - username
+    //
+    // Parent:
+    // username = số điện thoại
+    //
+    // GLV:
+    // username = catechist_code
     // =====================================================
+
+    console.log("🔐 LOGIN VALUE:", loginValue);
 
     const [rows] = await db.query(
       `
-      SELECT
-        a.*,
+        SELECT
+          a.*,
 
-        c.id AS catechist_id,
-        c.catechist_code,
-        c.id AS catechist_teacher_id,
-        c.full_name AS catechist_full_name
+          c.id AS catechist_id,
+          c.catechist_code,
+          c.id AS catechist_teacher_id,
+          c.full_name AS catechist_full_name
 
-      FROM admins a
+        FROM admins a
 
-      LEFT JOIN catechists c
-        ON c.catechist_code = a.username
-        AND c.church_id = a.church_id
+        LEFT JOIN catechists c
+          ON c.catechist_code = a.username
+          AND c.church_id = a.church_id
 
-      WHERE a.email = ?
+        WHERE
+          a.email = ?
+          OR a.username = ?
 
-      LIMIT 1
+        LIMIT 1
       `,
-      [email.trim()],
+      [loginValue, loginValue],
     );
 
     // =====================================================
-    // 3. KHÔNG TÌM THẤY ACCOUNT
+    // 3. ACCOUNT NOT FOUND
     // =====================================================
 
     if (rows.length === 0) {
-      console.log("❌ ACCOUNT NOT FOUND:", email);
+      console.log("❌ ACCOUNT NOT FOUND:", loginValue);
 
       return res.status(401).json({
         success: false,
-        message: "Sai email hoặc mật khẩu",
+        message: "Sai email / số điện thoại hoặc mật khẩu",
       });
     }
 
     const admin = rows[0];
 
     // =====================================================
-    // DEBUG
+    // 4. DEBUG ACCOUNT
     // =====================================================
 
-    console.log("========================================");
+    console.log("");
+    console.log("------------------------------------------------------------");
     console.log("LOGIN USER");
-    console.log("========================================");
+    console.log("------------------------------------------------------------");
+
     console.log("Admin ID       :", admin.id);
     console.log("Email          :", admin.email);
     console.log("Username       :", admin.username);
     console.log("Role           :", admin.role);
     console.log("Church ID      :", admin.church_id);
+    console.log("Account Type   :", admin.account_type);
+    console.log("Active         :", admin.is_active);
 
     console.log("Catechist ID   :", admin.catechist_id);
-
     console.log("Catechist Code :", admin.catechist_code);
-
     console.log("Teacher ID     :", admin.catechist_teacher_id);
 
-    console.log("========================================");
+    console.log("------------------------------------------------------------");
 
     // =====================================================
-    // 4. CHECK ACTIVE
+    // 5. CHECK ACCOUNT ACTIVE
     // =====================================================
 
     if (
@@ -106,8 +125,33 @@ exports.login = async (req, res) => {
     }
 
     // =====================================================
-    // 5. CHECK PASSWORD
+    // 6. CHECK CHURCH
+    //
+    // Tài khoản hệ thống có thể không có church_id
+    // nhưng parent bắt buộc phải có church_id.
     // =====================================================
+
+    if (admin.role === "parent" && !admin.church_id) {
+      console.log("❌ PARENT WITHOUT CHURCH:", admin.id);
+
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh chưa được gắn với giáo xứ",
+      });
+    }
+
+    // =====================================================
+    // 7. CHECK PASSWORD
+    // =====================================================
+
+    if (!admin.password) {
+      console.log("❌ ACCOUNT HAS NO PASSWORD:", admin.id);
+
+      return res.status(401).json({
+        success: false,
+        message: "Tài khoản chưa được thiết lập mật khẩu",
+      });
+    }
 
     const isMatch = await bcrypt.compare(password, admin.password);
 
@@ -116,18 +160,20 @@ exports.login = async (req, res) => {
 
       return res.status(401).json({
         success: false,
-        message: "Sai email hoặc mật khẩu",
+        message: "Sai email / số điện thoại hoặc mật khẩu",
       });
     }
 
+    console.log("✅ PASSWORD CORRECT");
+
     // =====================================================
-    // 6. TEACHER / CATECHIST ID
+    // 8. TEACHER / CATECHIST ID
     //
-    // admins.username
-    //        ↓
-    // catechists.catechist_code
-    //        ↓
-    // catechists.id
+    // Chỉ áp dụng cho các account có catechist.
+    //
+    // Parent:
+    // teacher_id = null
+    // catechist_id = null
     // =====================================================
 
     const teacherId = admin.catechist_teacher_id
@@ -137,59 +183,97 @@ exports.login = async (req, res) => {
     console.log("🎓 TEACHER ID:", teacherId);
 
     // =====================================================
-    // 7. UPDATE LAST LOGIN
+    // 9. PARENT CHECK
+    //
+    // Kiểm tra parent có liên kết học sinh hay chưa.
+    //
+    // Không bắt buộc phải có con để đăng nhập.
+    // Chỉ lấy thông tin để FE có thể dùng sau này.
+    // =====================================================
+
+    let parentStudentCount = 0;
+
+    if (admin.role === "parent") {
+      const [parentRows] = await db.query(
+        `
+            SELECT COUNT(*) AS total
+            FROM parent_students ps
+            INNER JOIN students s
+              ON s.id = ps.student_id
+            WHERE ps.parent_id = ?
+              AND ps.church_id = ?
+              AND s.church_id = ?
+          `,
+        [admin.id, admin.church_id, admin.church_id],
+      );
+
+      parentStudentCount = Number(parentRows[0]?.total || 0);
+
+      console.log("👨‍👩‍👧 PARENT STUDENT COUNT:", parentStudentCount);
+    }
+
+    // =====================================================
+    // 10. UPDATE LAST LOGIN
     // =====================================================
 
     await db.query(
       `
-      UPDATE admins
-      SET last_login = NOW()
-      WHERE id = ?
+        UPDATE admins
+        SET last_login = NOW()
+        WHERE id = ?
       `,
       [admin.id],
     );
 
     // =====================================================
-    // 8. CREATE JWT
+    // 11. CREATE JWT
     // =====================================================
 
-    const token = jwt.sign(
-      {
-        id: Number(admin.id),
+    const payload = {
+      id: Number(admin.id),
 
-        email: admin.email,
+      email: admin.email || null,
 
-        full_name: admin.full_name,
+      full_name: admin.full_name || admin.username || null,
 
-        username: admin.username,
+      username: admin.username,
 
-        avatar: admin.avatar || null,
+      avatar: admin.avatar || null,
 
-        role: admin.role,
+      role: admin.role,
 
-        church_id: admin.church_id ? Number(admin.church_id) : null,
+      church_id: admin.church_id ? Number(admin.church_id) : null,
 
-        account_type: admin.account_type,
+      account_type: admin.account_type || "member",
 
-        // ================================================
-        // GIÁO LÝ VIÊN
-        // ================================================
+      // ===================================================
+      // CATECHIST / TEACHER
+      // ===================================================
 
-        catechist_id: teacherId,
+      catechist_id: teacherId,
 
-        // Các API hiện tại đang dùng teacher_id
-        teacher_id: teacherId,
-      },
+      teacher_id: teacherId,
 
-      process.env.JWT_SECRET,
+      // ===================================================
+      // PARENT
+      // ===================================================
 
-      {
-        expiresIn: process.env.JWT_EXPIRES_IN || "1d",
-      },
-    );
+      parent_id: admin.role === "parent" ? Number(admin.id) : null,
+    };
+
+    console.log("");
+    console.log("------------------------------------------------------------");
+    console.log("JWT PAYLOAD");
+    console.log("------------------------------------------------------------");
+    console.log(payload);
+    console.log("------------------------------------------------------------");
+
+    const token = jwt.sign(payload, process.env.JWT_SECRET, {
+      expiresIn: process.env.JWT_EXPIRES_IN || "1d",
+    });
 
     // =====================================================
-    // 9. WRITE LOGIN LOG
+    // 12. WRITE LOGIN LOG
     // =====================================================
 
     try {
@@ -198,7 +282,7 @@ exports.login = async (req, res) => {
         action: "LOGIN",
         target_type: admin.role,
         target_id: admin.id,
-        description: `${admin.full_name} đăng nhập hệ thống`,
+        description: `${admin.full_name || admin.username} đăng nhập hệ thống`,
         ip_address: req.ip,
       });
     } catch (logError) {
@@ -206,16 +290,23 @@ exports.login = async (req, res) => {
     }
 
     // =====================================================
-    // 10. RESPONSE
+    // 13. RESPONSE
     // =====================================================
 
-    console.log("========================================");
-    console.log("✅ LOGIN SUCCESS");
-    console.log("Admin ID    :", admin.id);
-    console.log("Username    :", admin.username);
-    console.log("Catechist ID:", teacherId);
-    console.log("Church ID   :", admin.church_id);
-    console.log("========================================");
+    console.log("");
+    console.log("============================================================");
+    console.log("                     LOGIN SUCCESS");
+    console.log("============================================================");
+
+    console.log("Admin ID       :", admin.id);
+    console.log("Username       :", admin.username);
+    console.log("Email          :", admin.email);
+    console.log("Role           :", admin.role);
+    console.log("Church ID      :", admin.church_id);
+    console.log("Catechist ID   :", teacherId);
+    console.log("Parent Student :", parentStudentCount);
+
+    console.log("============================================================");
 
     return res.status(200).json({
       success: true,
@@ -227,23 +318,23 @@ exports.login = async (req, res) => {
       admin: {
         id: Number(admin.id),
 
-        email: admin.email,
+        email: admin.email || null,
 
         role: admin.role,
 
         church_id: admin.church_id ? Number(admin.church_id) : null,
 
-        full_name: admin.full_name,
+        full_name: admin.full_name || admin.username || null,
 
         username: admin.username,
 
-        account_type: admin.account_type,
+        account_type: admin.account_type || "member",
 
         avatar: admin.avatar || null,
 
-        // ================================================
+        // =================================================
         // CATECHIST
-        // ================================================
+        // =================================================
 
         catechist_id: teacherId,
 
@@ -251,20 +342,40 @@ exports.login = async (req, res) => {
 
         catechist_full_name: admin.catechist_full_name || null,
 
-        // ================================================
-        // TEACHER ID
-        // ================================================
+        // =================================================
+        // TEACHER
+        // =================================================
 
         teacher_id: teacherId,
+
+        // =================================================
+        // PARENT
+        // =================================================
+
+        parent_id: admin.role === "parent" ? Number(admin.id) : null,
+
+        parent_student_count: parentStudentCount,
+
+        // =================================================
+        // LOGIN
+        // =================================================
 
         last_login: new Date(),
       },
     });
   } catch (err) {
-    console.error("========================================");
-    console.error("❌ LOGIN ERROR");
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("                         LOGIN ERROR");
+    console.error(
+      "============================================================",
+    );
     console.error(err);
-    console.error("========================================");
+    console.error(
+      "============================================================",
+    );
 
     return res.status(500).json({
       success: false,

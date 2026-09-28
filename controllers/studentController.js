@@ -403,9 +403,28 @@ const linkParentToStudent = async ({
   studentId,
   relationship,
 }) => {
-  if (!parentId || !studentId) {
-    return;
-  }
+  /**
+   * -------------------------------------------------------
+   * CHUẨN HÓA RELATIONSHIP
+   * -------------------------------------------------------
+   *
+   * parent_students.relationship chỉ cho phép:
+   * father | mother | guardian
+   */
+
+  const validRelationships = ["father", "mother", "guardian"];
+
+  const normalizedRelationship = validRelationships.includes(relationship)
+    ? relationship
+    : "guardian";
+
+  console.log("");
+  console.log("🔗 LINK PARENT -> STUDENT");
+  console.log("   Church ID     :", churchId);
+  console.log("   Parent ID     :", parentId);
+  console.log("   Student ID    :", studentId);
+  console.log("   Relationship  :", relationship);
+  console.log("   Normalized    :", normalizedRelationship);
 
   await connection.execute(
     `
@@ -420,10 +439,11 @@ const linkParentToStudent = async ({
         relationship = VALUES(relationship),
         church_id = VALUES(church_id)
     `,
-    [churchId, parentId, studentId, relationship],
+    [churchId, parentId, studentId, normalizedRelationship],
   );
-};
 
+  console.log("✅ LINK PARENT SUCCESS");
+};
 /**
  * =========================================================
  * SYNC PARENTS
@@ -447,114 +467,156 @@ const syncStudentParents = async ({
 }) => {
   console.log("");
   console.log("============================================================");
-  console.log("SYNC STUDENT PARENTS");
+  console.log("                    SYNC STUDENT PARENTS");
   console.log("============================================================");
 
-  /**
-   * Xóa link cũ
-   */
-  await connection.execute(
-    `
-      DELETE FROM parent_students
-      WHERE student_id = ?
-        AND church_id = ?
-    `,
-    [studentId, churchId],
-  );
-
-  const parents = [];
+  console.log("CHURCH ID       :", churchId);
+  console.log("STUDENT ID      :", studentId);
 
   /**
    * -------------------------------------------------------
-   * CHA
+   * BUILD PARENT CANDIDATES
    * -------------------------------------------------------
    */
 
-  const fatherPhoneValue = normalizeParentPhone(fatherPhone);
-
-  if (fatherPhoneValue) {
-    const parent = await getOrCreateParentAccount({
-      connection,
-      churchId,
-      phone: fatherPhoneValue,
-      fullName: fatherName || fatherPhoneValue,
-    });
-
-    parents.push({
-      ...parent,
+  const candidates = [
+    {
+      name: fatherName,
+      phone: normalizeParentPhone(fatherPhone),
       relationship: "father",
-    });
-  }
-
-  /**
-   * -------------------------------------------------------
-   * MẸ
-   * -------------------------------------------------------
-   */
-
-  const motherPhoneValue = normalizeParentPhone(motherPhone);
-
-  if (motherPhoneValue && motherPhoneValue !== fatherPhoneValue) {
-    const parent = await getOrCreateParentAccount({
-      connection,
-      churchId,
-      phone: motherPhoneValue,
-      fullName: motherName || motherPhoneValue,
-    });
-
-    parents.push({
-      ...parent,
+    },
+    {
+      name: motherName,
+      phone: normalizeParentPhone(motherPhone),
       relationship: "mother",
-    });
-  }
+    },
+    {
+      name: guardianName,
+      phone: normalizeParentPhone(guardianPhone),
+      relationship: "guardian",
+    },
+  ];
 
   /**
    * -------------------------------------------------------
-   * NGƯỜI GIÁM HỘ
+   * CHỈ GIỮ NGƯỜI CÓ SỐ ĐIỆN THOẠI
    * -------------------------------------------------------
    */
 
-  const guardianPhoneValue = normalizeParentPhone(guardianPhone);
+  const validCandidates = candidates.filter((item) => item.phone);
 
-  if (guardianPhoneValue) {
-    const alreadyExists = parents.some(
-      (item) => item.username === guardianPhoneValue,
-    );
+  console.log("PARENT CANDIDATES:", validCandidates);
 
-    if (!alreadyExists) {
-      const parent = await getOrCreateParentAccount({
-        connection,
-        churchId,
-        phone: guardianPhoneValue,
-        fullName: guardianName || guardianPhoneValue,
-      });
+  /**
+   * -------------------------------------------------------
+   * DEDUPE THEO PHONE
+   * -------------------------------------------------------
+   *
+   * Trường hợp:
+   *
+   * father_phone   = 098xxx
+   * guardian_phone = 098xxx
+   *
+   * thì không tạo 2 parent_students.
+   *
+   * Ưu tiên:
+   * father > mother > guardian
+   */
 
-      parents.push({
-        ...parent,
-        relationship: guardianRelationship || "guardian",
-      });
+  const parentMap = new Map();
+
+  for (const candidate of validCandidates) {
+    if (!parentMap.has(candidate.phone)) {
+      parentMap.set(candidate.phone, candidate);
     }
   }
 
+  const uniqueParents = Array.from(parentMap.values());
+
+  console.log("UNIQUE PARENTS:", uniqueParents);
+
   /**
    * -------------------------------------------------------
-   * LINK
+   * NẾU KHÔNG CÓ PHỤ HUYNH
    * -------------------------------------------------------
    */
 
-  for (const parent of parents) {
+  if (uniqueParents.length === 0) {
+    console.log("ℹ️ STUDENT HAS NO PARENT PHONE");
+
+    /**
+     * Không tự xóa parent_students ở đây.
+     *
+     * Vì nếu update student mà request không có phone
+     * thì có thể làm mất liên kết cũ.
+     *
+     * Tuy nhiên với code update hiện tại:
+     * normalizedFatherPhone / MotherPhone / GuardianPhone
+     * đã lấy từ oldStudent nếu body không truyền.
+     *
+     * Nên trường hợp này chỉ xảy ra khi thực sự không còn phone.
+     */
+
+    return [];
+  }
+
+  /**
+   * -------------------------------------------------------
+   * SYNC TỪNG PARENT
+   * -------------------------------------------------------
+   */
+
+  const parentAccounts = [];
+
+  for (const candidate of uniqueParents) {
+    console.log("");
+    console.log("------------------------------------------------------------");
+    console.log("SYNC PARENT");
+    console.log("NAME         :", candidate.name);
+    console.log("PHONE        :", candidate.phone);
+    console.log("RELATIONSHIP :", candidate.relationship);
+    console.log("------------------------------------------------------------");
+
+    /**
+     * -----------------------------------------------------
+     * CREATE / GET ACCOUNT
+     * -----------------------------------------------------
+     */
+
+    const parent = await getOrCreateParentAccount({
+      connection,
+      churchId,
+      phone: candidate.phone,
+      fullName: candidate.name,
+    });
+
+    /**
+     * -----------------------------------------------------
+     * LINK PARENT -> STUDENT
+     * -----------------------------------------------------
+     */
+
     await linkParentToStudent({
       connection,
       churchId,
       parentId: parent.id,
       studentId,
-      relationship: parent.relationship,
+      relationship: candidate.relationship,
+    });
+
+    parentAccounts.push({
+      id: parent.id,
+      username: parent.username,
+      relationship: candidate.relationship,
+      created: parent.created,
     });
   }
 
-  console.log("👨‍👩‍👧 PARENTS:", parents);
+  console.log("");
+  console.log("✅ SYNC STUDENT PARENTS SUCCESS");
+  console.log("PARENT COUNT:", parentAccounts.length);
 
-  return parents;
+  return parentAccounts;
 };
 
 /**

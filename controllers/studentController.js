@@ -220,54 +220,67 @@ const getOrCreateParentAccount = async ({
 
   console.log("");
   console.log("------------------------------------------------------------");
-  console.log("👨‍👩‍👧 CHECK PARENT");
+  console.log("             GET / CREATE PARENT ACCOUNT");
   console.log("------------------------------------------------------------");
-  console.log("⛪ CHURCH:", churchId);
-  console.log("📱 PHONE:", normalizedPhone);
-  console.log("👤 NAME:", fullName);
+
+  console.log("PHONE:", normalizedPhone);
+
+  console.log("FULL NAME:", fullName);
+
+  console.log("CHURCH ID:", churchId);
+
+  // ========================================================
+  // TÌM ACCOUNT
+  // ========================================================
 
   const [existingRows] = await connection.execute(
     `
-      SELECT
-        id,
-        church_id,
-        username,
-        role,
-        account_type,
-        is_active,
-        full_name,
-        phone
-      FROM admins
-      WHERE username = ?
-      LIMIT 1
-      FOR UPDATE
-    `,
+        SELECT
+          id,
+          church_id,
+          username,
+          password,
+          role,
+          account_type,
+          is_active,
+          full_name,
+          phone
+        FROM admins
+        WHERE username = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
     [normalizedPhone],
   );
 
-  /**
-   * -------------------------------------------------------
-   * ĐÃ TỒN TẠI
-   * -------------------------------------------------------
-   */
+  // ========================================================
+  // ACCOUNT ĐÃ TỒN TẠI
+  // ========================================================
 
   if (existingRows.length > 0) {
     const existing = existingRows[0];
 
-    console.log("🔎 PARENT EXISTS:", existing);
+    console.log("EXISTING ACCOUNT:", {
+      id: existing.id,
+      username: existing.username,
+      role: existing.role,
+      church_id: existing.church_id,
+    });
 
-    /**
-     * Không được lấy tài khoản GLV/admin/teacher...
-     */
+    // ------------------------------------------------------
+    // KHÔNG PHẢI PARENT
+    // ------------------------------------------------------
+
     if (existing.role !== "parent") {
       throw new Error(
         `Số điện thoại ${normalizedPhone} đã được sử dụng cho tài khoản ${existing.role}`,
       );
     }
 
-    /**
-     * Không cho parent giáo xứ khác dùng chung
-     */
+    // ------------------------------------------------------
+    // KHÁC GIÁO XỨ
+    // ------------------------------------------------------
+
     if (
       existing.church_id !== null &&
       Number(existing.church_id) !== Number(churchId)
@@ -277,59 +290,82 @@ const getOrCreateParentAccount = async ({
       );
     }
 
-    /**
-     * Bổ sung thông tin nếu đang thiếu
-     */
+    // ------------------------------------------------------
+    // UPDATE THÔNG TIN
+    // ------------------------------------------------------
+
     await connection.execute(
       `
         UPDATE admins
+
         SET
           church_id = ?,
-          full_name = COALESCE(NULLIF(full_name, ''), ?),
-          phone = COALESCE(NULLIF(phone, ''), ?)
+
+          full_name =
+            COALESCE(
+              NULLIF(full_name, ''),
+              ?
+            ),
+
+          phone =
+            COALESCE(
+              NULLIF(phone, ''),
+              ?
+            )
+
         WHERE id = ?
       `,
       [churchId, fullName || normalizedPhone, normalizedPhone, existing.id],
     );
 
+    console.log("✅ EXISTING PARENT ACCOUNT:", existing.id);
+
     return {
       id: Number(existing.id),
       username: existing.username,
+      relationship: null,
       created: false,
     };
   }
 
-  /**
-   * -------------------------------------------------------
-   * TẠO ACCOUNT MỚI
-   * -------------------------------------------------------
-   */
+  // ========================================================
+  // TẠO ACCOUNT MỚI
+  // ========================================================
 
   const passwordHash = await bcrypt.hash(normalizedPhone, 10);
 
+  console.log("CREATING PARENT ACCOUNT");
+
+  console.log("USERNAME:", normalizedPhone);
+
+  console.log("PASSWORD SOURCE:", normalizedPhone);
+
+  console.log("PASSWORD HASH:", passwordHash);
+
   const [result] = await connection.execute(
     `
-      INSERT INTO admins (
-        church_id,
-        username,
-        password,
-        role,
-        account_type,
-        is_active,
-        full_name,
-        phone
-      )
-      VALUES (
-        ?,
-        ?,
-        ?,
-        'parent',
-        'member',
-        1,
-        ?,
-        ?
-      )
-    `,
+        INSERT INTO admins (
+          church_id,
+          username,
+          password,
+          role,
+          account_type,
+          is_active,
+          full_name,
+          phone
+        )
+
+        VALUES (
+          ?,
+          ?,
+          ?,
+          'parent',
+          'member',
+          1,
+          ?,
+          ?
+        )
+      `,
     [
       churchId,
       normalizedPhone,
@@ -339,11 +375,17 @@ const getOrCreateParentAccount = async ({
     ],
   );
 
-  console.log("✅ CREATED PARENT:", result.insertId);
+  const parentId = Number(result.insertId);
+
+  console.log("✅ NEW PARENT ACCOUNT:", {
+    id: parentId,
+    username: normalizedPhone,
+  });
 
   return {
-    id: Number(result.insertId),
+    id: parentId,
     username: normalizedPhone,
+    relationship: null,
     created: true,
   };
 };
@@ -2068,14 +2110,38 @@ exports.updateStudent = async (req, res) => {
  * =========================================================
  */
 
+/**
+ * =========================================================
+ * DELETE STUDENT
+ * =========================================================
+ */
 exports.deleteStudent = async (req, res) => {
   const connection = await db.getConnection();
 
   let transactionStarted = false;
 
   try {
+    /**
+     * =======================================================
+     * 1. BASIC INFO
+     * =======================================================
+     */
+
     const churchId = getChurchId(req);
     const studentId = toInt(req.params.id);
+
+    console.log("");
+    console.log("============================================================");
+    console.log("                     DELETE STUDENT");
+    console.log("============================================================");
+    console.log("CHURCH ID:", churchId);
+    console.log("STUDENT ID:", studentId);
+
+    /**
+     * =======================================================
+     * 2. VALIDATE CHURCH
+     * =======================================================
+     */
 
     if (!churchId) {
       return res.status(403).json({
@@ -2084,6 +2150,12 @@ exports.deleteStudent = async (req, res) => {
       });
     }
 
+    /**
+     * =======================================================
+     * 3. VALIDATE STUDENT ID
+     * =======================================================
+     */
+
     if (!isValidId(studentId)) {
       return res.status(400).json({
         success: false,
@@ -2091,27 +2163,39 @@ exports.deleteStudent = async (req, res) => {
       });
     }
 
+    /**
+     * =======================================================
+     * 4. START TRANSACTION
+     * =======================================================
+     */
+
     await connection.beginTransaction();
 
     transactionStarted = true;
 
-    const [rows] = await connection.execute(
+    /**
+     * =======================================================
+     * 5. LOCK + GET STUDENT
+     * =======================================================
+     */
+
+    const [studentRows] = await connection.execute(
       `
-          SELECT
-            id,
-            avatar,
-            name,
-            code
-          FROM students
-          WHERE id = ?
-            AND church_id = ?
-          LIMIT 1
-          FOR UPDATE
-        `,
+        SELECT
+          id,
+          avatar,
+          name,
+          code
+        FROM students
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
       [studentId, churchId],
     );
 
-    if (rows.length === 0) {
+    if (studentRows.length === 0) {
       await connection.rollback();
       transactionStarted = false;
 
@@ -2121,66 +2205,216 @@ exports.deleteStudent = async (req, res) => {
       });
     }
 
-    const student = rows[0];
+    const student = studentRows[0];
+
+    console.log("STUDENT:", {
+      id: student.id,
+      name: student.name,
+      code: student.code,
+    });
 
     /**
-     * Xóa các quan hệ
+     * =======================================================
+     * 6. GET PARENTS OF STUDENT
+     *
+     * Quan trọng:
+     * Không xóa parent ngay.
+     * Chỉ lưu lại parent_id để xử lý sau.
+     * =======================================================
      */
-    await connection.execute(
+
+    const [parentRows] = await connection.execute(
       `
-        DELETE FROM parent_students
+        SELECT DISTINCT
+          parent_id
+        FROM parent_students
         WHERE student_id = ?
           AND church_id = ?
+          AND parent_id IS NOT NULL
+        FOR UPDATE
       `,
       [studentId, churchId],
     );
 
-    await connection.execute(
+    const parentIds = [
+      ...new Set(
+        parentRows
+          .map((row) => Number(row.parent_id))
+          .filter((id) => Number.isInteger(id) && id > 0),
+      ),
+    ];
+
+    console.log("PARENT IDS:", parentIds);
+
+    /**
+     * =======================================================
+     * 7. DELETE PARENT-STUDENT RELATION
+     * =======================================================
+     */
+
+    const [parentRelationResult] = await connection.execute(
       `
-        DELETE FROM class_students
-        WHERE student_id = ?
-      `,
+          DELETE FROM parent_students
+          WHERE student_id = ?
+            AND church_id = ?
+        `,
+      [studentId, churchId],
+    );
+
+    console.log("DELETED PARENT RELATIONS:", parentRelationResult.affectedRows);
+
+    /**
+     * =======================================================
+     * 8. DELETE CLASS-STUDENT RELATION
+     * =======================================================
+     */
+
+    const [classRelationResult] = await connection.execute(
+      `
+          DELETE FROM class_students
+          WHERE student_id = ?
+        `,
       [studentId],
     );
 
+    console.log("DELETED CLASS RELATIONS:", classRelationResult.affectedRows);
+
     /**
-     * Xóa student
+     * =======================================================
+     * 9. DELETE STUDENT
+     * =======================================================
      */
-    await connection.execute(
+
+    const [deleteStudentResult] = await connection.execute(
       `
-        DELETE FROM students
-        WHERE id = ?
-          AND church_id = ?
-      `,
+          DELETE FROM students
+          WHERE id = ?
+            AND church_id = ?
+        `,
       [studentId, churchId],
     );
+
+    if (deleteStudentResult.affectedRows === 0) {
+      throw new Error("Không thể xóa học sinh");
+    }
+
+    console.log("DELETED STUDENT:", deleteStudentResult.affectedRows);
+
+    /**
+     * =======================================================
+     * 10. CHECK + DELETE ORPHAN PARENTS
+     *
+     * Chỉ xóa parent nếu:
+     *
+     * parent không còn bất kỳ học sinh nào.
+     * =======================================================
+     */
+
+    const deletedParentIds = [];
+
+    for (const parentId of parentIds) {
+      const [remainingRows] = await connection.execute(
+        `
+            SELECT
+              id
+            FROM parent_students
+            WHERE parent_id = ?
+              AND church_id = ?
+            LIMIT 1
+          `,
+        [parentId, churchId],
+      );
+
+      /**
+       * Parent vẫn còn con
+       */
+      if (remainingRows.length > 0) {
+        console.log(`PARENT ${parentId}: vẫn còn học sinh khác`);
+
+        continue;
+      }
+
+      /**
+       * Parent không còn con
+       * => Xóa tài khoản
+       */
+
+      const [deleteParentResult] = await connection.execute(
+        `
+            DELETE FROM parents
+            WHERE id = ?
+              AND church_id = ?
+          `,
+        [parentId, churchId],
+      );
+
+      if (deleteParentResult.affectedRows > 0) {
+        deletedParentIds.push(parentId);
+
+        console.log(`PARENT ${parentId}: ĐÃ XÓA`);
+      }
+    }
+
+    /**
+     * =======================================================
+     * 11. COMMIT
+     * =======================================================
+     */
 
     await connection.commit();
 
     transactionStarted = false;
 
     /**
-     * Xóa avatar sau commit
+     * =======================================================
+     * 12. DELETE AVATAR AFTER COMMIT
+     *
+     * Không xóa file trước khi DB commit.
+     * =======================================================
      */
+
     if (student.avatar) {
-      deleteFileSafe(student.avatar);
+      try {
+        deleteFileSafe(student.avatar);
+      } catch (fileError) {
+        console.error("❌ DELETE STUDENT AVATAR:", fileError);
+      }
     }
+
+    /**
+     * =======================================================
+     * 13. RESPONSE
+     * =======================================================
+     */
 
     return res.json({
       success: true,
       message: "Xóa học sinh thành công",
       data: {
         id: studentId,
+        name: student.name,
+        code: student.code,
+
+        deleted_parent_ids: deletedParentIds,
+
+        deleted_parent_count: deletedParentIds.length,
       },
     });
   } catch (error) {
-    console.error("❌ DELETE STUDENT:", error);
+    console.error("");
+    console.error("❌ DELETE STUDENT ERROR:", error);
+
+    /**
+     * =======================================================
+     * ROLLBACK
+     * =======================================================
+     */
 
     if (transactionStarted) {
       try {
         await connection.rollback();
       } catch (rollbackError) {
-        console.error("❌ ROLLBACK:", rollbackError);
+        console.error("❌ DELETE STUDENT ROLLBACK ERROR:", rollbackError);
       }
     }
 
@@ -2198,14 +2432,31 @@ exports.deleteStudent = async (req, res) => {
  * DELETE STUDENTS BULK
  * =========================================================
  */
-
 exports.deleteStudentsBulk = async (req, res) => {
   const connection = await db.getConnection();
 
   let transactionStarted = false;
 
   try {
+    /**
+     * =======================================================
+     * 1. BASIC INFO
+     * =======================================================
+     */
+
     const churchId = getChurchId(req);
+
+    console.log("");
+    console.log("============================================================");
+    console.log("                   DELETE STUDENTS BULK");
+    console.log("============================================================");
+    console.log("CHURCH ID:", churchId);
+
+    /**
+     * =======================================================
+     * 2. VALIDATE CHURCH
+     * =======================================================
+     */
 
     if (!churchId) {
       return res.status(403).json({
@@ -2213,6 +2464,12 @@ exports.deleteStudentsBulk = async (req, res) => {
         message: "Không xác định được giáo xứ",
       });
     }
+
+    /**
+     * =======================================================
+     * 3. GET STUDENT IDS
+     * =======================================================
+     */
 
     const studentIds = Array.isArray(req.body?.student_ids)
       ? [
@@ -2223,6 +2480,14 @@ exports.deleteStudentsBulk = async (req, res) => {
           ),
         ]
       : [];
+
+    console.log("REQUEST STUDENT IDS:", studentIds);
+
+    /**
+     * =======================================================
+     * 4. VALIDATE IDS
+     * =======================================================
+     */
 
     if (studentIds.length === 0) {
       return res.status(400).json({
@@ -2238,15 +2503,33 @@ exports.deleteStudentsBulk = async (req, res) => {
       });
     }
 
+    /**
+     * =======================================================
+     * 5. START TRANSACTION
+     * =======================================================
+     */
+
     await connection.beginTransaction();
 
     transactionStarted = true;
 
+    /**
+     * =======================================================
+     * 6. PLACEHOLDERS
+     * =======================================================
+     */
+
     const placeholders = studentIds.map(() => "?").join(",");
 
     /**
-     * Chỉ lấy học sinh thuộc church hiện tại
+     * =======================================================
+     * 7. GET STUDENTS
+     *
+     * Chỉ lấy học sinh thuộc church hiện tại.
+     * FOR UPDATE để tránh race condition.
+     * =======================================================
      */
+
     const [students] = await connection.execute(
       `
           SELECT
@@ -2262,6 +2545,10 @@ exports.deleteStudentsBulk = async (req, res) => {
       [churchId, ...studentIds],
     );
 
+    /**
+     * Không có học sinh hợp lệ
+     */
+
     if (students.length === 0) {
       await connection.rollback();
       transactionStarted = false;
@@ -2272,74 +2559,222 @@ exports.deleteStudentsBulk = async (req, res) => {
       });
     }
 
+    /**
+     * =======================================================
+     * 8. VALID STUDENT IDS
+     * =======================================================
+     */
+
     const validIds = students.map((student) => Number(student.id));
+
+    console.log("VALID STUDENT IDS:", validIds);
+
+    /**
+     * =======================================================
+     * 9. GET ALL PARENTS
+     *
+     * Lấy parent của toàn bộ học sinh chuẩn bị xóa.
+     * DISTINCT để tránh parent bị xử lý nhiều lần.
+     * =======================================================
+     */
 
     const validPlaceholders = validIds.map(() => "?").join(",");
 
-    /**
-     * parent_students
-     */
-    await connection.execute(
+    const [parentRows] = await connection.execute(
       `
-        DELETE FROM parent_students
-        WHERE church_id = ?
-          AND student_id IN (${validPlaceholders})
-      `,
+          SELECT DISTINCT
+            parent_id
+          FROM parent_students
+          WHERE church_id = ?
+            AND student_id IN (${validPlaceholders})
+            AND parent_id IS NOT NULL
+          FOR UPDATE
+        `,
       [churchId, ...validIds],
     );
 
+    const parentIds = [
+      ...new Set(
+        parentRows
+          .map((row) => Number(row.parent_id))
+          .filter((id) => Number.isInteger(id) && id > 0),
+      ),
+    ];
+
+    console.log("PARENT IDS:", parentIds);
+
     /**
-     * class_students
+     * =======================================================
+     * 10. DELETE PARENT-STUDENT
+     * =======================================================
      */
-    await connection.execute(
+
+    const [parentRelationResult] = await connection.execute(
       `
-        DELETE FROM class_students
-        WHERE student_id IN (${validPlaceholders})
-      `,
+          DELETE FROM parent_students
+          WHERE church_id = ?
+            AND student_id IN (${validPlaceholders})
+        `,
+      [churchId, ...validIds],
+    );
+
+    console.log("DELETED PARENT RELATIONS:", parentRelationResult.affectedRows);
+
+    /**
+     * =======================================================
+     * 11. DELETE CLASS-STUDENT
+     * =======================================================
+     */
+
+    const [classRelationResult] = await connection.execute(
+      `
+          DELETE FROM class_students
+          WHERE student_id IN (${validPlaceholders})
+        `,
       validIds,
     );
 
+    console.log("DELETED CLASS RELATIONS:", classRelationResult.affectedRows);
+
     /**
-     * students
+     * =======================================================
+     * 12. DELETE STUDENTS
+     * =======================================================
      */
-    await connection.execute(
+
+    const [deleteStudentResult] = await connection.execute(
       `
-        DELETE FROM students
-        WHERE church_id = ?
-          AND id IN (${validPlaceholders})
-      `,
+          DELETE FROM students
+          WHERE church_id = ?
+            AND id IN (${validPlaceholders})
+        `,
       [churchId, ...validIds],
     );
+
+    console.log("DELETED STUDENTS:", deleteStudentResult.affectedRows);
+
+    /**
+     * =======================================================
+     * 13. DELETE ORPHAN PARENTS
+     *
+     * Sau khi xóa quan hệ:
+     *
+     * - Parent còn con khác => giữ
+     * - Parent không còn con => xóa
+     * =======================================================
+     */
+
+    const deletedParentIds = [];
+
+    for (const parentId of parentIds) {
+      const [remainingRows] = await connection.execute(
+        `
+            SELECT
+              id
+            FROM parent_students
+            WHERE parent_id = ?
+              AND church_id = ?
+            LIMIT 1
+          `,
+        [parentId, churchId],
+      );
+
+      /**
+       * Parent còn học sinh
+       */
+
+      if (remainingRows.length > 0) {
+        console.log(`PARENT ${parentId}: vẫn còn học sinh khác`);
+
+        continue;
+      }
+
+      /**
+       * Parent không còn học sinh
+       */
+
+      const [deleteParentResult] = await connection.execute(
+        `
+            DELETE FROM parents
+            WHERE id = ?
+              AND church_id = ?
+          `,
+        [parentId, churchId],
+      );
+
+      if (deleteParentResult.affectedRows > 0) {
+        deletedParentIds.push(parentId);
+
+        console.log(`PARENT ${parentId}: ĐÃ XÓA`);
+      }
+    }
+
+    /**
+     * =======================================================
+     * 14. COMMIT
+     * =======================================================
+     */
 
     await connection.commit();
 
     transactionStarted = false;
 
     /**
-     * Xóa avatar sau commit
+     * =======================================================
+     * 15. DELETE AVATARS AFTER COMMIT
+     * =======================================================
      */
+
     for (const student of students) {
-      if (student.avatar) {
+      if (!student.avatar) {
+        continue;
+      }
+
+      try {
         deleteFileSafe(student.avatar);
+      } catch (fileError) {
+        console.error(`❌ DELETE AVATAR STUDENT ${student.id}:`, fileError);
       }
     }
 
+    /**
+     * =======================================================
+     * 16. RESPONSE
+     * =======================================================
+     */
+
     return res.json({
       success: true,
-      message: `Đã xóa ${students.length} học sinh`,
+      message: `Đã xóa ${validIds.length} học sinh`,
       data: {
         deleted_ids: validIds,
+
         deleted_count: validIds.length,
+
+        deleted_parent_ids: deletedParentIds,
+
+        deleted_parent_count: deletedParentIds.length,
+
+        requested_count: studentIds.length,
+
+        not_found_ids: studentIds.filter((id) => !validIds.includes(id)),
       },
     });
   } catch (error) {
-    console.error("❌ DELETE STUDENTS BULK:", error);
+    console.error("");
+    console.error("❌ DELETE STUDENTS BULK ERROR:", error);
+
+    /**
+     * =======================================================
+     * ROLLBACK
+     * =======================================================
+     */
 
     if (transactionStarted) {
       try {
         await connection.rollback();
       } catch (rollbackError) {
-        console.error("❌ ROLLBACK:", rollbackError);
+        console.error("❌ DELETE STUDENTS BULK ROLLBACK ERROR:", rollbackError);
       }
     }
 
@@ -2351,7 +2786,6 @@ exports.deleteStudentsBulk = async (req, res) => {
     connection.release();
   }
 };
-
 /**
  * =========================================================
  * IMPORT EXCEL

@@ -60,32 +60,6 @@ const normalizePageSize = (value, defaultValue = 20) => {
 
 /**
  * =========================================================
- * PARSE JSON SAFELY
- * =========================================================
- */
-
-const parseJsonArray = (value) => {
-  if (Array.isArray(value)) {
-    return value;
-  }
-
-  if (!value) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(value);
-
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    console.error("PARSE JSON ARRAY ERROR:", error);
-
-    return [];
-  }
-};
-
-/**
- * =========================================================
  * CHECK PARENT ACCOUNT
  * =========================================================
  */
@@ -223,20 +197,17 @@ const checkParentStudent = async (parentId, studentId, churchId) => {
  * GET CLASS SCHEDULES
  * =========================================================
  *
- * LẤY BUỔI HỌC THỰC TẾ TỪ class_schedules
+ * QUAN TRỌNG:
  *
- * Schema đang sử dụng:
+ * class_schedules KHÔNG CÓ church_id.
  *
- * id
- * church_id
- * class_id
- * day_of_week
- * start_time
- * end_time
- * room
- * status
- * created_at
- * updated_at
+ * Xác định church thông qua:
+ *
+ * class_schedules.class_id
+ *          ↓
+ * classes.id
+ *          ↓
+ * classes.church_id
  *
  * =========================================================
  */
@@ -249,28 +220,30 @@ const getClassSchedules = async (classId, churchId) => {
   const [rows] = await db.query(
     `
     SELECT
-      id,
-      church_id,
-      class_id,
-      day_of_week,
-      start_time,
-      end_time,
-      room,
-      status,
-      created_at,
-      updated_at
+      sch.id,
+      sch.class_id,
+      sch.day_of_week,
+      sch.start_time,
+      sch.end_time,
+      sch.room,
+      sch.status,
+      sch.created_at,
+      sch.updated_at
 
-    FROM class_schedules
+    FROM class_schedules sch
 
-    WHERE class_id = ?
-      AND church_id = ?
+    INNER JOIN classes c
+      ON c.id = sch.class_id
+      AND c.church_id = ?
+
+    WHERE sch.class_id = ?
 
     ORDER BY
-      day_of_week ASC,
-      start_time ASC,
-      id ASC
+      sch.day_of_week ASC,
+      sch.start_time ASC,
+      sch.id ASC
     `,
-    [classId, churchId],
+    [churchId, classId],
   );
 
   return rows;
@@ -280,6 +253,8 @@ const getClassSchedules = async (classId, churchId) => {
  * =========================================================
  * GET CURRENT CLASSES OF STUDENT
  * =========================================================
+ *
+ * Lấy:
  *
  * class_students
  *      ↓
@@ -421,28 +396,32 @@ const getAttendanceSummary = async (studentId, churchId) => {
 
       SUM(
         CASE
-          WHEN status = 'present' THEN 1
+          WHEN status = 'present'
+          THEN 1
           ELSE 0
         END
       ) AS present,
 
       SUM(
         CASE
-          WHEN status = 'absent' THEN 1
+          WHEN status = 'absent'
+          THEN 1
           ELSE 0
         END
       ) AS absent,
 
       SUM(
         CASE
-          WHEN status = 'late' THEN 1
+          WHEN status = 'late'
+          THEN 1
           ELSE 0
         END
       ) AS late,
 
       SUM(
         CASE
-          WHEN status = 'excused' THEN 1
+          WHEN status = 'excused'
+          THEN 1
           ELSE 0
         END
       ) AS excused
@@ -851,7 +830,9 @@ exports.getChild = async (req, res) => {
       status: child.status,
 
       catechism_level: child.catechism_level,
+
       catechism_status: child.catechism_status,
+
       enrollment_date: child.enrollment_date,
 
       note: child.note,
@@ -866,12 +847,15 @@ exports.getChild = async (req, res) => {
 
       first_communion: {
         date: child.first_communion_date,
+
         place: child.first_communion_place,
       },
 
       confirmation: {
         date: child.confirmation_date,
+
         place: child.confirmation_place,
+
         saint_name: child.confirmation_saint_name,
       },
 
@@ -918,7 +902,9 @@ exports.getChild = async (req, res) => {
 exports.getChildAttendance = async (req, res) => {
   try {
     const parentId = getParentId(req);
+
     const churchId = getChurchId(req);
+
     const studentId = toInt(req.params.studentId);
 
     const attendanceType = req.query.type || null;
@@ -1091,7 +1077,7 @@ exports.getChildAttendance = async (req, res) => {
 
     /**
      * =====================================================
-     * TOTAL RECORDS
+     * COUNT
      * =====================================================
      */
 
@@ -1128,7 +1114,8 @@ exports.getChildAttendance = async (req, res) => {
 
     const [countRows] = await db.query(
       `
-        SELECT COUNT(*) AS total
+        SELECT
+          COUNT(*) AS total
 
         FROM attendances
 
@@ -1266,7 +1253,9 @@ exports.getChildAttendance = async (req, res) => {
 exports.getChildResults = async (req, res) => {
   try {
     const parentId = getParentId(req);
+
     const churchId = getChurchId(req);
+
     const studentId = toInt(req.params.studentId);
 
     const examType = req.query.exam_type || null;
@@ -1441,17 +1430,10 @@ exports.getChildResults = async (req, res) => {
  * GET CHILD SCHEDULE
  * =========================================================
  *
- * API này lấy:
+ * Lấy lịch thật từ class_schedules.
  *
- * parent
- *   ↓
- * student
- *   ↓
- * class_students
- *   ↓
- * classes
- *   ↓
- * class_schedules
+ * class_schedules KHÔNG dùng church_id.
+ * church được kiểm tra qua classes.
  *
  * =========================================================
  */
@@ -1459,7 +1441,9 @@ exports.getChildResults = async (req, res) => {
 exports.getChildSchedule = async (req, res) => {
   try {
     const parentId = getParentId(req);
+
     const churchId = getChurchId(req);
+
     const studentId = toInt(req.params.studentId);
 
     console.log("");
@@ -1516,12 +1500,31 @@ exports.getChildSchedule = async (req, res) => {
     for (const classItem of classes) {
       for (const schedule of classItem.schedules || []) {
         schedules.push({
-          ...schedule,
+          id: schedule.id,
+
+          class_id: schedule.class_id,
+
+          day_of_week: schedule.day_of_week,
+
+          start_time: schedule.start_time,
+
+          end_time: schedule.end_time,
+
+          room: schedule.room,
+
+          status: schedule.status,
+
+          created_at: schedule.created_at,
+
+          updated_at: schedule.updated_at,
 
           class: {
             id: classItem.id,
+
             name: classItem.name,
+
             code: classItem.code,
+
             category: classItem.category,
 
             catechist_id: classItem.catechist_id,
@@ -1574,7 +1577,9 @@ exports.getChildSchedule = async (req, res) => {
 exports.getChildCertificates = async (req, res) => {
   try {
     const parentId = getParentId(req);
+
     const churchId = getChurchId(req);
+
     const studentId = toInt(req.params.studentId);
 
     console.log("");
@@ -1654,6 +1659,7 @@ exports.getChildCertificates = async (req, res) => {
 
         data: {
           certificates,
+
           total: certificates.length,
         },
       });

@@ -4,7 +4,7 @@ const router = express.Router();
 
 const parentController = require("../controllers/parentController");
 
-const { verifyToken } = require("../middleware/verifyToken");
+const { verifyToken } = require("../middleware/authMiddleware");
 
 /**
  * =========================================================

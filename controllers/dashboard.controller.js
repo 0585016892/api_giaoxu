@@ -1,5 +1,11 @@
 const db = require("../config/db");
 
+/**
+ * =========================================================
+ * HELPERS
+ * =========================================================
+ */
+
 const getChurchId = (req) => {
   return req.user?.church_id || null;
 };
@@ -7,6 +13,13 @@ const getChurchId = (req) => {
 const getParentId = (req) => {
   return req.user?.id || null;
 };
+
+/**
+ * =========================================================
+ * CHECK PARENT ACCOUNT
+ * =========================================================
+ */
+
 const checkParentAccount = async (parentId, churchId) => {
   if (!parentId || !churchId) {
     return null;
@@ -41,6 +54,257 @@ const checkParentAccount = async (parentId, churchId) => {
 
   return rows.length ? rows[0] : null;
 };
+
+const getClassSchedules = async (classId, churchId) => {
+  if (!classId || !churchId) {
+    return [];
+  }
+
+  const [rows] = await db.query(
+    `
+    SELECT
+      sch.id,
+      sch.class_id,
+      sch.day_of_week,
+      sch.start_time,
+      sch.end_time,
+      sch.room,
+      sch.created_at,
+      sch.updated_at
+
+    FROM class_schedules sch
+
+    INNER JOIN classes c
+      ON c.id = sch.class_id
+      AND c.church_id = ?
+
+    WHERE sch.class_id = ?
+
+    ORDER BY
+      sch.day_of_week ASC,
+      sch.start_time ASC,
+      sch.id ASC
+    `,
+    [churchId, classId],
+  );
+
+  return rows;
+};
+
+/**
+ * =========================================================
+ * GET STUDENT CLASSES
+ * =========================================================
+ */
+
+const getStudentClasses = async (studentId, churchId) => {
+  if (!studentId || !churchId) {
+    return [];
+  }
+
+  const [rows] = await db.query(
+    `
+    SELECT
+      c.id,
+      c.church_id,
+
+      c.name,
+      c.code,
+      c.category,
+
+      c.catechist_id,
+
+      c.description,
+
+      c.start_date,
+      c.end_date,
+
+      c.status,
+
+      cs.id AS class_student_id,
+      cs.status AS class_student_status,
+      cs.joined_at,
+      cs.left_at
+
+    FROM class_students cs
+
+    INNER JOIN classes c
+      ON c.id = cs.class_id
+      AND c.church_id = ?
+
+    WHERE cs.student_id = ?
+
+      AND cs.status = 'studying'
+
+    ORDER BY
+      c.start_date DESC,
+      c.id DESC
+    `,
+    [churchId, studentId],
+  );
+
+  if (!rows.length) {
+    return [];
+  }
+
+  const classes = [];
+
+  for (const item of rows) {
+    const schedules = await getClassSchedules(item.id, churchId);
+
+    classes.push({
+      id: item.id,
+      church_id: item.church_id,
+
+      name: item.name,
+      code: item.code,
+      category: item.category,
+
+      catechist_id: item.catechist_id,
+
+      description: item.description,
+
+      start_date: item.start_date,
+
+      end_date: item.end_date,
+
+      status: item.status,
+
+      class_student_id: item.class_student_id,
+
+      class_student_status: item.class_student_status,
+
+      joined_at: item.joined_at,
+
+      left_at: item.left_at,
+
+      schedules,
+    });
+  }
+
+  return classes;
+};
+
+/**
+ * =========================================================
+ * FORMAT CLASS
+ * =========================================================
+ */
+
+const formatClass = (item) => {
+  if (!item) {
+    return null;
+  }
+
+  return {
+    id: item.id,
+    church_id: item.church_id,
+
+    name: item.name,
+    code: item.code,
+    category: item.category,
+
+    catechist_id: item.catechist_id,
+
+    description: item.description,
+
+    start_date: item.start_date,
+
+    end_date: item.end_date,
+
+    status: item.status,
+
+    class_student_id: item.class_student_id,
+
+    class_student_status: item.class_student_status,
+
+    joined_at: item.joined_at,
+
+    left_at: item.left_at,
+
+    schedules: item.schedules || [],
+  };
+};
+
+/**
+ * =========================================================
+ * ATTENDANCE SUMMARY
+ * =========================================================
+ */
+
+const getAttendanceSummary = async (studentId, churchId) => {
+  const [rows] = await db.query(
+    `
+    SELECT
+      COUNT(*) AS total,
+
+      SUM(
+        CASE
+          WHEN status = 'present'
+          THEN 1
+          ELSE 0
+        END
+      ) AS present,
+
+      SUM(
+        CASE
+          WHEN status = 'absent'
+          THEN 1
+          ELSE 0
+        END
+      ) AS absent,
+
+      SUM(
+        CASE
+          WHEN status = 'late'
+          THEN 1
+          ELSE 0
+        END
+      ) AS late,
+
+      SUM(
+        CASE
+          WHEN status = 'excused'
+          THEN 1
+          ELSE 0
+        END
+      ) AS excused
+
+    FROM attendances
+
+    WHERE student_id = ?
+      AND church_id = ?
+    `,
+    [studentId, churchId],
+  );
+
+  const row = rows[0] || {};
+
+  const total = Number(row.total) || 0;
+
+  const present = Number(row.present) || 0;
+
+  const absent = Number(row.absent) || 0;
+
+  const late = Number(row.late) || 0;
+
+  const excused = Number(row.excused) || 0;
+
+  const attended = present + late;
+
+  const rate = total > 0 ? Number(((attended / total) * 100).toFixed(2)) : 0;
+
+  return {
+    total,
+    present,
+    absent,
+    late,
+    excused,
+    attended,
+    rate,
+  };
+};
+
 exports.getDashboard = async (req, res) => {
   try {
     // =============================

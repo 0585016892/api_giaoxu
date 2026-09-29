@@ -654,7 +654,7 @@ exports.getStudents = async (req, res) => {
     const page = Math.max(1, Number(req.query.page) || 1);
 
     const pageSize = Math.min(
-      100,
+      1000,
       Math.max(1, Number(req.query.pageSize) || Number(req.query.limit) || 20),
     );
 

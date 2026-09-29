@@ -113,70 +113,13 @@ const checkParentStudent = async (parentId, studentId, churchId) => {
   const [rows] = await db.query(
     `
     SELECT
+      s.*,
+
       ps.id AS parent_student_id,
-      ps.parent_id,
-      ps.student_id,
       ps.relationship,
-      ps.church_id AS parent_student_church_id,
-
-      s.id,
-      s.church_id,
-      s.code,
-      s.qr_token,
-
-      s.name,
-      s.gender,
-      s.date_of_birth,
-      s.birth_place,
-      s.nationality,
-
-      s.phone,
-      s.email,
-      s.address,
-      s.parish,
-
-      s.father_name,
-      s.father_phone,
-
-      s.mother_name,
-      s.mother_phone,
-
-      s.guardian_name,
-      s.guardian_phone,
-      s.guardian_relationship,
-
-      s.baptism_name,
-      s.baptism_date,
-      s.baptism_place,
-      s.baptism_parish,
-      s.baptism_certificate_no,
-
-      s.saint_name,
-
-      s.first_communion_date,
-      s.first_communion_place,
-
-      s.confirmation_date,
-      s.confirmation_place,
-      s.confirmation_saint_name,
-
-      s.catechism_level,
-      s.catechism_status,
-      s.enrollment_date,
-
-      s.note,
-      s.avatar,
-      s.status,
-
-      s.created_at,
-      s.updated_at
+      ps.is_primary
 
     FROM parent_students ps
-
-    INNER JOIN admins a
-      ON a.id = ps.parent_id
-      AND a.church_id = ps.church_id
-      AND a.role = 'parent'
 
     INNER JOIN students s
       ON s.id = ps.student_id
@@ -193,7 +136,6 @@ const checkParentStudent = async (parentId, studentId, churchId) => {
 
   return rows.length ? rows[0] : null;
 };
-
 /**
  * =========================================================
  * GET CLASS SCHEDULES
@@ -752,16 +694,39 @@ exports.getChildren = async (req, res) => {
 
 /**
  * =========================================================
- * GET CHILD DETAIL
+ * PARENT GET CHILD DETAIL
+ * =========================================================
+ *
+ * GET /parent/children/:studentId
+ *
+ * Trả về:
+ *
+ * data
+ * ├── student
+ * │   └── FULL 39 field của students
+ * │
+ * ├── relationship
+ * ├── is_primary
+ * ├── family
+ * ├── baptism
+ * ├── first_communion
+ * ├── confirmation
+ * ├── classes
+ * │   └── schedules
+ * ├── class
+ * ├── className
+ * ├── classCode
+ * ├── room
+ * ├── catechist
+ * ├── attendance
+ * └── latest_result
+ *
  * =========================================================
  */
-
 exports.getChild = async (req, res) => {
   try {
     const parentId = getParentId(req);
-
     const churchId = getChurchId(req);
-
     const studentId = toInt(req.params.studentId);
 
     console.log("");
@@ -772,7 +737,13 @@ exports.getChild = async (req, res) => {
     console.log("CHURCH ID:", churchId);
     console.log("STUDENT ID:", studentId);
 
+    // =======================================================
+    // VALIDATE AUTH
+    // =======================================================
+
     if (!parentId || !churchId) {
+      console.log("❌ KHÔNG XÁC ĐỊNH ĐƯỢC PARENT / CHURCH");
+
       return res.status(403).json({
         success: false,
         message: "Không xác định được tài khoản phụ huynh",
@@ -780,15 +751,23 @@ exports.getChild = async (req, res) => {
     }
 
     if (!studentId) {
+      console.log("❌ STUDENT ID KHÔNG HỢP LỆ");
+
       return res.status(400).json({
         success: false,
         message: "Mã học sinh không hợp lệ",
       });
     }
 
+    // =======================================================
+    // CHECK PARENT
+    // =======================================================
+
     const parent = await checkParentAccount(parentId, churchId);
 
     if (!parent) {
+      console.log("❌ PARENT KHÔNG HỢP LỆ");
+
       return res.status(403).json({
         success: false,
         message: "Tài khoản phụ huynh không hợp lệ",
@@ -796,28 +775,93 @@ exports.getChild = async (req, res) => {
     }
 
     if (!parent.is_active) {
+      console.log("❌ PARENT ĐÃ BỊ KHÓA");
+
       return res.status(403).json({
         success: false,
         message: "Tài khoản phụ huynh đã bị khóa",
       });
     }
 
+    // =======================================================
+    // CHECK PARENT - STUDENT
+    // =======================================================
+
     const child = await checkParentStudent(parentId, studentId, churchId);
 
     if (!child) {
+      console.log("❌ STUDENT KHÔNG THUỘC TÀI KHOẢN PARENT");
+
       return res.status(404).json({
         success: false,
         message: "Học sinh không thuộc tài khoản phụ huynh",
       });
     }
 
+    console.log("✅ STUDENT FOUND");
+    console.log("STUDENT ID:", child.id);
+    console.log("STUDENT CODE:", child.code);
+    console.log("STUDENT NAME:", child.name);
+    console.log("RELATIONSHIP:", child.relationship);
+    console.log("IS PRIMARY:", child.is_primary);
+
+    // =======================================================
+    // LẤY LỚP HỌC
+    // =======================================================
+
     const classes = await getStudentClasses(studentId, churchId);
+
+    console.log("CLASS COUNT:", classes.length);
+
+    // =======================================================
+    // LẤY ATTENDANCE
+    // =======================================================
 
     const attendance = await getAttendanceSummary(studentId, churchId);
 
+    console.log("ATTENDANCE:", attendance);
+
+    // =======================================================
+    // LẤY KẾT QUẢ MỚI NHẤT
+    // =======================================================
+
     const latestResult = await getLatestResult(studentId, churchId);
 
+    console.log("LATEST RESULT:", latestResult);
+
+    // =======================================================
+    // LỚP HIỆN TẠI
+    // =======================================================
+
+    const formattedClasses = classes.map(formatClass);
+
+    const currentClass =
+      formattedClasses.length > 0 ? formattedClasses[0] : null;
+
+    // =======================================================
+    // LỊCH HỌC HIỆN TẠI
+    // =======================================================
+
+    const currentSchedule = currentClass?.schedules?.[0] || null;
+
+    // =======================================================
+    // THÔNG TIN STUDENT
+    // =======================================================
+    //
+    // students hiện có 39 field.
+    //
+    // Không dùng child = {...child} trực tiếp vì child còn
+    // có các field join từ parent_students.
+    //
+    // Explicit mapping để API rõ ràng.
+    //
+    // =======================================================
+
     const student = {
+      // -----------------------------------------------------
+      // BASIC
+      // -----------------------------------------------------
+
       id: child.id,
       church_id: child.church_id,
 
@@ -828,7 +872,6 @@ exports.getChild = async (req, res) => {
       gender: child.gender,
 
       date_of_birth: child.date_of_birth,
-
       birth_place: child.birth_place,
 
       nationality: child.nationality,
@@ -837,12 +880,59 @@ exports.getChild = async (req, res) => {
       email: child.email,
 
       address: child.address,
-
       parish: child.parish,
 
-      avatar: child.avatar,
+      // -----------------------------------------------------
+      // FATHER
+      // -----------------------------------------------------
 
-      status: child.status,
+      father_name: child.father_name,
+      father_phone: child.father_phone,
+
+      // -----------------------------------------------------
+      // MOTHER
+      // -----------------------------------------------------
+
+      mother_name: child.mother_name,
+      mother_phone: child.mother_phone,
+
+      // -----------------------------------------------------
+      // GUARDIAN
+      // -----------------------------------------------------
+
+      guardian_name: child.guardian_name,
+      guardian_phone: child.guardian_phone,
+      guardian_relationship: child.guardian_relationship,
+
+      // -----------------------------------------------------
+      // BAPTISM
+      // -----------------------------------------------------
+
+      baptism_name: child.baptism_name,
+      baptism_date: child.baptism_date,
+      baptism_place: child.baptism_place,
+      baptism_parish: child.baptism_parish,
+      baptism_certificate_no: child.baptism_certificate_no,
+
+      // -----------------------------------------------------
+      // SACRAMENTS
+      // -----------------------------------------------------
+
+      saint_name: child.saint_name,
+
+      first_communion_date: child.first_communion_date,
+
+      first_communion_place: child.first_communion_place,
+
+      confirmation_date: child.confirmation_date,
+
+      confirmation_place: child.confirmation_place,
+
+      confirmation_saint_name: child.confirmation_saint_name,
+
+      // -----------------------------------------------------
+      // CATECHISM
+      // -----------------------------------------------------
 
       catechism_level: child.catechism_level,
 
@@ -850,82 +940,204 @@ exports.getChild = async (req, res) => {
 
       enrollment_date: child.enrollment_date,
 
+      // -----------------------------------------------------
+      // OTHER
+      // -----------------------------------------------------
+
       note: child.note,
 
-      baptism: {
-        name: child.baptism_name,
+      avatar: child.avatar,
 
-        date: child.baptism_date,
+      status: child.status,
 
-        place: child.baptism_place,
-
-        parish: child.baptism_parish,
-
-        certificate_no: child.baptism_certificate_no,
-      },
-
-      first_communion: {
-        date: child.first_communion_date,
-
-        place: child.first_communion_place,
-      },
-
-      confirmation: {
-        date: child.confirmation_date,
-
-        place: child.confirmation_place,
-
-        saint_name: child.confirmation_saint_name,
-      },
-
-      saint_name: child.saint_name,
+      // -----------------------------------------------------
+      // TIMESTAMP
+      // -----------------------------------------------------
 
       created_at: child.created_at,
-
       updated_at: child.updated_at,
     };
+
+    // =======================================================
+    // FAMILY
+    // =======================================================
 
     const family = {
       father: {
         name: child.father_name,
-
         phone: child.father_phone,
       },
 
       mother: {
         name: child.mother_name,
-
         phone: child.mother_phone,
       },
 
       guardian: {
         name: child.guardian_name,
-
         phone: child.guardian_phone,
-
         relationship: child.guardian_relationship,
       },
     };
 
+    // =======================================================
+    // BAPTISM
+    // =======================================================
+
+    const baptism = {
+      name: child.baptism_name,
+      date: child.baptism_date,
+      place: child.baptism_place,
+      parish: child.baptism_parish,
+      certificate_no: child.baptism_certificate_no,
+    };
+
+    // =======================================================
+    // FIRST COMMUNION
+    // =======================================================
+
+    const firstCommunion = {
+      date: child.first_communion_date,
+      place: child.first_communion_place,
+    };
+
+    // =======================================================
+    // CONFIRMATION
+    // =======================================================
+
+    const confirmation = {
+      date: child.confirmation_date,
+      place: child.confirmation_place,
+      saint_name: child.confirmation_saint_name,
+    };
+
+    // =======================================================
+    // RESPONSE
+    // =======================================================
+
+    const responseData = {
+      // -----------------------------------------------------
+      // FULL STUDENT
+      // -----------------------------------------------------
+
+      student,
+
+      // -----------------------------------------------------
+      // PARENT RELATIONSHIP
+      // -----------------------------------------------------
+
+      relationship: child.relationship || null,
+
+      is_primary: child.is_primary ?? false,
+
+      // -----------------------------------------------------
+      // FAMILY
+      // -----------------------------------------------------
+
+      family,
+
+      // -----------------------------------------------------
+      // SACRAMENTS
+      // -----------------------------------------------------
+
+      baptism,
+
+      first_communion: firstCommunion,
+
+      confirmation,
+
+      // -----------------------------------------------------
+      // CLASS
+      // -----------------------------------------------------
+
+      classes: formattedClasses,
+
+      class: currentClass,
+
+      className: currentClass?.name || null,
+
+      classCode: currentClass?.code || null,
+
+      room: currentSchedule?.room || null,
+
+      // -----------------------------------------------------
+      // CATECHIST
+      // -----------------------------------------------------
+      //
+      // Hiện tại class có thể có catechist_id = null.
+      // Không tự đoán tên GLV.
+      //
+      // Khi backend join catechists thì thay object này
+      // bằng thông tin GLV thật.
+      //
+      // -----------------------------------------------------
+
+      catechist:
+        currentClass?.catechist_name || currentClass?.catechistName || null,
+
+      catechist_id: currentClass?.catechist_id || null,
+
+      // -----------------------------------------------------
+      // ATTENDANCE
+      // -----------------------------------------------------
+
+      attendance,
+
+      // -----------------------------------------------------
+      // RESULT
+      // -----------------------------------------------------
+
+      latest_result: latestResult || null,
+    };
+
+    console.log("");
+    console.log("---------------- PARENT GET CHILD RESULT ----------------");
+
+    console.log("STUDENT:", {
+      id: student.id,
+      code: student.code,
+      name: student.name,
+    });
+
+    console.log("RELATIONSHIP:", responseData.relationship);
+
+    console.log("IS PRIMARY:", responseData.is_primary);
+
+    console.log("CLASS:", responseData.className);
+
+    console.log("CLASS CODE:", responseData.classCode);
+
+    console.log("ROOM:", responseData.room);
+
+    console.log("CATECHIST:", responseData.catechist);
+
+    console.log("CLASS COUNT:", responseData.classes.length);
+
+    console.log("ATTENDANCE:", responseData.attendance);
+
+    console.log("LATEST RESULT:", responseData.latest_result);
+
+    console.log("----------------------------------------------------------");
+
     return res.json({
       success: true,
 
-      data: {
-        student,
-
-        relationship: child.relationship,
-
-        family,
-
-        classes: classes.map(formatClass),
-
-        attendance,
-
-        latest_result: latestResult,
-      },
+      data: responseData,
     });
   } catch (error) {
-    console.error("PARENT GET CHILD ERROR:", error);
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("                  PARENT GET CHILD ERROR");
+    console.error(
+      "============================================================",
+    );
+
+    console.error("ERROR CODE:", error.code);
+    console.error("ERROR MESSAGE:", error.message);
+    console.error("ERROR SQL:", error.sql);
+    console.error("ERROR STACK:", error.stack);
 
     return res.status(500).json({
       success: false,
@@ -934,7 +1146,6 @@ exports.getChild = async (req, res) => {
     });
   }
 };
-
 /**
  * =========================================================
  * GET CHILD ATTENDANCE

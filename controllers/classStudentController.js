@@ -388,10 +388,17 @@ exports.getClassesByStudent = async (req, res) => {
 // POST /api/class-students
 // =====================================================
 
+// =========================================================
+// THÊM HỌC SINH VÀO LỚP
+// POST /api/class-students
+// =========================================================
 exports.addStudentToClass = async (req, res) => {
   let connection;
+  let transactionStarted = false;
 
   try {
+    const church_id = req.user?.church_id;
+
     const {
       class_id,
       student_id,
@@ -399,252 +406,379 @@ exports.addStudentToClass = async (req, res) => {
       joined_at = null,
     } = req.body;
 
-    const church_id = req.user?.church_id;
-
     console.log("");
     console.log("============================================================");
-    console.log("              ADD STUDENT TO CLASS");
+    console.log("              POST /api/class-students");
     console.log("============================================================");
-    console.log("🏠 church_id:", church_id);
-    console.log("📚 class_id:", class_id);
-    console.log("👨‍🎓 student_id:", student_id);
-    console.log("📌 status:", status);
+    console.log("CHURCH ID:", church_id);
+    console.log("CLASS ID:", class_id);
+    console.log("STUDENT ID:", student_id);
+    console.log("STATUS:", status);
+    console.log("JOINED AT:", joined_at);
 
     // =====================================================
-    // KIỂM TRA GIÁO XỨ
+    // AUTH
     // =====================================================
-
     if (!church_id) {
+      console.log("❌ Không có church_id");
+
       return res.status(403).json({
         success: false,
-        message: "Tài khoản chưa được liên kết với giáo xứ",
+        message: "Không xác định được giáo xứ",
       });
     }
 
     // =====================================================
-    // VALIDATE
+    // VALIDATE ID
     // =====================================================
+    const classId = Number(class_id);
+    const studentId = Number(student_id);
 
-    if (!class_id || !student_id) {
+    if (
+      !Number.isInteger(classId) ||
+      classId <= 0 ||
+      !Number.isInteger(studentId) ||
+      studentId <= 0
+    ) {
+      console.log("❌ class_id hoặc student_id không hợp lệ");
+
       return res.status(400).json({
         success: false,
-        message: "class_id và student_id là bắt buộc",
+        message: "class_id hoặc student_id không hợp lệ",
       });
     }
+
+    // =====================================================
+    // VALIDATE STATUS
+    // =====================================================
+    const ALLOWED_STATUS = ["studying", "completed", "dropped", "transferred"];
 
     if (!ALLOWED_STATUS.includes(status)) {
+      console.log("❌ STATUS không hợp lệ:", status);
+
       return res.status(400).json({
         success: false,
-        message: "Trạng thái không hợp lệ",
+        message: "Trạng thái học sinh không hợp lệ",
       });
     }
 
+    // =====================================================
+    // CONNECTION
+    // =====================================================
     connection = await db.getConnection();
 
     await connection.beginTransaction();
+    transactionStarted = true;
 
     // =====================================================
-    // KIỂM TRA LỚP
+    // 1. KIỂM TRA LỚP
     // =====================================================
-
     const [classes] = await connection.query(
       `
-      SELECT
-        id,
-        name,
-        code,
-        category,
-        church_id,
-        status
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
+        SELECT
+          id,
+          name,
+          code,
+          category,
+          status,
+          church_id
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
       `,
-      [class_id, church_id],
+      [classId, church_id],
     );
 
+    console.log("CLASS RESULT:", classes);
+
     if (!classes.length) {
+      console.log("❌ Không tìm thấy lớp trong giáo xứ");
+
       await connection.rollback();
+      transactionStarted = false;
 
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy lớp học trong giáo xứ của bạn",
+        message: "Không tìm thấy lớp hoặc lớp không thuộc giáo xứ",
       });
     }
 
-    const classData = classes[0];
+    const targetClass = classes[0];
 
     // =====================================================
-    // KIỂM TRA HỌC SINH
+    // 2. KIỂM TRA HỌC SINH
     // =====================================================
-
     const [students] = await connection.query(
       `
-      SELECT
-        id,
-        code,
-        name,
-        status,
-        church_id
-      FROM students
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
+        SELECT
+          id,
+          code,
+          name,
+          status,
+          church_id
+        FROM students
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
       `,
-      [student_id, church_id],
+      [studentId, church_id],
     );
 
+    console.log("STUDENT RESULT:", students);
+
     if (!students.length) {
+      console.log("❌ Không tìm thấy học sinh trong giáo xứ");
+
       await connection.rollback();
+      transactionStarted = false;
 
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy học sinh trong giáo xứ của bạn",
+        message: "Không tìm thấy học sinh hoặc học sinh không thuộc giáo xứ",
       });
     }
 
     const student = students[0];
 
     // =====================================================
-    // KIỂM TRA QUAN HỆ ĐÃ TỒN TẠI
+    // 3. KIỂM TRA QUAN HỆ ĐÃ TỒN TẠI
     // =====================================================
-
     const [existingRelation] = await connection.query(
       `
-      SELECT
-        id,
-        class_id,
-        student_id,
-        status
-      FROM class_students
-      WHERE class_id = ?
-        AND student_id = ?
-      LIMIT 1
-      `,
-      [class_id, student_id],
-    );
-
-    if (existingRelation.length) {
-      await connection.rollback();
-
-      return res.status(409).json({
-        success: false,
-        message: "Học sinh đã có trong lớp này",
-        data: existingRelation[0],
-      });
-    }
-
-    // =====================================================
-    // KHÔNG CHO HỌC 2 LỚP CÙNG LÚC
-    // =====================================================
-
-    if (status === "studying") {
-      const [currentClass] = await connection.query(
-        `
         SELECT
           cs.id,
           cs.class_id,
           cs.student_id,
           cs.status,
-          c.name AS class_name
-
+          c.name AS class_name,
+          c.code AS class_code
         FROM class_students cs
-
         INNER JOIN classes c
           ON c.id = cs.class_id
-
-        WHERE cs.student_id = ?
-          AND cs.status = 'studying'
+        WHERE cs.class_id = ?
+          AND cs.student_id = ?
           AND c.church_id = ?
-
         LIMIT 1
+      `,
+      [classId, studentId, church_id],
+    );
+
+    console.log("EXISTING RELATION:", existingRelation);
+
+    if (existingRelation.length) {
+      const relation = existingRelation[0];
+
+      console.log("⚠️ HỌC SINH ĐÃ CÓ TRONG LỚP NÀY");
+      console.log("Relation ID:", relation.id);
+      console.log("Class:", relation.class_name);
+      console.log("Status:", relation.status);
+
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        code: "ALREADY_IN_CLASS",
+        message: `Học sinh "${student.name}" đã có trong lớp "${relation.class_name}"`,
+        data: {
+          relation_id: relation.id,
+          class_id: relation.class_id,
+          student_id: relation.student_id,
+          status: relation.status,
+          class_name: relation.class_name,
+          class_code: relation.class_code,
+        },
+      });
+    }
+
+    // =====================================================
+    // 4. NẾU ĐANG GÁN STUDYING
+    //    KIỂM TRA HỌC SINH CÓ ĐANG Ở LỚP KHÁC KHÔNG
+    // =====================================================
+    if (status === "studying") {
+      const [currentClass] = await connection.query(
+        `
+          SELECT
+            cs.id,
+            cs.class_id,
+            cs.student_id,
+            cs.status,
+            c.name AS class_name,
+            c.code AS class_code
+          FROM class_students cs
+          INNER JOIN classes c
+            ON c.id = cs.class_id
+          WHERE cs.student_id = ?
+            AND cs.status = 'studying'
+            AND c.church_id = ?
+          LIMIT 1
         `,
-        [student_id, church_id],
+        [studentId, church_id],
       );
 
+      console.log("CURRENT STUDYING CLASS:", currentClass);
+
       if (currentClass.length) {
+        const current = currentClass[0];
+
+        console.log("⚠️ HỌC SINH ĐANG HỌC LỚP KHÁC");
+        console.log("Current class ID:", current.class_id);
+        console.log("Current class:", current.class_name);
+        console.log("Target class ID:", classId);
+        console.log("Target class:", targetClass.name);
+
         await connection.rollback();
+        transactionStarted = false;
 
         return res.status(409).json({
           success: false,
-          message: `Học sinh đang học tại lớp "${currentClass[0].class_name}"`,
-          data: currentClass[0],
+          code: "STUDENT_ALREADY_STUDYING",
+          message: `Học sinh "${student.name}" đang học tại lớp "${current.class_name}"`,
+          data: {
+            student_id: studentId,
+
+            current_class: {
+              id: current.class_id,
+              name: current.class_name,
+              code: current.class_code,
+              relation_id: current.id,
+            },
+
+            target_class: {
+              id: targetClass.id,
+              name: targetClass.name,
+              code: targetClass.code,
+            },
+          },
         });
       }
     }
 
     // =====================================================
-    // INSERT
+    // 5. INSERT
     // =====================================================
+    console.log("➡️ INSERT class_students");
 
     const [result] = await connection.query(
       `
-      INSERT INTO class_students (
-        class_id,
-        student_id,
-        status,
-        joined_at,
-        left_at
-      )
-      VALUES (?, ?, ?, COALESCE(?, NOW()), NULL)
+        INSERT INTO class_students (
+          class_id,
+          student_id,
+          status,
+          joined_at,
+          left_at
+        )
+        VALUES (
+          ?,
+          ?,
+          ?,
+          COALESCE(?, NOW()),
+          NULL
+        )
       `,
-      [class_id, student_id, status, joined_at],
+      [classId, studentId, status, joined_at],
     );
 
+    console.log("INSERT RESULT:", result);
+
+    // =====================================================
+    // 6. COMMIT
+    // =====================================================
     await connection.commit();
+    transactionStarted = false;
+
+    console.log("✅ THÊM HỌC SINH VÀO LỚP THÀNH CÔNG");
+    console.log("Relation ID:", result.insertId);
 
     // =====================================================
-    // ACTIVITY LOG
+    // LOG
     // =====================================================
-
     try {
-      await writeLog({
-        admin_id: req.user?.id || null,
-        action: "CREATE_CLASS_STUDENT",
-        target_type: "class_students",
-        target_id: result.insertId,
-        description:
-          `Thêm học sinh "${student.name}" (${student.code || "—"}) ` +
-          `vào lớp "${classData.name}" (${classData.code || "—"}), ` +
-          `trạng thái ${status}, thuộc giáo xứ #${church_id}`,
-        ip_address: req.ip,
+      await writeLog(req, {
+        action: "ADD_STUDENT_TO_CLASS",
+        entity: "class_students",
+        entityId: result.insertId,
+        description: `Thêm học sinh ${student.name} (${student.code}) vào lớp ${targetClass.name}`,
       });
     } catch (logError) {
-      console.error("⚠️ Activity log CREATE_CLASS_STUDENT error:", logError);
+      console.error("⚠️ writeLog error:", logError);
     }
 
+    // =====================================================
+    // RESPONSE
+    // =====================================================
     return res.status(201).json({
       success: true,
       message: "Thêm học sinh vào lớp thành công",
       data: {
         id: result.insertId,
-        class_id: Number(class_id),
-        student_id: Number(student_id),
+        class_id: classId,
+        student_id: studentId,
         status,
-        class_name: classData.name,
-        student_name: student.name,
+        joined_at: joined_at || new Date(),
+        class: targetClass,
+        student,
       },
     });
   } catch (error) {
-    if (connection) {
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("❌ ADD STUDENT TO CLASS ERROR");
+    console.error(
+      "============================================================",
+    );
+    console.error("MESSAGE:", error.message);
+    console.error("CODE:", error.code);
+    console.error("ERRNO:", error.errno);
+    console.error("SQL STATE:", error.sqlState);
+    console.error("SQL MESSAGE:", error.sqlMessage);
+    console.error("STACK:", error.stack);
+
+    // =====================================================
+    // ROLLBACK
+    // =====================================================
+    if (connection && transactionStarted) {
       try {
         await connection.rollback();
-      } catch (_) {}
+      } catch (rollbackError) {
+        console.error("ROLLBACK ERROR:", rollbackError.message);
+      }
     }
 
-    console.error("addStudentToClass error:", error);
-
+    // =====================================================
+    // DUPLICATE KEY
+    // =====================================================
     if (error.code === "ER_DUP_ENTRY") {
       return res.status(409).json({
         success: false,
-        message: "Học sinh đã tồn tại trong lớp này",
+        code: "DUPLICATE_RELATION",
+        message: "Học sinh đã tồn tại trong lớp",
+        error: error.sqlMessage,
       });
     }
 
+    // =====================================================
+    // FK ERROR
+    // =====================================================
+    if (error.code === "ER_NO_REFERENCED_ROW_2") {
+      return res.status(400).json({
+        success: false,
+        code: "FOREIGN_KEY_ERROR",
+        message: "Không thể thêm học sinh vì lớp hoặc học sinh không tồn tại",
+        error: error.sqlMessage,
+      });
+    }
+
+    // =====================================================
+    // DEFAULT ERROR
+    // =====================================================
     return res.status(500).json({
       success: false,
-      message: "Không thể thêm học sinh vào lớp",
+      message: "Lỗi server khi thêm học sinh vào lớp",
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   } finally {
     if (connection) {
@@ -652,7 +786,6 @@ exports.addStudentToClass = async (req, res) => {
     }
   }
 };
-
 // =====================================================
 // 4. CẬP NHẬT QUAN HỆ LỚP - HỌC SINH
 // PUT /api/class-students/update/:classId/:studentId

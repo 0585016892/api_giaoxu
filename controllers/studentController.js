@@ -1105,10 +1105,31 @@ exports.getStudentsByClass = async (req, res) => {
 
 exports.getStudentsByTeacher = async (req, res) => {
   try {
+    console.log("");
+    console.log("======================================================");
+    console.log("        GET STUDENTS BY TEACHER - DEBUG");
+    console.log("======================================================");
+
+    // =====================================================
+    // 1. AUTH INFO
+    // =====================================================
+
+    console.log("REQ.USER:", req.user);
+
     const churchId = getChurchId(req);
     const username = normalizeValue(req.user?.username);
 
+    console.log("CHURCH ID:", churchId);
+    console.log("USERNAME RAW:", req.user?.username);
+    console.log("USERNAME NORMALIZED:", username);
+
+    // =====================================================
+    // 2. VALIDATE
+    // =====================================================
+
     if (!churchId) {
+      console.log("❌ KHÔNG CÓ CHURCH ID");
+
       return res.status(403).json({
         success: false,
         message: "Không xác định được giáo xứ",
@@ -1116,40 +1137,245 @@ exports.getStudentsByTeacher = async (req, res) => {
     }
 
     if (!username) {
+      console.log("❌ KHÔNG CÓ USERNAME");
+
       return res.status(401).json({
         success: false,
         message: "Không xác định được tài khoản giáo lý viên",
       });
     }
 
-    const [rows] = await db.execute(
+    // =====================================================
+    // 3. CHECK CATECHIST
+    // =====================================================
+
+    console.log("");
+    console.log("---------- CHECK CATECHIST ----------");
+
+    const [catechistRows] = await db.execute(
       `
-        SELECT DISTINCT
-          s.*,
+      SELECT
+        id,
+        church_id,
+        catechist_code,
+        name,
+        phone,
+        status
+      FROM catechists
+      WHERE church_id = ?
+        AND catechist_code = ?
+      `,
+      [churchId, username],
+    );
 
-          c.id AS class_id,
-          c.name AS class_name,
-          c.code AS class_code
+    console.log("CATECHIST ROWS:", catechistRows);
 
+    if (!catechistRows.length) {
+      console.log("❌ KHÔNG TÌM THẤY CATECHIST");
+      console.log("❌ church_id:", churchId);
+      console.log("❌ catechist_code:", username);
+
+      return res.json({
+        success: true,
+        data: [],
+        total: 0,
+        debug: {
+          churchId,
+          username,
+          catechistFound: false,
+          message:
+            "Không tìm thấy giáo lý viên theo church_id + catechist_code",
+        },
+      });
+    }
+
+    const catechist = catechistRows[0];
+
+    console.log("✅ CATECHIST:", catechist);
+
+    // =====================================================
+    // 4. CHECK CLASS CỦA GIÁO LÝ VIÊN
+    // =====================================================
+
+    console.log("");
+    console.log("---------- CHECK CLASSES ----------");
+
+    const [classRows] = await db.execute(
+      `
+      SELECT
+        id,
+        church_id,
+        name,
+        code,
+        category,
+        catechist_id,
+        status
+      FROM classes
+      WHERE church_id = ?
+        AND catechist_id = ?
+      ORDER BY id DESC
+      `,
+      [churchId, catechist.id],
+    );
+
+    console.log("CLASS COUNT:", classRows.length);
+
+    console.table(classRows);
+
+    if (!classRows.length) {
+      console.log("❌ GIÁO LÝ VIÊN KHÔNG ĐƯỢC GÁN LỚP NÀO");
+
+      return res.json({
+        success: true,
+        data: [],
+        total: 0,
+        debug: {
+          churchId,
+          username,
+          catechistId: catechist.id,
+          classes: [],
+        },
+      });
+    }
+
+    // =====================================================
+    // 5. CHECK CLASS_STUDENTS
+    // =====================================================
+
+    console.log("");
+    console.log("---------- CHECK CLASS STUDENTS ----------");
+
+    const classIds = classRows.map((item) => item.id);
+
+    console.log("CLASS IDS:", classIds);
+
+    const placeholders = classIds.map(() => "?").join(",");
+
+    const [classStudentRows] = await db.execute(
+      `
+        SELECT
+          cs.id,
+          cs.class_id,
+          cs.student_id,
+          cs.status,
+          cs.joined_at,
+          cs.left_at,
+
+          s.name AS student_name,
+          s.code AS student_code,
+          s.church_id AS student_church_id
+
+        FROM class_students cs
+
+        LEFT JOIN students s
+          ON s.id = cs.student_id
+
+        WHERE cs.class_id IN (${placeholders})
+
+        ORDER BY cs.class_id, cs.student_id
+        `,
+      classIds,
+    );
+
+    console.log("CLASS_STUDENTS COUNT:", classStudentRows.length);
+
+    console.table(classStudentRows);
+
+    // =====================================================
+    // 6. CHECK STUDENTS CÓ CÙNG CHURCH
+    // =====================================================
+
+    const [studentChurchRows] = await db.execute(
+      `
+        SELECT
+          s.id,
+          s.name,
+          s.code,
+          s.church_id
         FROM students s
-
         INNER JOIN class_students cs
           ON cs.student_id = s.id
-
         INNER JOIN classes c
           ON c.id = cs.class_id
-
-        INNER JOIN catechists ct
-          ON ct.id = c.catechist_id
-
-        WHERE s.church_id = ?
-          AND ct.church_id = ?
-          AND ct.catechist_code = ?
-
-        ORDER BY s.name ASC, s.id ASC
-      `,
-      [churchId, churchId, username],
+        WHERE c.church_id = ?
+          AND c.catechist_id = ?
+        ORDER BY s.id
+        `,
+      [churchId, catechist.id],
     );
+
+    console.log("");
+    console.log("---------- STUDENTS BY CLASS/CATECHIST ----------");
+
+    console.log("STUDENT COUNT:", studentChurchRows.length);
+
+    console.table(studentChurchRows);
+
+    // =====================================================
+    // 7. QUERY CHÍNH
+    // =====================================================
+
+    console.log("");
+    console.log("---------- MAIN QUERY ----------");
+
+    const sql = `
+      SELECT DISTINCT
+        s.*,
+
+        c.id AS class_id,
+        c.name AS class_name,
+        c.code AS class_code
+
+      FROM students s
+
+      INNER JOIN class_students cs
+        ON cs.student_id = s.id
+
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+
+      INNER JOIN catechists ct
+        ON ct.id = c.catechist_id
+
+      WHERE s.church_id = ?
+        AND ct.church_id = ?
+        AND ct.catechist_code = ?
+
+      ORDER BY
+        s.name ASC,
+        s.id ASC
+    `;
+
+    console.log("SQL:", sql);
+    console.log("PARAMS:", [churchId, churchId, username]);
+
+    const [rows] = await db.execute(sql, [churchId, churchId, username]);
+
+    // =====================================================
+    // 8. RESULT
+    // =====================================================
+
+    console.log("");
+    console.log("======================================================");
+    console.log("RESULT");
+    console.log("======================================================");
+
+    console.log("FOUND STUDENTS:", rows.length);
+
+    console.table(
+      rows.map((item) => ({
+        id: item.id,
+        name: item.name,
+        code: item.code,
+        church_id: item.church_id,
+        class_id: item.class_id,
+        class_name: item.class_name,
+        class_code: item.class_code,
+      })),
+    );
+
+    console.log("======================================================");
+    console.log("");
 
     return res.json({
       success: true,
@@ -1157,11 +1383,22 @@ exports.getStudentsByTeacher = async (req, res) => {
       total: rows.length,
     });
   } catch (error) {
-    console.error("❌ GET STUDENTS BY TEACHER:", error);
+    console.error("");
+    console.error("======================================================");
+    console.error("❌ GET STUDENTS BY TEACHER ERROR");
+    console.error("======================================================");
+
+    console.error("ERROR CODE:", error.code);
+    console.error("ERROR MESSAGE:", error.message);
+    console.error("ERROR SQL:", error.sql);
+    console.error("ERROR STACK:", error.stack);
+
+    console.error("======================================================");
 
     return res.status(500).json({
       success: false,
       message: "Không thể lấy danh sách học sinh của giáo lý viên",
+      error: error.message,
     });
   }
 };

@@ -10,5 +10,10 @@ router.get(
   verifyToken,
   dashboardController.getDashboardCate,
 );
+router.get(
+  "/dashboard-parent",
+  verifyToken,
+  dashboardController.getDashboardParent,
+);
 
 module.exports = router;

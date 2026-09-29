@@ -1,5 +1,13 @@
 const db = require("../config/db");
 
+const getChurchId = (req) => {
+  return req.user?.church_id || null;
+};
+
+const getParentId = (req) => {
+  return req.user?.id || null;
+};
+
 exports.getDashboard = async (req, res) => {
   try {
     // =============================
@@ -1152,6 +1160,486 @@ exports.getDashboardCate = async (req, res) => {
       message: "Không thể lấy dữ liệu dashboard Giáo lý viên",
 
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+exports.getDashboardParent = async (req, res) => {
+  try {
+    const parentId = getParentId(req);
+    const churchId = getChurchId(req);
+
+    console.log("");
+    console.log("============================================================");
+    console.log("                    PARENT DASHBOARD");
+    console.log("============================================================");
+    console.log("PARENT ID:", parentId);
+    console.log("CHURCH ID:", churchId);
+
+    // =======================================================
+    // VALIDATE
+    // =======================================================
+
+    if (!parentId || !churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được tài khoản phụ huynh",
+      });
+    }
+
+    // =======================================================
+    // CHECK PARENT
+    // =======================================================
+
+    const parent = await checkParentAccount(parentId, churchId);
+
+    if (!parent) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh không hợp lệ",
+      });
+    }
+
+    if (!parent.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh đã bị khóa",
+      });
+    }
+
+    // =======================================================
+    // LẤY CÁC CON CỦA PARENT
+    // =======================================================
+
+    const [children] = await db.query(
+      `
+      SELECT
+        s.id,
+        s.name,
+        s.code,
+        s.avatar,
+
+        ps.relationship
+
+      FROM parent_students ps
+
+      INNER JOIN students s
+        ON s.id = ps.student_id
+        AND s.church_id = ps.church_id
+
+      WHERE ps.parent_id = ?
+        AND ps.church_id = ?
+        AND s.status = 'active'
+
+      ORDER BY
+        s.name ASC,
+        s.id ASC
+      `,
+      [parentId, churchId],
+    );
+
+    console.log("CHILDREN COUNT:", children.length);
+
+    // =======================================================
+    // XỬ LÝ STUDENTS
+    // =======================================================
+
+    const students = [];
+
+    for (const child of children) {
+      console.log("");
+      console.log("PROCESS CHILD:", child.id, child.name);
+
+      // =====================================================
+      // LỚP HIỆN TẠI
+      // =====================================================
+
+      const classes = await getStudentClasses(child.id, churchId);
+
+      const formattedClasses = classes.map(formatClass);
+
+      const currentClass =
+        formattedClasses.length > 0 ? formattedClasses[0] : null;
+
+      // =====================================================
+      // ATTENDANCE
+      // =====================================================
+
+      const attendance = await getAttendanceSummary(child.id, churchId);
+
+      const total = Number(attendance?.total || 0);
+
+      const present = Number(attendance?.present || 0);
+
+      const attendanceRate =
+        total > 0 ? Number(((present / total) * 100).toFixed(1)) : 0;
+
+      // =====================================================
+      // LẦN ĐIỂM DANH GẦN NHẤT
+      // =====================================================
+
+      const [latestAttendanceRows] = await db.query(
+        `
+          SELECT
+            a.id,
+            a.attendance_date,
+            a.attendance_type,
+            a.status,
+            a.check_in_time,
+            a.note
+
+          FROM attendances a
+
+          INNER JOIN students s
+            ON s.id = a.student_id
+            AND s.church_id = a.church_id
+
+          WHERE a.student_id = ?
+            AND a.church_id = ?
+
+          ORDER BY
+            a.attendance_date DESC,
+            a.id DESC
+
+          LIMIT 1
+          `,
+        [child.id, churchId],
+      );
+
+      const latestAttendance = latestAttendanceRows.length
+        ? latestAttendanceRows[0]
+        : null;
+
+      // =====================================================
+      // FORMAT TRẠNG THÁI ĐIỂM DANH
+      // =====================================================
+
+      let latestAttendanceText = "Chưa có";
+
+      if (latestAttendance) {
+        switch (latestAttendance.status) {
+          case "present":
+            latestAttendanceText = "Có mặt";
+            break;
+
+          case "absent":
+            latestAttendanceText = "Vắng";
+            break;
+
+          case "late":
+            latestAttendanceText = "Đi muộn";
+            break;
+
+          case "excused":
+            latestAttendanceText = "Có phép";
+            break;
+
+          default:
+            latestAttendanceText = latestAttendance.status || "Chưa có";
+        }
+      }
+
+      // =====================================================
+      // STUDENT DASHBOARD
+      // =====================================================
+
+      students.push({
+        id: child.id,
+
+        name: child.name,
+
+        className: currentClass?.name || null,
+
+        code: child.code,
+
+        avatar: child.avatar || null,
+
+        attendanceRate,
+
+        latestAttendance: latestAttendanceText,
+      });
+    }
+
+    // =======================================================
+    // UPCOMING SCHEDULE
+    // =======================================================
+    //
+    // Lấy tất cả lịch học của các con.
+    //
+    // Sau đó chọn lịch gần nhất theo thứ trong tuần.
+    //
+    // =======================================================
+
+    const scheduleCandidates = [];
+
+    for (const child of children) {
+      const classes = await getStudentClasses(child.id, churchId);
+
+      const formattedClasses = classes.map(formatClass);
+
+      for (const classItem of formattedClasses) {
+        if (!Array.isArray(classItem.schedules)) {
+          continue;
+        }
+
+        for (const schedule of classItem.schedules) {
+          scheduleCandidates.push({
+            studentId: child.id,
+
+            studentName: child.name,
+
+            classId: classItem.id,
+
+            className: classItem.name,
+
+            classCode: classItem.code,
+
+            category: classItem.category,
+
+            ...schedule,
+          });
+        }
+      }
+    }
+
+    // =======================================================
+    // TÌM LỊCH GẦN NHẤT
+    // =======================================================
+
+    const now = new Date();
+
+    // JS:
+    // Sunday = 0
+    // Monday = 1
+    //
+    // DB:
+    // Monday = 1
+    // ...
+    // Sunday = 7
+
+    const currentDay = now.getDay() === 0 ? 7 : now.getDay();
+
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+    const getScheduleDistance = (schedule) => {
+      const day = Number(schedule.day_of_week || 0);
+
+      if (!day) {
+        return 999999;
+      }
+
+      const [hour, minute] = String(schedule.start_time || "00:00:00")
+        .split(":")
+        .map(Number);
+
+      const startMinutes = hour * 60 + minute;
+
+      let dayDiff = day - currentDay;
+
+      if (dayDiff < 0 || (dayDiff === 0 && startMinutes <= currentMinutes)) {
+        dayDiff += 7;
+      }
+
+      return dayDiff * 1440 + startMinutes;
+    };
+
+    scheduleCandidates.sort(
+      (a, b) => getScheduleDistance(a) - getScheduleDistance(b),
+    );
+
+    const nextSchedule = scheduleCandidates.length
+      ? scheduleCandidates[0]
+      : null;
+
+    // =======================================================
+    // FORMAT UPCOMING SCHEDULE
+    // =======================================================
+
+    let upcomingSchedule = null;
+
+    if (nextSchedule) {
+      const dayNames = {
+        1: "Thứ 2",
+        2: "Thứ 3",
+        3: "Thứ 4",
+        4: "Thứ 5",
+        5: "Thứ 6",
+        6: "Thứ 7",
+        7: "Chủ nhật",
+      };
+
+      const formatTime = (value) => {
+        if (!value) {
+          return "";
+        }
+
+        return String(value).slice(0, 5);
+      };
+
+      upcomingSchedule = {
+        date: dayNames[nextSchedule.day_of_week] || "Chưa xác định",
+
+        time: `${formatTime(nextSchedule.start_time)} - ${formatTime(
+          nextSchedule.end_time,
+        )}`,
+
+        subject: nextSchedule.category || "Giáo lý",
+
+        className: nextSchedule.className || "Chưa xếp lớp",
+
+        room: nextSchedule.room || "Chưa cập nhật",
+
+        studentName: nextSchedule.studentName,
+
+        studentId: nextSchedule.studentId,
+      };
+    }
+
+    // =======================================================
+    // LATEST RESULT
+    // =======================================================
+    //
+    // Lấy kết quả mới nhất của tất cả các con.
+    //
+    // =======================================================
+
+    let latestResult = null;
+
+    if (children.length) {
+      const studentIds = children.map((child) => child.id);
+
+      const placeholders = studentIds.map(() => "?").join(",");
+
+      const [resultRows] = await db.query(
+        `
+          SELECT
+            r.id,
+            r.student_id,
+            r.grading_rule_id,
+            r.grading_rule_item_id,
+            r.score,
+            r.exam_type,
+            r.exam_date,
+            r.note,
+            r.created_at,
+            r.updated_at,
+
+            s.name AS student_name
+
+          FROM results r
+
+          INNER JOIN students s
+            ON s.id = r.student_id
+            AND s.church_id = r.church_id
+
+          WHERE r.church_id = ?
+            AND r.student_id IN (${placeholders})
+
+          ORDER BY
+            r.exam_date DESC,
+            r.id DESC
+
+          LIMIT 1
+          `,
+        [churchId, ...studentIds],
+      );
+
+      if (resultRows.length) {
+        const result = resultRows[0];
+
+        latestResult = {
+          studentName: result.student_name,
+
+          subject: "Giáo lý",
+
+          title:
+            result.exam_type === "online"
+              ? "Bài kiểm tra trực tuyến"
+              : result.exam_type === "paper"
+                ? "Bài kiểm tra"
+                : "Kết quả học tập",
+
+          score: Number(result.score),
+
+          maxScore: 10,
+
+          studentId: result.student_id,
+
+          resultId: result.id,
+
+          examType: result.exam_type,
+
+          examDate: result.exam_date,
+        };
+      }
+    }
+
+    // =======================================================
+    // NOTIFICATIONS
+    // =======================================================
+    //
+    // Hiện chưa dùng bảng notification trong các API đã
+    // tạo nên để [].
+    //
+    // Khi có API thông báo riêng sẽ nối vào đây.
+    //
+    // =======================================================
+
+    const notifications = [];
+
+    // =======================================================
+    // FINAL RESPONSE
+    // =======================================================
+
+    const data = {
+      students,
+
+      upcomingSchedule,
+
+      latestResult,
+
+      notifications,
+    };
+
+    console.log("");
+    console.log("================ DASHBOARD =================");
+
+    console.log("STUDENTS:", students.length);
+
+    console.log("UPCOMING SCHEDULE:", upcomingSchedule);
+
+    console.log("LATEST RESULT:", latestResult);
+
+    console.log("NOTIFICATIONS:", notifications.length);
+
+    console.log("============================================");
+
+    return res.json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("                 PARENT DASHBOARD ERROR");
+    console.error(
+      "============================================================",
+    );
+
+    console.error("ERROR CODE:", error.code);
+
+    console.error("ERROR MESSAGE:", error.message);
+
+    console.error("ERROR SQL:", error.sql);
+
+    console.error("ERROR STACK:", error.stack);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể tải dashboard phụ huynh",
+      error: error.message,
     });
   }
 };

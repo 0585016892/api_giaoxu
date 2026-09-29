@@ -7,44 +7,126 @@ const { writeLog } = require("../utils/activityLogger");
 
 const ALLOWED_STATUS = ["studying", "completed", "transferred", "dropped"];
 
-const getClassById = async (classId) => {
-  const [rows] = await db.query(
-    `
+/**
+ * =====================================================
+ * LẤY LỚP THEO ID + GIÁO XỨ
+ * =====================================================
+ */
+const getClassById = async (classId, churchId = null) => {
+  let sql = `
     SELECT
       id,
       name,
       code,
       category,
-      room,
-      day_of_week,
-      start_time,
-      end_time,
-      start_date,
-      end_date,
       status,
       church_id
     FROM classes
     WHERE id = ?
+  `;
+
+  const params = [classId];
+
+  if (churchId) {
+    sql += ` AND church_id = ? `;
+    params.push(churchId);
+  }
+
+  sql += `
     LIMIT 1
-    `,
-    [classId],
-  );
+  `;
+
+  const [rows] = await db.query(sql, params);
 
   return rows[0] || null;
 };
 
-const getStudentById = async (studentId) => {
-  const [rows] = await db.query(
-    `
+/**
+ * =====================================================
+ * LẤY HỌC SINH THEO ID + GIÁO XỨ
+ * =====================================================
+ */
+const getStudentById = async (studentId, churchId = null) => {
+  let sql = `
     SELECT *
     FROM students
     WHERE id = ?
+  `;
+
+  const params = [studentId];
+
+  if (churchId) {
+    sql += ` AND church_id = ? `;
+    params.push(churchId);
+  }
+
+  sql += `
     LIMIT 1
-    `,
-    [studentId],
-  );
+  `;
+
+  const [rows] = await db.query(sql, params);
 
   return rows[0] || null;
+};
+
+/**
+ * =====================================================
+ * LẤY LỊCH HỌC CỦA LỚP
+ *
+ * class_students KHÔNG còn chứa thông tin lịch học.
+ * Tất cả lấy từ class_schedules.
+ * =====================================================
+ */
+const getSchedulesByClassId = async (classId, churchId = null) => {
+  let sql = `
+    SELECT
+      cs.id,
+      cs.class_id,
+      cs.day_of_week,
+      cs.start_time,
+      cs.end_time,
+      cs.room,
+      cs.start_date,
+      cs.end_date,
+      cs.status,
+      cs.church_id
+    FROM class_schedules cs
+    INNER JOIN classes c
+      ON c.id = cs.class_id
+    WHERE cs.class_id = ?
+  `;
+
+  const params = [classId];
+
+  if (churchId) {
+    sql += `
+      AND cs.church_id = ?
+      AND c.church_id = ?
+    `;
+
+    params.push(churchId);
+    params.push(churchId);
+  }
+
+  sql += `
+    ORDER BY
+      CASE cs.day_of_week
+        WHEN 1 THEN 1
+        WHEN 2 THEN 2
+        WHEN 3 THEN 3
+        WHEN 4 THEN 4
+        WHEN 5 THEN 5
+        WHEN 6 THEN 6
+        WHEN 7 THEN 7
+        ELSE 8
+      END,
+      cs.start_time ASC,
+      cs.id ASC
+  `;
+
+  const [rows] = await db.query(sql, params);
+
+  return rows;
 };
 
 // =====================================================
@@ -55,6 +137,29 @@ const getStudentById = async (studentId) => {
 exports.getStudentsByClass = async (req, res) => {
   try {
     const { classId } = req.params;
+    const church_id = req.user?.church_id;
+
+    console.log("");
+    console.log("============================================================");
+    console.log("              GET STUDENTS BY CLASS");
+    console.log("============================================================");
+    console.log("🏠 church_id:", church_id);
+    console.log("📚 classId:", classId);
+
+    // =====================================================
+    // KIỂM TRA GIÁO XỨ
+    // =====================================================
+
+    if (!church_id) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được liên kết với giáo xứ",
+      });
+    }
+
+    // =====================================================
+    // VALIDATE
+    // =====================================================
 
     if (!classId) {
       return res.status(400).json({
@@ -63,22 +168,28 @@ exports.getStudentsByClass = async (req, res) => {
       });
     }
 
-    // ================================================
+    // =====================================================
     // KIỂM TRA LỚP
-    // ================================================
+    // =====================================================
 
-    const classData = await getClassById(classId);
+    const classData = await getClassById(classId, church_id);
 
     if (!classData) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy lớp học",
+        message: "Không tìm thấy lớp học trong giáo xứ",
       });
     }
 
-    // ================================================
+    // =====================================================
+    // LẤY LỊCH HỌC
+    // =====================================================
+
+    const schedules = await getSchedulesByClassId(classId, church_id);
+
+    // =====================================================
     // LẤY HỌC SINH
-    // ================================================
+    // =====================================================
 
     const [rows] = await db.query(
       `
@@ -110,6 +221,7 @@ exports.getStudentsByClass = async (req, res) => {
         ON s.id = cs.student_id
 
       WHERE cs.class_id = ?
+        AND s.church_id = ?
 
       ORDER BY
         CASE
@@ -118,13 +230,27 @@ exports.getStudentsByClass = async (req, res) => {
         END,
         s.name ASC
       `,
-      [classId],
+      [classId, church_id],
     );
+
+    console.log("👨‍🎓 students:", rows.length);
+    console.log("📅 schedules:", schedules.length);
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
 
     return res.json({
       success: true,
+
       data: rows,
-      class: classData,
+
+      class: {
+        ...classData,
+        schedules,
+      },
+
+      schedules,
     });
   } catch (error) {
     console.error("getStudentsByClass error:", error);
@@ -144,6 +270,25 @@ exports.getStudentsByClass = async (req, res) => {
 exports.getClassesByStudent = async (req, res) => {
   try {
     const { studentId } = req.params;
+    const church_id = req.user?.church_id;
+
+    console.log("");
+    console.log("============================================================");
+    console.log("              GET CLASSES BY STUDENT");
+    console.log("============================================================");
+    console.log("🏠 church_id:", church_id);
+    console.log("👨‍🎓 studentId:", studentId);
+
+    // =====================================================
+    // KIỂM TRA GIÁO XỨ
+    // =====================================================
+
+    if (!church_id) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được liên kết với giáo xứ",
+      });
+    }
 
     if (!studentId) {
       return res.status(400).json({
@@ -152,22 +297,22 @@ exports.getClassesByStudent = async (req, res) => {
       });
     }
 
-    // ================================================
+    // =====================================================
     // KIỂM TRA HỌC SINH
-    // ================================================
+    // =====================================================
 
-    const student = await getStudentById(studentId);
+    const student = await getStudentById(studentId, church_id);
 
     if (!student) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy học sinh",
+        message: "Không tìm thấy học sinh trong giáo xứ",
       });
     }
 
-    // ================================================
+    // =====================================================
     // LẤY CÁC LỚP
-    // ================================================
+    // =====================================================
 
     const [rows] = await db.query(
       `
@@ -184,12 +329,6 @@ exports.getClassesByStudent = async (req, res) => {
         c.name,
         c.code,
         c.category,
-        c.room,
-        c.day_of_week,
-        c.start_time,
-        c.end_time,
-        c.start_date,
-        c.end_date,
         c.status AS class_status,
         c.church_id
 
@@ -199,6 +338,7 @@ exports.getClassesByStudent = async (req, res) => {
         ON c.id = cs.class_id
 
       WHERE cs.student_id = ?
+        AND c.church_id = ?
 
       ORDER BY
         CASE
@@ -207,12 +347,30 @@ exports.getClassesByStudent = async (req, res) => {
         END,
         cs.joined_at DESC
       `,
-      [studentId],
+      [studentId, church_id],
     );
+
+    // =====================================================
+    // GẮN SCHEDULE CHO TỪNG LỚP
+    // =====================================================
+
+    const classes = [];
+
+    for (const classItem of rows) {
+      const schedules = await getSchedulesByClassId(
+        classItem.class_id,
+        church_id,
+      );
+
+      classes.push({
+        ...classItem,
+        schedules,
+      });
+    }
 
     return res.json({
       success: true,
-      data: rows,
+      data: classes,
       student,
     });
   } catch (error) {
@@ -243,9 +401,18 @@ exports.addStudentToClass = async (req, res) => {
 
     const church_id = req.user?.church_id;
 
-    // ================================================
+    console.log("");
+    console.log("============================================================");
+    console.log("              ADD STUDENT TO CLASS");
+    console.log("============================================================");
+    console.log("🏠 church_id:", church_id);
+    console.log("📚 class_id:", class_id);
+    console.log("👨‍🎓 student_id:", student_id);
+    console.log("📌 status:", status);
+
+    // =====================================================
     // KIỂM TRA GIÁO XỨ
-    // ================================================
+    // =====================================================
 
     if (!church_id) {
       return res.status(403).json({
@@ -254,9 +421,9 @@ exports.addStudentToClass = async (req, res) => {
       });
     }
 
-    // ================================================
+    // =====================================================
     // VALIDATE
-    // ================================================
+    // =====================================================
 
     if (!class_id || !student_id) {
       return res.status(400).json({
@@ -276,10 +443,9 @@ exports.addStudentToClass = async (req, res) => {
 
     await connection.beginTransaction();
 
-    // ================================================
+    // =====================================================
     // KIỂM TRA LỚP
-    // QUAN TRỌNG: PHẢI CÙNG GIÁO XỨ
-    // ================================================
+    // =====================================================
 
     const [classes] = await connection.query(
       `
@@ -309,9 +475,9 @@ exports.addStudentToClass = async (req, res) => {
 
     const classData = classes[0];
 
-    // ================================================
+    // =====================================================
     // KIỂM TRA HỌC SINH
-    // ================================================
+    // =====================================================
 
     const [students] = await connection.query(
       `
@@ -340,9 +506,9 @@ exports.addStudentToClass = async (req, res) => {
 
     const student = students[0];
 
-    // ================================================
-    // KIỂM TRA ĐÃ CÓ QUAN HỆ
-    // ================================================
+    // =====================================================
+    // KIỂM TRA QUAN HỆ ĐÃ TỒN TẠI
+    // =====================================================
 
     const [existingRelation] = await connection.query(
       `
@@ -369,9 +535,9 @@ exports.addStudentToClass = async (req, res) => {
       });
     }
 
-    // ================================================
+    // =====================================================
     // KHÔNG CHO HỌC 2 LỚP CÙNG LÚC
-    // ================================================
+    // =====================================================
 
     if (status === "studying") {
       const [currentClass] = await connection.query(
@@ -408,9 +574,9 @@ exports.addStudentToClass = async (req, res) => {
       }
     }
 
-    // ================================================
+    // =====================================================
     // INSERT
-    // ================================================
+    // =====================================================
 
     const [result] = await connection.query(
       `
@@ -428,9 +594,9 @@ exports.addStudentToClass = async (req, res) => {
 
     await connection.commit();
 
-    // ================================================
+    // =====================================================
     // ACTIVITY LOG
-    // ================================================
+    // =====================================================
 
     try {
       await writeLog({
@@ -447,10 +613,6 @@ exports.addStudentToClass = async (req, res) => {
     } catch (logError) {
       console.error("⚠️ Activity log CREATE_CLASS_STUDENT error:", logError);
     }
-
-    // ================================================
-    // RESPONSE
-    // ================================================
 
     return res.status(201).json({
       success: true,
@@ -506,9 +668,9 @@ exports.updateClassStudent = async (req, res) => {
 
     const church_id = req.user?.church_id;
 
-    // ================================================
+    // =====================================================
     // KIỂM TRA GIÁO XỨ
-    // ================================================
+    // =====================================================
 
     if (!church_id) {
       return res.status(403).json({
@@ -516,10 +678,6 @@ exports.updateClassStudent = async (req, res) => {
         message: "Tài khoản chưa được liên kết với giáo xứ",
       });
     }
-
-    // ================================================
-    // VALIDATE
-    // ================================================
 
     if (!classId || !studentId) {
       return res.status(400).json({
@@ -537,9 +695,9 @@ exports.updateClassStudent = async (req, res) => {
 
     connection = await db.getConnection();
 
-    // ================================================
+    // =====================================================
     // KIỂM TRA QUAN HỆ
-    // ================================================
+    // =====================================================
 
     const [relations] = await connection.query(
       `
@@ -584,10 +742,9 @@ exports.updateClassStudent = async (req, res) => {
 
     const oldRelation = relations[0];
 
-    // ================================================
+    // =====================================================
     // NẾU CHUYỂN SANG STUDYING
-    // KIỂM TRA LỚP KHÁC
-    // ================================================
+    // =====================================================
 
     if (status === "studying") {
       const [otherClass] = await connection.query(
@@ -615,14 +772,15 @@ exports.updateClassStudent = async (req, res) => {
       if (otherClass.length) {
         return res.status(409).json({
           success: false,
-          message: `Học sinh đang học tại lớp "${otherClass[0].class_name}"`,
+          message:
+            `Học sinh đang học tại lớp ` + `"${otherClass[0].class_name}"`,
         });
       }
     }
 
-    // ================================================
+    // =====================================================
     // BUILD UPDATE
-    // ================================================
+    // =====================================================
 
     const fields = [];
     const values = [];
@@ -652,26 +810,23 @@ exports.updateClassStudent = async (req, res) => {
     values.push(classId);
     values.push(studentId);
 
-    // ================================================
+    // =====================================================
     // UPDATE
-    // ================================================
+    // =====================================================
 
     const [result] = await connection.query(
       `
       UPDATE class_students
-
-      SET
-        ${fields.join(", ")}
-
+      SET ${fields.join(", ")}
       WHERE class_id = ?
         AND student_id = ?
       `,
       values,
     );
 
-    // ================================================
-    // ACTIVITY LOG
-    // ================================================
+    // =====================================================
+    // LOG
+    // =====================================================
 
     if (result.affectedRows) {
       try {
@@ -683,11 +838,11 @@ exports.updateClassStudent = async (req, res) => {
           description:
             `Cập nhật học sinh "${oldRelation.student_name}" ` +
             `(${oldRelation.student_code || "—"}) trong lớp ` +
-            `"${oldRelation.class_name}" (${oldRelation.class_code || "—"}): ` +
-            `trạng thái ${oldRelation.status} → ${
-              status !== undefined ? status : oldRelation.status
-            }` +
-            `, thuộc giáo xứ #${church_id}`,
+            `"${oldRelation.class_name}" ` +
+            `(${oldRelation.class_code || "—"}): ` +
+            `trạng thái ${oldRelation.status} → ` +
+            `${status !== undefined ? status : oldRelation.status}, ` +
+            `thuộc giáo xứ #${church_id}`,
           ip_address: req.ip,
         });
       } catch (logError) {
@@ -715,7 +870,7 @@ exports.updateClassStudent = async (req, res) => {
 };
 
 // =====================================================
-// 5. CHUYỂN HỌC SINH SANG LỚP KHÁC
+// 5. CHUYỂN 1 HỌC SINH SANG LỚP KHÁC
 // PUT /api/class-students/:classId/:studentId/change-class
 // =====================================================
 
@@ -728,20 +883,12 @@ exports.changeClassStudent = async (req, res) => {
 
     const church_id = req.user?.church_id;
 
-    // ================================================
-    // KIỂM TRA GIÁO XỨ
-    // ================================================
-
     if (!church_id) {
       return res.status(403).json({
         success: false,
         message: "Tài khoản chưa được liên kết với giáo xứ",
       });
     }
-
-    // ================================================
-    // VALIDATE
-    // ================================================
 
     if (!classId || !studentId || !newClassId) {
       return res.status(400).json({
@@ -761,22 +908,22 @@ exports.changeClassStudent = async (req, res) => {
 
     await connection.beginTransaction();
 
-    // ================================================
-    // LỚP CŨ
-    // ================================================
+    // =====================================================
+    // KIỂM TRA LỚP CŨ
+    // =====================================================
 
     const [oldClasses] = await connection.query(
       `
-      SELECT
-        id,
-        name,
-        code,
-        church_id
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
-      `,
+        SELECT
+          id,
+          name,
+          code,
+          church_id
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
+        `,
       [classId, church_id],
     );
 
@@ -791,23 +938,23 @@ exports.changeClassStudent = async (req, res) => {
 
     const oldClass = oldClasses[0];
 
-    // ================================================
-    // LỚP MỚI
-    // ================================================
+    // =====================================================
+    // KIỂM TRA LỚP MỚI
+    // =====================================================
 
     const [newClasses] = await connection.query(
       `
-      SELECT
-        id,
-        name,
-        code,
-        church_id,
-        status
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
-      `,
+        SELECT
+          id,
+          name,
+          code,
+          church_id,
+          status
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
+        `,
       [newClassId, church_id],
     );
 
@@ -822,22 +969,22 @@ exports.changeClassStudent = async (req, res) => {
 
     const newClass = newClasses[0];
 
-    // ================================================
+    // =====================================================
     // KIỂM TRA HỌC SINH
-    // ================================================
+    // =====================================================
 
     const [students] = await connection.query(
       `
-      SELECT
-        id,
-        code,
-        name,
-        status
-      FROM students
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
-      `,
+        SELECT
+          id,
+          code,
+          name,
+          status
+        FROM students
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
+        `,
       [studentId, church_id],
     );
 
@@ -852,22 +999,22 @@ exports.changeClassStudent = async (req, res) => {
 
     const student = students[0];
 
-    // ================================================
-    // KIỂM TRA QUAN HỆ CŨ
-    // ================================================
+    // =====================================================
+    // QUAN HỆ HIỆN TẠI
+    // =====================================================
 
     const [relation] = await connection.query(
       `
-      SELECT
-        id,
-        class_id,
-        student_id,
-        status
-      FROM class_students
-      WHERE class_id = ?
-        AND student_id = ?
-      LIMIT 1
-      `,
+        SELECT
+          id,
+          class_id,
+          student_id,
+          status
+        FROM class_students
+        WHERE class_id = ?
+          AND student_id = ?
+        LIMIT 1
+        `,
       [classId, studentId],
     );
 
@@ -882,20 +1029,20 @@ exports.changeClassStudent = async (req, res) => {
 
     const relationData = relation[0];
 
-    // ================================================
-    // KIỂM TRA ĐÃ CÓ TRONG LỚP MỚI
-    // ================================================
+    // =====================================================
+    // KIỂM TRA LỚP MỚI
+    // =====================================================
 
     const [existingNewRelation] = await connection.query(
       `
-      SELECT
-        id,
-        status
-      FROM class_students
-      WHERE class_id = ?
-        AND student_id = ?
-      LIMIT 1
-      `,
+        SELECT
+          id,
+          status
+        FROM class_students
+        WHERE class_id = ?
+          AND student_id = ?
+        LIMIT 1
+        `,
       [newClassId, studentId],
     );
 
@@ -908,23 +1055,20 @@ exports.changeClassStudent = async (req, res) => {
       });
     }
 
-    // ================================================
-    // CHUYỂN LỚP
-    // ================================================
+    // =====================================================
+    // CHUYỂN
+    // =====================================================
 
     const [result] = await connection.query(
       `
-      UPDATE class_students
-
-      SET
-        class_id = ?,
-        status = 'studying',
-        left_at = NULL
-
-      WHERE class_id = ?
-        AND student_id = ?
-      `,
-      [newClassId, classId, studentId],
+        UPDATE class_students
+        SET
+          class_id = ?,
+          status = 'studying',
+          left_at = NULL
+        WHERE id = ?
+        `,
+      [newClassId, relationData.id],
     );
 
     if (!result.affectedRows) {
@@ -938,9 +1082,9 @@ exports.changeClassStudent = async (req, res) => {
 
     await connection.commit();
 
-    // ================================================
-    // ACTIVITY LOG
-    // ================================================
+    // =====================================================
+    // LOG
+    // =====================================================
 
     try {
       await writeLog({
@@ -949,19 +1093,18 @@ exports.changeClassStudent = async (req, res) => {
         target_type: "class_students",
         target_id: relationData.id,
         description:
-          `Chuyển học sinh "${student.name}" (${student.code || "—"}) ` +
-          `từ lớp "${oldClass.name}" (${oldClass.code || "—"}) ` +
-          `sang lớp "${newClass.name}" (${newClass.code || "—"}), ` +
+          `Chuyển học sinh "${student.name}" ` +
+          `(${student.code || "—"}) từ lớp ` +
+          `"${oldClass.name}" ` +
+          `(${oldClass.code || "—"}) sang lớp ` +
+          `"${newClass.name}" ` +
+          `(${newClass.code || "—"}), ` +
           `thuộc giáo xứ #${church_id}`,
         ip_address: req.ip,
       });
     } catch (logError) {
       console.error("⚠️ Activity log CHANGE_CLASS_STUDENT error:", logError);
     }
-
-    // ================================================
-    // RESPONSE
-    // ================================================
 
     return res.json({
       success: true,
@@ -993,25 +1136,31 @@ exports.changeClassStudent = async (req, res) => {
     }
   }
 };
+
+// =====================================================
+// 6. CHUYỂN NHIỀU HỌC SINH SANG LỚP KHÁC
+// PUT /api/class-students/change-class-bulk
+// =====================================================
+
 exports.changeClassStudents = async (req, res) => {
   let connection = null;
 
   try {
     const { studentIds, newClassId } = req.body;
+
     const church_id = req.user?.church_id;
 
     console.log("");
     console.log("============================================================");
     console.log("              BULK CHANGE STUDENTS CLASS");
     console.log("============================================================");
-    console.log("👤 req.user:", req.user);
     console.log("🏠 church_id:", church_id);
     console.log("📚 studentIds:", studentIds);
     console.log("➡️ newClassId:", newClassId);
 
-    // =========================================================
-    // KIỂM TRA GIÁO XỨ
-    // =========================================================
+    // =====================================================
+    // GIÁO XỨ
+    // =====================================================
 
     if (!church_id) {
       return res.status(403).json({
@@ -1020,9 +1169,9 @@ exports.changeClassStudents = async (req, res) => {
       });
     }
 
-    // =========================================================
-    // VALIDATE newClassId
-    // =========================================================
+    // =====================================================
+    // VALIDATE CLASS
+    // =====================================================
 
     const targetClassId = Number(newClassId);
 
@@ -1033,9 +1182,9 @@ exports.changeClassStudents = async (req, res) => {
       });
     }
 
-    // =========================================================
-    // VALIDATE studentIds
-    // =========================================================
+    // =====================================================
+    // VALIDATE STUDENTS
+    // =====================================================
 
     if (!Array.isArray(studentIds) || studentIds.length === 0) {
       return res.status(400).json({
@@ -1043,10 +1192,6 @@ exports.changeClassStudents = async (req, res) => {
         message: "studentIds phải là một mảng và không được rỗng",
       });
     }
-
-    // =========================================================
-    // LOẠI ID TRÙNG / ID KHÔNG HỢP LỆ
-    // =========================================================
 
     const uniqueStudentIds = [
       ...new Set(
@@ -1063,33 +1208,27 @@ exports.changeClassStudents = async (req, res) => {
       });
     }
 
-    console.log("✅ uniqueStudentIds:", uniqueStudentIds);
-
-    // =========================================================
-    // CONNECTION
-    // =========================================================
-
     connection = await db.getConnection();
 
     await connection.beginTransaction();
 
-    // =========================================================
-    // KIỂM TRA LỚP MỚI
-    // =========================================================
+    // =====================================================
+    // LỚP MỚI
+    // =====================================================
 
     const [newClasses] = await connection.query(
       `
-      SELECT
-        id,
-        name,
-        code,
-        church_id,
-        status
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
-      `,
+        SELECT
+          id,
+          name,
+          code,
+          church_id,
+          status
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
+        `,
       [targetClassId, church_id],
     );
 
@@ -1104,29 +1243,25 @@ exports.changeClassStudents = async (req, res) => {
 
     const newClass = newClasses[0];
 
-    // =========================================================
-    // KIỂM TRA HỌC SINH
-    // =========================================================
+    // =====================================================
+    // HỌC SINH
+    // =====================================================
 
     const placeholders = uniqueStudentIds.map(() => "?").join(",");
 
     const [students] = await connection.query(
       `
-      SELECT
-        id,
-        code,
-        name,
-        status
-      FROM students
-      WHERE id IN (${placeholders})
-        AND church_id = ?
-      `,
+        SELECT
+          id,
+          code,
+          name,
+          status
+        FROM students
+        WHERE id IN (${placeholders})
+          AND church_id = ?
+        `,
       [...uniqueStudentIds, church_id],
     );
-
-    // =========================================================
-    // KIỂM TRA HỌC SINH KHÔNG TỒN TẠI
-    // =========================================================
 
     const foundStudentIds = new Set(
       students.map((student) => Number(student.id)),
@@ -1148,37 +1283,24 @@ exports.changeClassStudents = async (req, res) => {
       });
     }
 
-    // =========================================================
-    // LẤY TẤT CẢ QUAN HỆ HIỆN TẠI
-    // =========================================================
-    //
-    // Một học sinh có thể:
-    //
-    // 1. Chưa có class_students
-    // 2. Đang ở lớp A
-    // 3. Đang ở lớp B
-    // 4. Đã có relation với lớp mới
-    //
-    // =========================================================
+    // =====================================================
+    // QUAN HỆ
+    // =====================================================
 
     const [relations] = await connection.query(
       `
-      SELECT
-        id,
-        student_id,
-        class_id,
-        status,
-        joined_at,
-        left_at
-      FROM class_students
-      WHERE student_id IN (${placeholders})
-      `,
+        SELECT
+          id,
+          student_id,
+          class_id,
+          status,
+          joined_at,
+          left_at
+        FROM class_students
+        WHERE student_id IN (${placeholders})
+        `,
       uniqueStudentIds,
     );
-
-    // =========================================================
-    // MAP QUAN HỆ
-    // =========================================================
 
     const relationMap = new Map();
 
@@ -1192,10 +1314,6 @@ exports.changeClassStudents = async (req, res) => {
       relationMap.get(studentId).push(relation);
     }
 
-    // =========================================================
-    // PHÂN LOẠI
-    // =========================================================
-
     const toUpdate = [];
     const toInsert = [];
     const alreadyInTarget = [];
@@ -1203,26 +1321,14 @@ exports.changeClassStudents = async (req, res) => {
     for (const studentId of uniqueStudentIds) {
       const studentRelations = relationMap.get(studentId) || [];
 
-      // -------------------------------------------------------
-      // TÌM QUAN HỆ LỚP MỚI
-      // -------------------------------------------------------
-
       const targetRelation = studentRelations.find(
-        (relation) => Number(relation.class_id) === Number(targetClassId),
+        (relation) => Number(relation.class_id) === targetClassId,
       );
 
       if (targetRelation) {
         alreadyInTarget.push(studentId);
         continue;
       }
-
-      // -------------------------------------------------------
-      // TÌM QUAN HỆ ĐANG HỌC
-      // -------------------------------------------------------
-      //
-      // Ưu tiên relation đang studying / chưa left
-      //
-      // -------------------------------------------------------
 
       const activeRelation = studentRelations.find(
         (relation) => relation.status === "studying" && !relation.left_at,
@@ -1238,20 +1344,12 @@ exports.changeClassStudents = async (req, res) => {
         continue;
       }
 
-      // -------------------------------------------------------
-      // KHÔNG CÓ LỚP ĐANG HỌC
-      // -------------------------------------------------------
-
       toInsert.push(studentId);
     }
 
-    console.log("📊 toUpdate:", toUpdate);
-    console.log("➕ toInsert:", toInsert);
-    console.log("⏭️ alreadyInTarget:", alreadyInTarget);
-
-    // =========================================================
-    // UPDATE HỌC SINH ĐÃ CÓ LỚP
-    // =========================================================
+    // =====================================================
+    // UPDATE
+    // =====================================================
 
     for (const item of toUpdate) {
       await connection.query(
@@ -1267,9 +1365,9 @@ exports.changeClassStudents = async (req, res) => {
       );
     }
 
-    // =========================================================
-    // INSERT HỌC SINH CHƯA CÓ LỚP
-    // =========================================================
+    // =====================================================
+    // INSERT
+    // =====================================================
 
     for (const studentId of toInsert) {
       await connection.query(
@@ -1295,15 +1393,11 @@ exports.changeClassStudents = async (req, res) => {
       );
     }
 
-    // =========================================================
-    // COMMIT
-    // =========================================================
-
     await connection.commit();
 
-    // =========================================================
-    // ACTIVITY LOG
-    // =========================================================
+    // =====================================================
+    // LOG
+    // =====================================================
 
     try {
       const studentMap = new Map(
@@ -1318,7 +1412,7 @@ exports.changeClassStudents = async (req, res) => {
             return `#${studentId}`;
           }
 
-          return `${student.name} (${student.code || "—"})`;
+          return `${student.name} ` + `(${student.code || "—"})`;
         })
         .join(", ");
 
@@ -1328,8 +1422,9 @@ exports.changeClassStudents = async (req, res) => {
         target_type: "class_students",
         target_id: targetClassId,
         description:
-          `Xếp/chuyển ${uniqueStudentIds.length} học sinh ` +
-          `sang lớp "${newClass.name}" (${newClass.code || "—"}): ` +
+          `Xếp/chuyển ${uniqueStudentIds.length} ` +
+          `học sinh sang lớp "${newClass.name}" ` +
+          `(${newClass.code || "—"}): ` +
           `${studentNames}. ` +
           `Cập nhật: ${toUpdate.length}; ` +
           `thêm mới: ${toInsert.length}; ` +
@@ -1341,9 +1436,9 @@ exports.changeClassStudents = async (req, res) => {
       console.error("⚠️ Activity log CHANGE_CLASS_STUDENTS error:", logError);
     }
 
-    // =========================================================
+    // =====================================================
     // RESPONSE
-    // =========================================================
+    // =====================================================
 
     return res.json({
       success: true,
@@ -1378,24 +1473,16 @@ exports.changeClassStudents = async (req, res) => {
       },
     });
   } catch (error) {
-    // =========================================================
-    // ROLLBACK
-    // =========================================================
-
     if (connection) {
       try {
         await connection.rollback();
       } catch (_) {}
     }
 
-    console.error("");
     console.error(
       "============================================================",
     );
     console.error("❌ changeClassStudents ERROR");
-    console.error(
-      "============================================================",
-    );
     console.error(error);
 
     return res.status(500).json({
@@ -1409,8 +1496,9 @@ exports.changeClassStudents = async (req, res) => {
     }
   }
 };
+
 // =====================================================
-// 6. XÓA HỌC SINH KHỎI LỚP
+// 7. XÓA HỌC SINH KHỎI LỚP
 // DELETE /api/class-students/:classId/:studentId
 // =====================================================
 
@@ -1420,20 +1508,12 @@ exports.removeStudentFromClass = async (req, res) => {
 
     const church_id = req.user?.church_id;
 
-    // ================================================
-    // KIỂM TRA GIÁO XỨ
-    // ================================================
-
     if (!church_id) {
       return res.status(403).json({
         success: false,
         message: "Tài khoản chưa được liên kết với giáo xứ",
       });
     }
-
-    // ================================================
-    // VALIDATE
-    // ================================================
 
     if (!classId || !studentId) {
       return res.status(400).json({
@@ -1442,39 +1522,39 @@ exports.removeStudentFromClass = async (req, res) => {
       });
     }
 
-    // ================================================
+    // =====================================================
     // LẤY THÔNG TIN TRƯỚC KHI XÓA
-    // ================================================
+    // =====================================================
 
     const [rows] = await db.query(
       `
-      SELECT
-        cs.id,
-        cs.class_id,
-        cs.student_id,
-        cs.status,
+        SELECT
+          cs.id,
+          cs.class_id,
+          cs.student_id,
+          cs.status,
 
-        s.name AS student_name,
-        s.code AS student_code,
+          s.name AS student_name,
+          s.code AS student_code,
 
-        c.name AS class_name,
-        c.code AS class_code,
-        c.church_id
+          c.name AS class_name,
+          c.code AS class_code,
+          c.church_id
 
-      FROM class_students cs
+        FROM class_students cs
 
-      INNER JOIN students s
-        ON s.id = cs.student_id
+        INNER JOIN students s
+          ON s.id = cs.student_id
 
-      INNER JOIN classes c
-        ON c.id = cs.class_id
+        INNER JOIN classes c
+          ON c.id = cs.class_id
 
-      WHERE cs.class_id = ?
-        AND cs.student_id = ?
-        AND c.church_id = ?
+        WHERE cs.class_id = ?
+          AND cs.student_id = ?
+          AND c.church_id = ?
 
-      LIMIT 1
-      `,
+        LIMIT 1
+        `,
       [classId, studentId, church_id],
     );
 
@@ -1487,17 +1567,16 @@ exports.removeStudentFromClass = async (req, res) => {
 
     const relationData = rows[0];
 
-    // ================================================
+    // =====================================================
     // XÓA
-    // ================================================
+    // =====================================================
 
     const [result] = await db.query(
       `
-      DELETE FROM class_students
-
-      WHERE class_id = ?
-        AND student_id = ?
-      `,
+        DELETE FROM class_students
+        WHERE class_id = ?
+          AND student_id = ?
+        `,
       [classId, studentId],
     );
 
@@ -1508,9 +1587,9 @@ exports.removeStudentFromClass = async (req, res) => {
       });
     }
 
-    // ================================================
-    // ACTIVITY LOG
-    // ================================================
+    // =====================================================
+    // LOG
+    // =====================================================
 
     try {
       await writeLog({
@@ -1521,7 +1600,8 @@ exports.removeStudentFromClass = async (req, res) => {
         description:
           `Xóa học sinh "${relationData.student_name}" ` +
           `(${relationData.student_code || "—"}) khỏi lớp ` +
-          `"${relationData.class_name}" (${relationData.class_code || "—"}), ` +
+          `"${relationData.class_name}" ` +
+          `(${relationData.class_code || "—"}), ` +
           `trạng thái trước khi xóa: ${relationData.status}, ` +
           `thuộc giáo xứ #${church_id}`,
         ip_address: req.ip,
@@ -1529,10 +1609,6 @@ exports.removeStudentFromClass = async (req, res) => {
     } catch (logError) {
       console.error("⚠️ Activity log DELETE_CLASS_STUDENT error:", logError);
     }
-
-    // ================================================
-    // RESPONSE
-    // ================================================
 
     return res.json({
       success: true,

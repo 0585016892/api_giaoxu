@@ -7,13 +7,13 @@ const db = require("../config/db");
  */
 
 const toInt = (value, defaultValue = null) => {
-  const n = Number(value);
+  const number = Number(value);
 
-  if (!Number.isInteger(n)) {
+  if (!Number.isInteger(number)) {
     return defaultValue;
   }
 
-  return n;
+  return number;
 };
 
 const getChurchId = (req) => {
@@ -101,7 +101,7 @@ const checkParentAccount = async (parentId, churchId) => {
 
 /**
  * =========================================================
- * CHECK PARENT -> STUDENT RELATION
+ * CHECK PARENT -> STUDENT
  * =========================================================
  */
 
@@ -123,6 +123,7 @@ const checkParentStudent = async (parentId, studentId, churchId) => {
       s.church_id,
       s.code,
       s.qr_token,
+
       s.name,
       s.gender,
       s.date_of_birth,
@@ -149,6 +150,7 @@ const checkParentStudent = async (parentId, studentId, churchId) => {
       s.baptism_place,
       s.baptism_parish,
       s.baptism_certificate_no,
+
       s.saint_name,
 
       s.first_communion_date,
@@ -161,8 +163,8 @@ const checkParentStudent = async (parentId, studentId, churchId) => {
       s.catechism_level,
       s.catechism_status,
       s.enrollment_date,
-      s.note,
 
+      s.note,
       s.avatar,
       s.status,
 
@@ -197,11 +199,24 @@ const checkParentStudent = async (parentId, studentId, churchId) => {
  * GET CLASS SCHEDULES
  * =========================================================
  *
- * QUAN TRỌNG:
+ * SCHEMA THẬT:
  *
- * class_schedules KHÔNG CÓ church_id.
+ * class_schedules
+ * ----------------
+ * id
+ * class_id
+ * day_of_week
+ * start_time
+ * end_time
+ * room
+ * created_at
+ * updated_at
  *
- * Xác định church thông qua:
+ * KHÔNG CÓ:
+ * - church_id
+ * - status
+ *
+ * Church được xác thực thông qua:
  *
  * class_schedules.class_id
  *          ↓
@@ -226,7 +241,6 @@ const getClassSchedules = async (classId, churchId) => {
       sch.start_time,
       sch.end_time,
       sch.room,
-      sch.status,
       sch.created_at,
       sch.updated_at
 
@@ -251,17 +265,7 @@ const getClassSchedules = async (classId, churchId) => {
 
 /**
  * =========================================================
- * GET CURRENT CLASSES OF STUDENT
- * =========================================================
- *
- * Lấy:
- *
- * class_students
- *      ↓
- * classes
- *      ↓
- * class_schedules
- *
+ * GET STUDENT CLASSES
  * =========================================================
  */
 
@@ -275,13 +279,18 @@ const getStudentClasses = async (studentId, churchId) => {
     SELECT
       c.id,
       c.church_id,
+
       c.name,
       c.code,
       c.category,
+
       c.catechist_id,
+
       c.description,
+
       c.start_date,
       c.end_date,
+
       c.status,
 
       cs.id AS class_student_id,
@@ -296,6 +305,7 @@ const getStudentClasses = async (studentId, churchId) => {
       AND c.church_id = ?
 
     WHERE cs.student_id = ?
+
       AND cs.status = 'studying'
 
     ORDER BY
@@ -327,14 +337,17 @@ const getStudentClasses = async (studentId, churchId) => {
       description: item.description,
 
       start_date: item.start_date,
+
       end_date: item.end_date,
 
       status: item.status,
 
       class_student_id: item.class_student_id,
+
       class_student_status: item.class_student_status,
 
       joined_at: item.joined_at,
+
       left_at: item.left_at,
 
       schedules,
@@ -368,14 +381,17 @@ const formatClass = (item) => {
     description: item.description,
 
     start_date: item.start_date,
+
     end_date: item.end_date,
 
     status: item.status,
 
     class_student_id: item.class_student_id,
+
     class_student_status: item.class_student_status,
 
     joined_at: item.joined_at,
+
     left_at: item.left_at,
 
     schedules: item.schedules || [],
@@ -384,7 +400,7 @@ const formatClass = (item) => {
 
 /**
  * =========================================================
- * GET ATTENDANCE SUMMARY
+ * ATTENDANCE SUMMARY
  * =========================================================
  */
 
@@ -437,9 +453,13 @@ const getAttendanceSummary = async (studentId, churchId) => {
   const row = rows[0] || {};
 
   const total = Number(row.total) || 0;
+
   const present = Number(row.present) || 0;
+
   const absent = Number(row.absent) || 0;
+
   const late = Number(row.late) || 0;
+
   const excused = Number(row.excused) || 0;
 
   const attended = present + late;
@@ -459,7 +479,7 @@ const getAttendanceSummary = async (studentId, churchId) => {
 
 /**
  * =========================================================
- * GET LATEST RESULT
+ * LATEST RESULT
  * =========================================================
  */
 
@@ -497,13 +517,14 @@ const getLatestResult = async (studentId, churchId) => {
 
 /**
  * =========================================================
- * GET PARENT ME
+ * GET ME
  * =========================================================
  */
 
 exports.getMe = async (req, res) => {
   try {
     const parentId = getParentId(req);
+
     const churchId = getChurchId(req);
 
     console.log("");
@@ -557,6 +578,7 @@ exports.getMe = async (req, res) => {
         avatar: parent.avatar,
 
         created_at: parent.created_at,
+
         updated_at: parent.updated_at,
       },
     });
@@ -580,6 +602,7 @@ exports.getMe = async (req, res) => {
 exports.getChildren = async (req, res) => {
   try {
     const parentId = getParentId(req);
+
     const churchId = getChurchId(req);
 
     console.log("");
@@ -614,51 +637,49 @@ exports.getChildren = async (req, res) => {
 
     const [students] = await db.query(
       `
-      SELECT
-        ps.id AS parent_student_id,
-        ps.parent_id,
-        ps.student_id,
-        ps.relationship,
+        SELECT
+          ps.id AS parent_student_id,
+          ps.parent_id,
+          ps.student_id,
+          ps.relationship,
 
-        s.id,
-        s.church_id,
+          s.id,
+          s.church_id,
 
-        s.code,
-        s.qr_token,
+          s.code,
+          s.qr_token,
 
-        s.name,
-        s.gender,
-        s.date_of_birth,
+          s.name,
+          s.gender,
+          s.date_of_birth,
 
-        s.phone,
-        s.email,
-        s.address,
-        s.parish,
+          s.phone,
+          s.email,
+          s.address,
+          s.parish,
 
-        s.avatar,
-        s.status,
+          s.avatar,
+          s.status,
 
-        s.catechism_level,
-        s.catechism_status,
-        s.enrollment_date
+          s.catechism_level,
+          s.catechism_status,
+          s.enrollment_date
 
-      FROM parent_students ps
+        FROM parent_students ps
 
-      INNER JOIN students s
-        ON s.id = ps.student_id
-        AND s.church_id = ps.church_id
+        INNER JOIN students s
+          ON s.id = ps.student_id
+          AND s.church_id = ps.church_id
 
-      WHERE ps.parent_id = ?
-        AND ps.church_id = ?
+        WHERE ps.parent_id = ?
+          AND ps.church_id = ?
 
-      ORDER BY
-        s.name ASC,
-        s.id ASC
-      `,
+        ORDER BY
+          s.name ASC,
+          s.id ASC
+        `,
       [parentId, churchId],
     );
-
-    console.log("CHILD COUNT:", students.length);
 
     const children = [];
 
@@ -678,18 +699,24 @@ exports.getChildren = async (req, res) => {
 
         name: student.name,
         gender: student.gender,
+
         date_of_birth: student.date_of_birth,
 
         phone: student.phone,
         email: student.email,
+
         address: student.address,
+
         parish: student.parish,
 
         avatar: student.avatar,
+
         status: student.status,
 
         catechism_level: student.catechism_level,
+
         catechism_status: student.catechism_status,
+
         enrollment_date: student.enrollment_date,
 
         relationship: student.relationship,
@@ -732,7 +759,9 @@ exports.getChildren = async (req, res) => {
 exports.getChild = async (req, res) => {
   try {
     const parentId = getParentId(req);
+
     const churchId = getChurchId(req);
+
     const studentId = toInt(req.params.studentId);
 
     console.log("");
@@ -788,24 +817,6 @@ exports.getChild = async (req, res) => {
 
     const latestResult = await getLatestResult(studentId, churchId);
 
-    const family = {
-      father: {
-        name: child.father_name,
-        phone: child.father_phone,
-      },
-
-      mother: {
-        name: child.mother_name,
-        phone: child.mother_phone,
-      },
-
-      guardian: {
-        name: child.guardian_name,
-        phone: child.guardian_phone,
-        relationship: child.guardian_relationship,
-      },
-    };
-
     const student = {
       id: child.id,
       church_id: child.church_id,
@@ -815,18 +826,22 @@ exports.getChild = async (req, res) => {
 
       name: child.name,
       gender: child.gender,
+
       date_of_birth: child.date_of_birth,
 
       birth_place: child.birth_place,
+
       nationality: child.nationality,
 
       phone: child.phone,
       email: child.email,
 
       address: child.address,
+
       parish: child.parish,
 
       avatar: child.avatar,
+
       status: child.status,
 
       catechism_level: child.catechism_level,
@@ -839,9 +854,13 @@ exports.getChild = async (req, res) => {
 
       baptism: {
         name: child.baptism_name,
+
         date: child.baptism_date,
+
         place: child.baptism_place,
+
         parish: child.baptism_parish,
+
         certificate_no: child.baptism_certificate_no,
       },
 
@@ -862,7 +881,30 @@ exports.getChild = async (req, res) => {
       saint_name: child.saint_name,
 
       created_at: child.created_at,
+
       updated_at: child.updated_at,
+    };
+
+    const family = {
+      father: {
+        name: child.father_name,
+
+        phone: child.father_phone,
+      },
+
+      mother: {
+        name: child.mother_name,
+
+        phone: child.mother_phone,
+      },
+
+      guardian: {
+        name: child.guardian_name,
+
+        phone: child.guardian_phone,
+
+        relationship: child.guardian_relationship,
+      },
     };
 
     return res.json({
@@ -926,11 +968,6 @@ exports.getChildAttendance = async (req, res) => {
     console.log("PARENT ID:", parentId);
     console.log("CHURCH ID:", churchId);
     console.log("STUDENT ID:", studentId);
-    console.log("TYPE:", attendanceType);
-    console.log("FROM:", fromDate);
-    console.log("TO:", toDate);
-    console.log("PAGE:", page);
-    console.log("PAGE SIZE:", pageSize);
 
     if (!parentId || !churchId) {
       return res.status(403).json({
@@ -979,9 +1016,9 @@ exports.getChildAttendance = async (req, res) => {
     }
 
     /**
-     * =====================================================
+     * -----------------------------------------------------
      * SUMMARY
-     * =====================================================
+     * -----------------------------------------------------
      */
 
     const summaryParams = [studentId, churchId];
@@ -1076,9 +1113,9 @@ exports.getChildAttendance = async (req, res) => {
     const rate = total > 0 ? Number(((attended / total) * 100).toFixed(2)) : 0;
 
     /**
-     * =====================================================
+     * -----------------------------------------------------
      * COUNT
-     * =====================================================
+     * -----------------------------------------------------
      */
 
     const countParams = [studentId, churchId];
@@ -1130,9 +1167,9 @@ exports.getChildAttendance = async (req, res) => {
       totalRecords > 0 ? Math.ceil(totalRecords / pageSize) : 0;
 
     /**
-     * =====================================================
+     * -----------------------------------------------------
      * RECORDS
-     * =====================================================
+     * -----------------------------------------------------
      */
 
     const recordParams = [studentId, churchId];
@@ -1268,12 +1305,6 @@ exports.getChildResults = async (req, res) => {
     console.log("============================================================");
     console.log("                  PARENT GET CHILD RESULTS");
     console.log("============================================================");
-    console.log("PARENT ID:", parentId);
-    console.log("CHURCH ID:", churchId);
-    console.log("STUDENT ID:", studentId);
-    console.log("EXAM TYPE:", examType);
-    console.log("FROM:", fromDate);
-    console.log("TO:", toDate);
 
     if (!parentId || !churchId) {
       return res.status(403).json({
@@ -1377,26 +1408,23 @@ exports.getChildResults = async (req, res) => {
       params,
     );
 
-    const total = records.length;
-
     const scores = records
       .map((item) => Number(item.score))
       .filter((score) => Number.isFinite(score));
 
-    const average =
-      scores.length > 0
-        ? Number(
-            (
-              scores.reduce((sum, score) => sum + score, 0) / scores.length
-            ).toFixed(2),
-          )
-        : 0;
+    const total = records.length;
 
-    const highest = scores.length > 0 ? Math.max(...scores) : null;
+    const average = scores.length
+      ? Number(
+          (
+            scores.reduce((sum, score) => sum + score, 0) / scores.length
+          ).toFixed(2),
+        )
+      : 0;
 
-    const lowest = scores.length > 0 ? Math.min(...scores) : null;
+    const highest = scores.length ? Math.max(...scores) : null;
 
-    const latest = records.length > 0 ? records[0] : null;
+    const lowest = scores.length ? Math.min(...scores) : null;
 
     return res.json({
       success: true,
@@ -1409,7 +1437,7 @@ exports.getChildResults = async (req, res) => {
           lowest,
         },
 
-        latest,
+        latest: records.length ? records[0] : null,
 
         records,
       },
@@ -1430,10 +1458,16 @@ exports.getChildResults = async (req, res) => {
  * GET CHILD SCHEDULE
  * =========================================================
  *
- * Lấy lịch thật từ class_schedules.
+ * Đây là API lịch học chính cho phụ huynh.
  *
- * class_schedules KHÔNG dùng church_id.
- * church được kiểm tra qua classes.
+ * Nguồn:
+ *   students
+ *      ↓
+ *   class_students
+ *      ↓
+ *   classes
+ *      ↓
+ *   class_schedules
  *
  * =========================================================
  */
@@ -1493,12 +1527,36 @@ exports.getChildSchedule = async (req, res) => {
       });
     }
 
+    /**
+     * Lấy các lớp hiện tại của học sinh.
+     *
+     * Hàm này đã tự lấy schedules.
+     */
     const classes = await getStudentClasses(studentId, churchId);
+
+    /**
+     * Flatten schedules
+     *
+     * Một học sinh có thể:
+     *
+     * lớp A
+     *   ├── thứ 2
+     *   └── thứ 5
+     *
+     * lớp B
+     *   └── thứ 7
+     *
+     * => schedules có 3 phần tử.
+     */
 
     const schedules = [];
 
     for (const classItem of classes) {
-      for (const schedule of classItem.schedules || []) {
+      const classSchedules = Array.isArray(classItem.schedules)
+        ? classItem.schedules
+        : [];
+
+      for (const schedule of classSchedules) {
         schedules.push({
           id: schedule.id,
 
@@ -1511,8 +1569,6 @@ exports.getChildSchedule = async (req, res) => {
           end_time: schedule.end_time,
 
           room: schedule.room,
-
-          status: schedule.status,
 
           created_at: schedule.created_at,
 
@@ -1547,8 +1603,11 @@ exports.getChildSchedule = async (req, res) => {
       data: {
         student: {
           id: child.id,
+
           code: child.code,
+
           name: child.name,
+
           avatar: child.avatar,
         },
 
@@ -1586,9 +1645,6 @@ exports.getChildCertificates = async (req, res) => {
     console.log("============================================================");
     console.log("               PARENT GET CHILD CERTIFICATES");
     console.log("============================================================");
-    console.log("PARENT ID:", parentId);
-    console.log("CHURCH ID:", churchId);
-    console.log("STUDENT ID:", studentId);
 
     if (!parentId || !churchId) {
       return res.status(403).json({

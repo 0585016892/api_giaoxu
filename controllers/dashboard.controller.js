@@ -7,7 +7,40 @@ const getChurchId = (req) => {
 const getParentId = (req) => {
   return req.user?.id || null;
 };
+const checkParentAccount = async (parentId, churchId) => {
+  if (!parentId || !churchId) {
+    return null;
+  }
 
+  const [rows] = await db.query(
+    `
+    SELECT
+      id,
+      church_id,
+      username,
+      full_name,
+      phone,
+      email,
+      role,
+      account_type,
+      is_active,
+      avatar,
+      created_at,
+      updated_at
+
+    FROM admins
+
+    WHERE id = ?
+      AND church_id = ?
+      AND role = 'parent'
+
+    LIMIT 1
+    `,
+    [parentId, churchId],
+  );
+
+  return rows.length ? rows[0] : null;
+};
 exports.getDashboard = async (req, res) => {
   try {
     // =============================

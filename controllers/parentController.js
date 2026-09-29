@@ -2,7 +2,7 @@ const db = require("../config/db");
 
 /**
  * =========================================================
- * HELPER
+ * HELPERS
  * =========================================================
  */
 
@@ -25,7 +25,9 @@ const getParentId = (req) => {
 };
 
 const normalizeDate = (value) => {
-  if (!value) return null;
+  if (!value) {
+    return null;
+  }
 
   const date = new Date(value);
 
@@ -36,11 +38,29 @@ const normalizeDate = (value) => {
   return date.toISOString().slice(0, 10);
 };
 
+const normalizePage = (value, defaultValue = 1) => {
+  const page = toInt(value, defaultValue);
+
+  if (!page || page < 1) {
+    return defaultValue;
+  }
+
+  return page;
+};
+
+const normalizePageSize = (value, defaultValue = 20) => {
+  const pageSize = toInt(value, defaultValue);
+
+  if (!pageSize || pageSize < 1) {
+    return defaultValue;
+  }
+
+  return Math.min(pageSize, 100);
+};
+
 /**
  * =========================================================
- * CHECK PARENT
- *
- * Parent account nằm trong admins
+ * CHECK PARENT ACCOUNT
  * =========================================================
  */
 
@@ -59,10 +79,15 @@ const checkParentAccount = async (parentId, churchId) => {
       phone,
       email,
       role,
-      status
+      account_type,
+      is_active,
+      avatar,
+      created_at,
+      updated_at
     FROM admins
     WHERE id = ?
       AND church_id = ?
+      AND role = 'parent'
     LIMIT 1
     `,
     [parentId, churchId],
@@ -73,10 +98,7 @@ const checkParentAccount = async (parentId, churchId) => {
 
 /**
  * =========================================================
- * CHECK PARENT -> STUDENT
- *
- * Cực kỳ quan trọng:
- * phụ huynh chỉ được xem con đã được liên kết
+ * CHECK PARENT -> STUDENT RELATION
  * =========================================================
  */
 
@@ -92,37 +114,74 @@ const checkParentStudent = async (parentId, studentId, churchId) => {
       ps.parent_id,
       ps.student_id,
       ps.relationship,
-      ps.is_primary,
+      ps.church_id AS parent_student_church_id,
 
       s.id,
       s.church_id,
       s.code,
+      s.qr_token,
       s.name,
       s.gender,
       s.date_of_birth,
+      s.birth_place,
+      s.nationality,
       s.phone,
       s.email,
       s.address,
       s.parish,
+
+      s.father_name,
+      s.father_phone,
+
+      s.mother_name,
+      s.mother_phone,
+
+      s.guardian_name,
+      s.guardian_phone,
+      s.guardian_relationship,
+
+      s.baptism_name,
+      s.baptism_date,
+      s.baptism_place,
+      s.baptism_parish,
+      s.baptism_certificate_no,
+      s.saint_name,
+
+      s.first_communion_date,
+      s.first_communion_place,
+
+      s.confirmation_date,
+      s.confirmation_place,
+      s.confirmation_saint_name,
+
+      s.catechism_level,
+      s.catechism_status,
+      s.enrollment_date,
+      s.note,
+
       s.avatar,
-      s.status
+      s.status,
+      s.created_at,
+      s.updated_at
 
     FROM parent_students ps
 
     INNER JOIN admins a
       ON a.id = ps.parent_id
+      AND a.church_id = ps.church_id
+      AND a.role = 'parent'
 
     INNER JOIN students s
       ON s.id = ps.student_id
+      AND s.church_id = ps.church_id
 
     WHERE ps.parent_id = ?
       AND ps.student_id = ?
-      AND a.church_id = ?
-      AND s.church_id = ?
+      AND ps.church_id = ?
 
     LIMIT 1
     `,
-    [parentId, studentId, churchId, churchId],
+    [parentId, studentId, churchId],
   );
 
   return rows.length ? rows[0] : null;
@@ -130,9 +189,160 @@ const checkParentStudent = async (parentId, studentId, churchId) => {
 
 /**
  * =========================================================
- * GET /api/parent/me
- *
- * Thông tin tài khoản phụ huynh
+ * GET CURRENT CLASSES OF STUDENT
+ * =========================================================
+ */
+
+const getStudentClasses = async (studentId, churchId) => {
+  const [rows] = await db.query(
+    `
+    SELECT
+      c.id,
+      c.church_id,
+      c.name,
+      c.code,
+      c.category,
+      c.catechist_id,
+      c.description,
+      c.start_date,
+      c.end_date,
+      c.status,
+
+      cs.id AS class_student_id,
+      cs.status AS class_student_status,
+      cs.joined_at,
+      cs.left_at
+
+    FROM class_students cs
+
+    INNER JOIN classes c
+      ON c.id = cs.class_id
+      AND c.church_id = ?
+
+    WHERE cs.student_id = ?
+      AND cs.status = 'studying'
+
+    ORDER BY
+      c.start_date DESC,
+      c.id DESC
+    `,
+    [churchId, studentId],
+  );
+
+  return rows;
+};
+
+/**
+ * =========================================================
+ * GET ATTENDANCE SUMMARY
+ * =========================================================
+ */
+
+const getAttendanceSummary = async (studentId, churchId) => {
+  const [rows] = await db.query(
+    `
+    SELECT
+      COUNT(*) AS total,
+
+      SUM(
+        CASE
+          WHEN status = 'present' THEN 1
+          ELSE 0
+        END
+      ) AS present,
+
+      SUM(
+        CASE
+          WHEN status = 'absent' THEN 1
+          ELSE 0
+        END
+      ) AS absent,
+
+      SUM(
+        CASE
+          WHEN status = 'late' THEN 1
+          ELSE 0
+        END
+      ) AS late,
+
+      SUM(
+        CASE
+          WHEN status = 'excused' THEN 1
+          ELSE 0
+        END
+      ) AS excused
+
+    FROM attendances
+    WHERE student_id = ?
+      AND church_id = ?
+    `,
+    [studentId, churchId],
+  );
+
+  const row = rows[0] || {};
+
+  const total = Number(row.total) || 0;
+  const present = Number(row.present) || 0;
+  const absent = Number(row.absent) || 0;
+  const late = Number(row.late) || 0;
+  const excused = Number(row.excused) || 0;
+
+  const attended = present + late;
+
+  const rate = total > 0 ? Number(((attended / total) * 100).toFixed(2)) : 0;
+
+  return {
+    total,
+    present,
+    absent,
+    late,
+    excused,
+    attended,
+    rate,
+  };
+};
+
+/**
+ * =========================================================
+ * GET LATEST RESULT
+ * =========================================================
+ */
+
+const getLatestResult = async (studentId, churchId) => {
+  const [rows] = await db.query(
+    `
+    SELECT
+      id,
+      student_id,
+      grading_rule_id,
+      grading_rule_item_id,
+      score,
+      exam_type,
+      exam_date,
+      note,
+      created_at,
+      updated_at
+
+    FROM results
+
+    WHERE student_id = ?
+      AND church_id = ?
+
+    ORDER BY
+      exam_date DESC,
+      id DESC
+
+    LIMIT 1
+    `,
+    [studentId, churchId],
+  );
+
+  return rows.length ? rows[0] : null;
+};
+
+/**
+ * =========================================================
+ * GET PARENT ME
  * =========================================================
  */
 
@@ -142,14 +352,14 @@ exports.getMe = async (req, res) => {
     const churchId = getChurchId(req);
 
     console.log("");
-    console.log("=================================================");
-    console.log("PARENT - GET ME");
-    console.log("=================================================");
+    console.log("============================================================");
+    console.log("                       PARENT GET ME");
+    console.log("============================================================");
     console.log("PARENT ID:", parentId);
     console.log("CHURCH ID:", churchId);
 
     if (!parentId || !churchId) {
-      return res.status(401).json({
+      return res.status(403).json({
         success: false,
         message: "Không xác định được tài khoản phụ huynh",
       });
@@ -160,35 +370,32 @@ exports.getMe = async (req, res) => {
     if (!parent) {
       return res.status(403).json({
         success: false,
-        message: "Tài khoản phụ huynh không hợp lệ",
+        message: "Tài khoản không phải phụ huynh hoặc không thuộc giáo xứ",
       });
     }
 
-    const [children] = await db.query(
-      `
-      SELECT COUNT(*) AS total
-      FROM parent_students ps
-
-      INNER JOIN students s
-        ON s.id = ps.student_id
-
-      WHERE ps.parent_id = ?
-        AND s.church_id = ?
-      `,
-      [parentId, churchId],
-    );
+    if (!parent.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh đã bị khóa",
+      });
+    }
 
     return res.json({
       success: true,
       data: {
         id: parent.id,
+        church_id: parent.church_id,
         username: parent.username,
         full_name: parent.full_name,
-        phone: parent.phone || null,
-        email: parent.email || null,
-        role: parent.role || null,
-        status: parent.status || null,
-        total_children: Number(children[0]?.total || 0),
+        phone: parent.phone,
+        email: parent.email,
+        role: parent.role,
+        account_type: parent.account_type,
+        is_active: Boolean(parent.is_active),
+        avatar: parent.avatar,
+        created_at: parent.created_at,
+        updated_at: parent.updated_at,
       },
     });
   } catch (error) {
@@ -196,7 +403,7 @@ exports.getMe = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Lỗi lấy thông tin phụ huynh",
+      message: "Không thể tải thông tin phụ huynh",
       error: error.message,
     });
   }
@@ -204,9 +411,7 @@ exports.getMe = async (req, res) => {
 
 /**
  * =========================================================
- * GET /api/parent/children
- *
- * Lấy toàn bộ con của phụ huynh
+ * GET CHILDREN
  * =========================================================
  */
 
@@ -216,14 +421,14 @@ exports.getChildren = async (req, res) => {
     const churchId = getChurchId(req);
 
     console.log("");
-    console.log("=================================================");
-    console.log("PARENT - GET CHILDREN");
-    console.log("=================================================");
+    console.log("============================================================");
+    console.log("                    PARENT GET CHILDREN");
+    console.log("============================================================");
     console.log("PARENT ID:", parentId);
     console.log("CHURCH ID:", churchId);
 
     if (!parentId || !churchId) {
-      return res.status(401).json({
+      return res.status(403).json({
         success: false,
         message: "Không xác định được tài khoản phụ huynh",
       });
@@ -238,11 +443,25 @@ exports.getChildren = async (req, res) => {
       });
     }
 
-    const [children] = await db.query(
+    if (!parent.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh đã bị khóa",
+      });
+    }
+
+    const [students] = await db.query(
       `
       SELECT
+        ps.id AS parent_student_id,
+        ps.parent_id,
+        ps.student_id,
+        ps.relationship,
+
         s.id,
+        s.church_id,
         s.code,
+        s.qr_token,
         s.name,
         s.gender,
         s.date_of_birth,
@@ -252,222 +471,103 @@ exports.getChildren = async (req, res) => {
         s.parish,
         s.avatar,
         s.status,
-
-        ps.relationship,
-        ps.is_primary
+        s.catechism_level,
+        s.catechism_status,
+        s.enrollment_date
 
       FROM parent_students ps
 
       INNER JOIN students s
         ON s.id = ps.student_id
+        AND s.church_id = ps.church_id
 
       WHERE ps.parent_id = ?
-        AND s.church_id = ?
+        AND ps.church_id = ?
 
       ORDER BY
-        ps.is_primary DESC,
-        s.name ASC
+        s.name ASC,
+        s.id ASC
       `,
       [parentId, churchId],
     );
 
-    console.log("TOTAL CHILDREN:", children.length);
+    console.log("CHILD COUNT:", students.length);
 
-    const result = [];
+    const children = [];
 
-    for (const child of children) {
-      /**
-       * ===============================================
-       * CURRENT CLASS
-       * ===============================================
-       */
+    for (const student of students) {
+      const classes = await getStudentClasses(student.id, churchId);
 
-      const [classRows] = await db.query(
-        `
-        SELECT
-          c.id,
-          c.name,
-          c.code,
-          c.category,
-          c.status,
-          c.room,
-          c.day_of_week,
-          c.start_time,
-          c.end_time,
-          c.start_date,
-          c.end_date
+      const attendance = await getAttendanceSummary(student.id, churchId);
 
-        FROM class_students cs
+      const latestResult = await getLatestResult(student.id, churchId);
 
-        INNER JOIN classes c
-          ON c.id = cs.class_id
+      children.push({
+        id: student.id,
+        code: student.code,
+        qr_token: student.qr_token,
 
-        WHERE cs.student_id = ?
-          AND cs.status = 'studying'
-          AND c.church_id = ?
+        name: student.name,
+        gender: student.gender,
+        date_of_birth: student.date_of_birth,
 
-        ORDER BY cs.joined_at DESC
-        LIMIT 1
-        `,
-        [child.id, churchId],
-      );
+        phone: student.phone,
+        email: student.email,
+        address: student.address,
+        parish: student.parish,
 
-      const classData = classRows.length ? classRows[0] : null;
+        avatar: student.avatar,
+        status: student.status,
 
-      /**
-       * ===============================================
-       * ATTENDANCE SUMMARY
-       * ===============================================
-       */
+        catechism_level: student.catechism_level,
+        catechism_status: student.catechism_status,
+        enrollment_date: student.enrollment_date,
 
-      const [attendanceRows] = await db.query(
-        `
-        SELECT
-          COUNT(*) AS total,
+        relationship: student.relationship,
 
-          SUM(
-            CASE
-              WHEN status = 'present'
-              THEN 1 ELSE 0
-            END
-          ) AS present,
+        classes: classes.map((item) => ({
+          id: item.id,
+          name: item.name,
+          code: item.code,
+          category: item.category,
+          catechist_id: item.catechist_id,
+          description: item.description,
+          start_date: item.start_date,
+          end_date: item.end_date,
+          status: item.status,
 
-          SUM(
-            CASE
-              WHEN status = 'absent'
-              THEN 1 ELSE 0
-            END
-          ) AS absent,
+          class_student_id: item.class_student_id,
+          class_student_status: item.class_student_status,
+          joined_at: item.joined_at,
+          left_at: item.left_at,
+        })),
 
-          SUM(
-            CASE
-              WHEN status = 'late'
-              THEN 1 ELSE 0
-            END
-          ) AS late,
+        class:
+          classes.length > 0
+            ? {
+                id: classes[0].id,
+                name: classes[0].name,
+                code: classes[0].code,
+                category: classes[0].category,
+                catechist_id: classes[0].catechist_id,
+                description: classes[0].description,
+                start_date: classes[0].start_date,
+                end_date: classes[0].end_date,
+                status: classes[0].status,
+              }
+            : null,
 
-          SUM(
-            CASE
-              WHEN status = 'excused'
-              THEN 1 ELSE 0
-            END
-          ) AS excused
+        attendance,
 
-        FROM attendances
-
-        WHERE student_id = ?
-          AND church_id = ?
-        `,
-        [child.id, churchId],
-      );
-
-      const attendance = attendanceRows[0] || {};
-
-      const totalAttendance = Number(attendance.total || 0);
-
-      const present = Number(attendance.present || 0);
-
-      const late = Number(attendance.late || 0);
-
-      const excused = Number(attendance.excused || 0);
-
-      const absent = Number(attendance.absent || 0);
-
-      const attended = present + late + excused;
-
-      const attendanceRate =
-        totalAttendance > 0
-          ? Number(((attended / totalAttendance) * 100).toFixed(1))
-          : 0;
-
-      /**
-       * ===============================================
-       * LATEST RESULT
-       * ===============================================
-       */
-
-      const [resultRows] = await db.query(
-        `
-        SELECT
-          id,
-          score,
-          exam_type,
-          exam_date,
-          note
-
-        FROM results
-
-        WHERE student_id = ?
-          AND church_id = ?
-
-        ORDER BY exam_date DESC, id DESC
-        LIMIT 1
-        `,
-        [child.id, churchId],
-      );
-
-      const latestResult = resultRows.length ? resultRows[0] : null;
-
-      result.push({
-        id: child.id,
-        code: child.code,
-        name: child.name,
-        gender: child.gender,
-        date_of_birth: child.date_of_birth,
-        phone: child.phone || null,
-        email: child.email || null,
-        address: child.address || null,
-        parish: child.parish || null,
-        avatar: child.avatar || null,
-        status: child.status,
-
-        relationship: child.relationship || null,
-
-        is_primary: Boolean(child.is_primary),
-
-        class: classData
-          ? {
-              id: classData.id,
-              name: classData.name,
-              code: classData.code,
-              category: classData.category || null,
-              status: classData.status || null,
-              room: classData.room || null,
-              day_of_week: classData.day_of_week,
-              start_time: classData.start_time,
-              end_time: classData.end_time,
-              start_date: classData.start_date,
-              end_date: classData.end_date,
-            }
-          : null,
-
-        attendance: {
-          total: totalAttendance,
-          present,
-          absent,
-          late,
-          excused,
-          attended,
-          rate: attendanceRate,
-        },
-
-        latest_result: latestResult
-          ? {
-              id: latestResult.id,
-              score: latestResult.score,
-              exam_type: latestResult.exam_type,
-              exam_date: latestResult.exam_date,
-              note: latestResult.note || null,
-            }
-          : null,
+        latest_result: latestResult,
       });
     }
 
     return res.json({
       success: true,
       data: {
-        total: result.length,
-        children: result,
+        children,
+        total: children.length,
       },
     });
   } catch (error) {
@@ -475,7 +575,7 @@ exports.getChildren = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Lỗi lấy danh sách con",
+      message: "Không thể tải danh sách con",
       error: error.message,
     });
   }
@@ -483,9 +583,7 @@ exports.getChildren = async (req, res) => {
 
 /**
  * =========================================================
- * GET /api/parent/children/:studentId
- *
- * Chi tiết một học sinh
+ * GET CHILD DETAIL
  * =========================================================
  */
 
@@ -496,15 +594,15 @@ exports.getChild = async (req, res) => {
     const studentId = toInt(req.params.studentId);
 
     console.log("");
-    console.log("=================================================");
-    console.log("PARENT - GET CHILD DETAIL");
-    console.log("=================================================");
+    console.log("============================================================");
+    console.log("                    PARENT GET CHILD");
+    console.log("============================================================");
     console.log("PARENT ID:", parentId);
-    console.log("STUDENT ID:", studentId);
     console.log("CHURCH ID:", churchId);
+    console.log("STUDENT ID:", studentId);
 
     if (!parentId || !churchId) {
-      return res.status(401).json({
+      return res.status(403).json({
         success: false,
         message: "Không xác định được tài khoản phụ huynh",
       });
@@ -513,188 +611,117 @@ exports.getChild = async (req, res) => {
     if (!studentId) {
       return res.status(400).json({
         success: false,
-        message: "studentId không hợp lệ",
+        message: "Mã học sinh không hợp lệ",
+      });
+    }
+
+    const parent = await checkParentAccount(parentId, churchId);
+
+    if (!parent) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh không hợp lệ",
+      });
+    }
+
+    if (!parent.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh đã bị khóa",
       });
     }
 
     const child = await checkParentStudent(parentId, studentId, churchId);
 
     if (!child) {
-      return res.status(403).json({
+      return res.status(404).json({
         success: false,
-        message: "Bạn không có quyền xem học sinh này",
+        message: "Học sinh không thuộc tài khoản phụ huynh",
       });
     }
 
-    /**
-     * ===============================================
-     * CURRENT CLASSES
-     * ===============================================
-     */
+    const classes = await getStudentClasses(studentId, churchId);
 
-    const [classes] = await db.query(
-      `
-      SELECT
-        c.id,
-        c.name,
-        c.code,
-        c.category,
-        c.status,
-        c.room,
-        c.day_of_week,
-        c.start_time,
-        c.end_time,
-        c.start_date,
-        c.end_date
+    const attendance = await getAttendanceSummary(studentId, churchId);
 
-      FROM class_students cs
-
-      INNER JOIN classes c
-        ON c.id = cs.class_id
-
-      WHERE cs.student_id = ?
-        AND cs.status = 'studying'
-        AND c.church_id = ?
-
-      ORDER BY cs.joined_at DESC
-      `,
-      [studentId, churchId],
-    );
-
-    /**
-     * ===============================================
-     * ATTENDANCE SUMMARY
-     * ===============================================
-     */
-
-    const [attendanceRows] = await db.query(
-      `
-      SELECT
-        COUNT(*) AS total,
-
-        SUM(
-          CASE
-            WHEN status = 'present'
-            THEN 1 ELSE 0
-          END
-        ) AS present,
-
-        SUM(
-          CASE
-            WHEN status = 'absent'
-            THEN 1 ELSE 0
-          END
-        ) AS absent,
-
-        SUM(
-          CASE
-            WHEN status = 'late'
-            THEN 1 ELSE 0
-          END
-        ) AS late,
-
-        SUM(
-          CASE
-            WHEN status = 'excused'
-            THEN 1 ELSE 0
-          END
-        ) AS excused
-
-      FROM attendances
-
-      WHERE student_id = ?
-        AND church_id = ?
-      `,
-      [studentId, churchId],
-    );
-
-    const attendance = attendanceRows[0] || {};
-
-    const total = Number(attendance.total || 0);
-
-    const present = Number(attendance.present || 0);
-
-    const absent = Number(attendance.absent || 0);
-
-    const late = Number(attendance.late || 0);
-
-    const excused = Number(attendance.excused || 0);
-
-    const attended = present + late + excused;
-
-    const rate = total > 0 ? Number(((attended / total) * 100).toFixed(1)) : 0;
-
-    /**
-     * ===============================================
-     * LATEST RESULT
-     * ===============================================
-     */
-
-    const [resultRows] = await db.query(
-      `
-      SELECT
-        id,
-        score,
-        exam_type,
-        exam_date,
-        note
-
-      FROM results
-
-      WHERE student_id = ?
-        AND church_id = ?
-
-      ORDER BY exam_date DESC, id DESC
-      LIMIT 1
-      `,
-      [studentId, churchId],
-    );
-
-    /**
-     * ===============================================
-     * FAMILY INFORMATION
-     * ===============================================
-     */
+    const latestResult = await getLatestResult(studentId, churchId);
 
     const family = {
       father: {
-        name: child.father_name || null,
-        phone: child.father_phone || null,
+        name: child.father_name,
+        phone: child.father_phone,
       },
 
       mother: {
-        name: child.mother_name || null,
-        phone: child.mother_phone || null,
+        name: child.mother_name,
+        phone: child.mother_phone,
       },
 
       guardian: {
-        name: child.guardian_name || null,
-        phone: child.guardian_phone || null,
-        relationship: child.guardian_relationship || null,
+        name: child.guardian_name,
+        phone: child.guardian_phone,
+        relationship: child.guardian_relationship,
       },
+    };
+
+    const student = {
+      id: child.id,
+      church_id: child.church_id,
+
+      code: child.code,
+      qr_token: child.qr_token,
+
+      name: child.name,
+      gender: child.gender,
+      date_of_birth: child.date_of_birth,
+      birth_place: child.birth_place,
+      nationality: child.nationality,
+
+      phone: child.phone,
+      email: child.email,
+      address: child.address,
+      parish: child.parish,
+
+      avatar: child.avatar,
+      status: child.status,
+
+      catechism_level: child.catechism_level,
+      catechism_status: child.catechism_status,
+      enrollment_date: child.enrollment_date,
+
+      note: child.note,
+
+      baptism: {
+        name: child.baptism_name,
+        date: child.baptism_date,
+        place: child.baptism_place,
+        parish: child.baptism_parish,
+        certificate_no: child.baptism_certificate_no,
+      },
+
+      first_communion: {
+        date: child.first_communion_date,
+        place: child.first_communion_place,
+      },
+
+      confirmation: {
+        date: child.confirmation_date,
+        place: child.confirmation_place,
+        saint_name: child.confirmation_saint_name,
+      },
+
+      saint_name: child.saint_name,
+
+      created_at: child.created_at,
+      updated_at: child.updated_at,
     };
 
     return res.json({
       success: true,
-
       data: {
-        student: {
-          id: child.id,
-          code: child.code,
-          name: child.name,
-          gender: child.gender,
-          date_of_birth: child.date_of_birth,
-          phone: child.phone || null,
-          email: child.email || null,
-          address: child.address || null,
-          parish: child.parish || null,
-          avatar: child.avatar || null,
-          status: child.status,
-        },
+        student,
 
-        relationship: child.relationship || null,
-
-        is_primary: Boolean(child.is_primary),
+        relationship: child.relationship,
 
         family,
 
@@ -702,27 +729,22 @@ exports.getChild = async (req, res) => {
           id: item.id,
           name: item.name,
           code: item.code,
-          category: item.category || null,
-          status: item.status || null,
-          room: item.room || null,
-          day_of_week: item.day_of_week,
-          start_time: item.start_time,
-          end_time: item.end_time,
+          category: item.category,
+          catechist_id: item.catechist_id,
+          description: item.description,
           start_date: item.start_date,
           end_date: item.end_date,
+          status: item.status,
+
+          class_student_id: item.class_student_id,
+          class_student_status: item.class_student_status,
+          joined_at: item.joined_at,
+          left_at: item.left_at,
         })),
 
-        attendance: {
-          total,
-          present,
-          absent,
-          late,
-          excused,
-          attended,
-          rate,
-        },
+        attendance,
 
-        latest_result: resultRows.length ? resultRows[0] : null,
+        latest_result: latestResult,
       },
     });
   } catch (error) {
@@ -730,7 +752,7 @@ exports.getChild = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Lỗi lấy thông tin học sinh",
+      message: "Không thể tải thông tin học sinh",
       error: error.message,
     });
   }
@@ -738,17 +760,7 @@ exports.getChild = async (req, res) => {
 
 /**
  * =========================================================
- * GET /api/parent/children/:studentId/attendance
- *
- * Điểm danh
- *
- * Query:
- * ?type=catechism
- * ?type=mass
- * ?from=2026-09-01
- * ?to=2026-09-30
- * ?page=1
- * ?pageSize=20
+ * GET CHILD ATTENDANCE
  * =========================================================
  */
 
@@ -758,29 +770,33 @@ exports.getChildAttendance = async (req, res) => {
     const churchId = getChurchId(req);
     const studentId = toInt(req.params.studentId);
 
-    const type = req.query.type || null;
+    const attendanceType = req.query.type || null;
 
-    const from = normalizeDate(req.query.from);
-    const to = normalizeDate(req.query.to);
+    const fromDate = normalizeDate(req.query.from);
 
-    const page = Math.max(toInt(req.query.page, 1), 1);
+    const toDate = normalizeDate(req.query.to);
 
-    const pageSize = Math.min(Math.max(toInt(req.query.pageSize, 20), 1), 100);
+    const page = normalizePage(req.query.page, 1);
+
+    const pageSize = normalizePageSize(req.query.pageSize, 20);
 
     const offset = (page - 1) * pageSize;
 
     console.log("");
-    console.log("=================================================");
-    console.log("PARENT - GET ATTENDANCE");
-    console.log("=================================================");
+    console.log("============================================================");
+    console.log("                PARENT GET CHILD ATTENDANCE");
+    console.log("============================================================");
     console.log("PARENT ID:", parentId);
+    console.log("CHURCH ID:", churchId);
     console.log("STUDENT ID:", studentId);
-    console.log("TYPE:", type);
-    console.log("FROM:", from);
-    console.log("TO:", to);
+    console.log("TYPE:", attendanceType);
+    console.log("FROM:", fromDate);
+    console.log("TO:", toDate);
+    console.log("PAGE:", page);
+    console.log("PAGE SIZE:", pageSize);
 
     if (!parentId || !churchId) {
-      return res.status(401).json({
+      return res.status(403).json({
         success: false,
         message: "Không xác định được tài khoản phụ huynh",
       });
@@ -789,54 +805,78 @@ exports.getChildAttendance = async (req, res) => {
     if (!studentId) {
       return res.status(400).json({
         success: false,
-        message: "studentId không hợp lệ",
+        message: "Mã học sinh không hợp lệ",
+      });
+    }
+
+    if (attendanceType && !["mass", "catechism"].includes(attendanceType)) {
+      return res.status(400).json({
+        success: false,
+        message: "Loại điểm danh không hợp lệ",
+      });
+    }
+
+    const parent = await checkParentAccount(parentId, churchId);
+
+    if (!parent) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh không hợp lệ",
+      });
+    }
+
+    if (!parent.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh đã bị khóa",
       });
     }
 
     const child = await checkParentStudent(parentId, studentId, churchId);
 
     if (!child) {
-      return res.status(403).json({
+      return res.status(404).json({
         success: false,
-        message: "Bạn không có quyền xem học sinh này",
+        message: "Học sinh không thuộc tài khoản phụ huynh",
       });
     }
 
     /**
-     * ===============================================
-     * BUILD WHERE
-     * ===============================================
-     */
-
-    const where = ["a.student_id = ?", "a.church_id = ?"];
-
-    const params = [studentId, churchId];
-
-    if (type) {
-      where.push("a.attendance_type = ?");
-
-      params.push(type);
-    }
-
-    if (from) {
-      where.push("DATE(a.attendance_date) >= ?");
-
-      params.push(from);
-    }
-
-    if (to) {
-      where.push("DATE(a.attendance_date) <= ?");
-
-      params.push(to);
-    }
-
-    const whereSql = where.join(" AND ");
-
-    /**
-     * ===============================================
+     * ---------------------------------------------------------
      * SUMMARY
-     * ===============================================
+     * ---------------------------------------------------------
      */
+
+    const summaryParams = [studentId, churchId];
+
+    let summaryWhere = `
+      student_id = ?
+      AND church_id = ?
+    `;
+
+    if (attendanceType) {
+      summaryWhere += `
+        AND attendance_type = ?
+      `;
+
+      summaryParams.push(attendanceType);
+    }
+
+    if (fromDate) {
+      summaryWhere += `
+        AND attendance_date >= ?
+      `;
+
+      summaryParams.push(fromDate);
+    }
+
+    if (toDate) {
+      summaryWhere += `
+        AND attendance_date <= ?
+      `;
+
+      summaryParams.push(toDate);
+    }
 
     const [summaryRows] = await db.query(
       `
@@ -845,91 +885,164 @@ exports.getChildAttendance = async (req, res) => {
 
         SUM(
           CASE
-            WHEN a.status = 'present'
-            THEN 1 ELSE 0
+            WHEN status = 'present' THEN 1
+            ELSE 0
           END
         ) AS present,
 
         SUM(
           CASE
-            WHEN a.status = 'absent'
-            THEN 1 ELSE 0
+            WHEN status = 'absent' THEN 1
+            ELSE 0
           END
         ) AS absent,
 
         SUM(
           CASE
-            WHEN a.status = 'late'
-            THEN 1 ELSE 0
+            WHEN status = 'late' THEN 1
+            ELSE 0
           END
         ) AS late,
 
         SUM(
           CASE
-            WHEN a.status = 'excused'
-            THEN 1 ELSE 0
+            WHEN status = 'excused' THEN 1
+            ELSE 0
           END
         ) AS excused
 
-      FROM attendances a
+      FROM attendances
 
-      WHERE ${whereSql}
+      WHERE ${summaryWhere}
       `,
-      params,
+      summaryParams,
     );
 
-    const summary = summaryRows[0] || {};
+    const summaryRow = summaryRows[0] || {};
 
-    const total = Number(summary.total || 0);
+    const total = Number(summaryRow.total) || 0;
 
-    const present = Number(summary.present || 0);
+    const present = Number(summaryRow.present) || 0;
 
-    const absent = Number(summary.absent || 0);
+    const absent = Number(summaryRow.absent) || 0;
 
-    const late = Number(summary.late || 0);
+    const late = Number(summaryRow.late) || 0;
 
-    const excused = Number(summary.excused || 0);
+    const excused = Number(summaryRow.excused) || 0;
 
-    const attended = present + late + excused;
+    const attended = present + late;
 
-    const rate = total > 0 ? Number(((attended / total) * 100).toFixed(1)) : 0;
+    const rate = total > 0 ? Number(((attended / total) * 100).toFixed(2)) : 0;
 
     /**
-     * ===============================================
+     * ---------------------------------------------------------
      * TOTAL RECORDS
-     * ===============================================
+     * ---------------------------------------------------------
      */
+
+    const countParams = [studentId, churchId];
+
+    let countWhere = `
+      student_id = ?
+      AND church_id = ?
+    `;
+
+    if (attendanceType) {
+      countWhere += `
+        AND attendance_type = ?
+      `;
+
+      countParams.push(attendanceType);
+    }
+
+    if (fromDate) {
+      countWhere += `
+        AND attendance_date >= ?
+      `;
+
+      countParams.push(fromDate);
+    }
+
+    if (toDate) {
+      countWhere += `
+        AND attendance_date <= ?
+      `;
+
+      countParams.push(toDate);
+    }
 
     const [countRows] = await db.query(
       `
       SELECT COUNT(*) AS total
-      FROM attendances a
-      WHERE ${whereSql}
+      FROM attendances
+      WHERE ${countWhere}
       `,
-      params,
+      countParams,
     );
 
-    const totalRecords = Number(countRows[0]?.total || 0);
+    const totalRecords = Number(countRows[0]?.total) || 0;
+
+    const totalPages =
+      totalRecords > 0 ? Math.ceil(totalRecords / pageSize) : 0;
 
     /**
-     * ===============================================
-     * DATA
-     * ===============================================
+     * ---------------------------------------------------------
+     * RECORDS
+     * ---------------------------------------------------------
      */
+
+    const recordParams = [studentId, churchId];
+
+    let recordWhere = `
+      a.student_id = ?
+      AND a.church_id = ?
+    `;
+
+    if (attendanceType) {
+      recordWhere += `
+        AND a.attendance_type = ?
+      `;
+
+      recordParams.push(attendanceType);
+    }
+
+    if (fromDate) {
+      recordWhere += `
+        AND a.attendance_date >= ?
+      `;
+
+      recordParams.push(fromDate);
+    }
+
+    if (toDate) {
+      recordWhere += `
+        AND a.attendance_date <= ?
+      `;
+
+      recordParams.push(toDate);
+    }
+
+    recordParams.push(pageSize, offset);
 
     const [records] = await db.query(
       `
       SELECT
         a.id,
-        a.student_id,
+        a.church_id,
         a.class_id,
+        a.student_id,
+        a.teacher_id,
         a.attendance_date,
         a.attendance_type,
         a.status,
+        a.check_in_time,
+        a.note,
+        a.created_at,
+        a.updated_at,
 
         c.name AS class_name,
         c.code AS class_code,
-        c.room
+        c.category AS class_category
 
       FROM attendances a
 
@@ -937,15 +1050,16 @@ exports.getChildAttendance = async (req, res) => {
         ON c.id = a.class_id
         AND c.church_id = a.church_id
 
-      WHERE ${whereSql}
+      WHERE ${recordWhere}
 
       ORDER BY
         a.attendance_date DESC,
         a.id DESC
 
-      LIMIT ? OFFSET ?
+      LIMIT ?
+      OFFSET ?
       `,
-      [...params, pageSize, offset],
+      recordParams,
     );
 
     return res.json({
@@ -962,32 +1076,22 @@ exports.getChildAttendance = async (req, res) => {
           rate,
         },
 
-        records: records.map((item) => ({
-          id: item.id,
-          student_id: item.student_id,
-          class_id: item.class_id,
-          class_name: item.class_name || null,
-          class_code: item.class_code || null,
-          room: item.room || null,
-          attendance_date: item.attendance_date,
-          attendance_type: item.attendance_type,
-          status: item.status,
-        })),
+        records,
 
         pagination: {
           page,
           pageSize,
           total: totalRecords,
-          totalPages: Math.ceil(totalRecords / pageSize),
+          totalPages,
         },
       },
     });
   } catch (error) {
-    console.error("PARENT GET ATTENDANCE ERROR:", error);
+    console.error("PARENT GET CHILD ATTENDANCE ERROR:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Lỗi lấy dữ liệu điểm danh",
+      message: "Không thể tải dữ liệu điểm danh",
       error: error.message,
     });
   }
@@ -995,14 +1099,7 @@ exports.getChildAttendance = async (req, res) => {
 
 /**
  * =========================================================
- * GET /api/parent/children/:studentId/results
- *
- * Kết quả học tập
- *
- * Query:
- * ?exam_type=paper
- * ?from=2026-01-01
- * ?to=2026-12-31
+ * GET CHILD RESULTS
  * =========================================================
  */
 
@@ -1014,18 +1111,23 @@ exports.getChildResults = async (req, res) => {
 
     const examType = req.query.exam_type || null;
 
-    const from = normalizeDate(req.query.from);
-    const to = normalizeDate(req.query.to);
+    const fromDate = normalizeDate(req.query.from);
+
+    const toDate = normalizeDate(req.query.to);
 
     console.log("");
-    console.log("=================================================");
-    console.log("PARENT - GET RESULTS");
-    console.log("=================================================");
+    console.log("============================================================");
+    console.log("                  PARENT GET CHILD RESULTS");
+    console.log("============================================================");
     console.log("PARENT ID:", parentId);
+    console.log("CHURCH ID:", churchId);
     console.log("STUDENT ID:", studentId);
+    console.log("EXAM TYPE:", examType);
+    console.log("FROM:", fromDate);
+    console.log("TO:", toDate);
 
     if (!parentId || !churchId) {
-      return res.status(401).json({
+      return res.status(403).json({
         success: false,
         message: "Không xác định được tài khoản phụ huynh",
       });
@@ -1034,83 +1136,118 @@ exports.getChildResults = async (req, res) => {
     if (!studentId) {
       return res.status(400).json({
         success: false,
-        message: "studentId không hợp lệ",
+        message: "Mã học sinh không hợp lệ",
+      });
+    }
+
+    if (examType && !["online", "paper"].includes(examType)) {
+      return res.status(400).json({
+        success: false,
+        message: "Loại bài thi không hợp lệ",
+      });
+    }
+
+    const parent = await checkParentAccount(parentId, churchId);
+
+    if (!parent) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh không hợp lệ",
+      });
+    }
+
+    if (!parent.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh đã bị khóa",
       });
     }
 
     const child = await checkParentStudent(parentId, studentId, churchId);
 
     if (!child) {
-      return res.status(403).json({
+      return res.status(404).json({
         success: false,
-        message: "Bạn không có quyền xem học sinh này",
+        message: "Học sinh không thuộc tài khoản phụ huynh",
       });
     }
 
-    const where = ["r.student_id = ?", "r.church_id = ?"];
-
     const params = [studentId, churchId];
 
+    let where = `
+      student_id = ?
+      AND church_id = ?
+    `;
+
     if (examType) {
-      where.push("r.exam_type = ?");
+      where += `
+        AND exam_type = ?
+      `;
 
       params.push(examType);
     }
 
-    if (from) {
-      where.push("DATE(r.exam_date) >= ?");
+    if (fromDate) {
+      where += `
+        AND exam_date >= ?
+      `;
 
-      params.push(from);
+      params.push(fromDate);
     }
 
-    if (to) {
-      where.push("DATE(r.exam_date) <= ?");
+    if (toDate) {
+      where += `
+        AND exam_date <= ?
+      `;
 
-      params.push(to);
+      params.push(toDate);
     }
 
-    const whereSql = where.join(" AND ");
-
-    const [rows] = await db.query(
+    const [records] = await db.query(
       `
       SELECT
-        r.id,
-        r.student_id,
-        r.score,
-        r.exam_type,
-        r.exam_date,
-        r.note
+        id,
+        student_id,
+        grading_rule_id,
+        grading_rule_item_id,
+        score,
+        exam_type,
+        exam_date,
+        note,
+        created_at,
+        updated_at
 
-      FROM results r
+      FROM results
 
-      WHERE ${whereSql}
+      WHERE ${where}
 
       ORDER BY
-        r.exam_date DESC,
-        r.id DESC
+        exam_date DESC,
+        id DESC
       `,
       params,
     );
 
-    const scores = rows
+    const total = records.length;
+
+    const scores = records
       .map((item) => Number(item.score))
       .filter((score) => Number.isFinite(score));
 
-    const total = rows.length;
+    const average =
+      scores.length > 0
+        ? Number(
+            (
+              scores.reduce((sum, score) => sum + score, 0) / scores.length
+            ).toFixed(2),
+          )
+        : 0;
 
-    const average = scores.length
-      ? Number(
-          (
-            scores.reduce((sum, score) => sum + score, 0) / scores.length
-          ).toFixed(2),
-        )
-      : 0;
+    const highest = scores.length > 0 ? Math.max(...scores) : null;
 
-    const highest = scores.length ? Math.max(...scores) : null;
+    const lowest = scores.length > 0 ? Math.min(...scores) : null;
 
-    const lowest = scores.length ? Math.min(...scores) : null;
-
-    const latest = rows.length ? rows[0] : null;
+    const latest = records.length > 0 ? records[0] : null;
 
     return res.json({
       success: true,
@@ -1125,22 +1262,15 @@ exports.getChildResults = async (req, res) => {
 
         latest,
 
-        records: rows.map((item) => ({
-          id: item.id,
-          student_id: item.student_id,
-          score: Number(item.score),
-          exam_type: item.exam_type,
-          exam_date: item.exam_date,
-          note: item.note || null,
-        })),
+        records,
       },
     });
   } catch (error) {
-    console.error("PARENT GET RESULTS ERROR:", error);
+    console.error("PARENT GET CHILD RESULTS ERROR:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Lỗi lấy kết quả học tập",
+      message: "Không thể tải kết quả học tập",
       error: error.message,
     });
   }
@@ -1148,10 +1278,18 @@ exports.getChildResults = async (req, res) => {
 
 /**
  * =========================================================
- * GET /api/parent/children/:studentId/schedule
- *
- * Lịch học
+ * GET CHILD SCHEDULE
  * =========================================================
+ *
+ * LƯU Ý:
+ * Bảng classes hiện tại KHÔNG có:
+ * room
+ * day_of_week
+ * start_time
+ * end_time
+ *
+ * Vì vậy API chỉ trả các thông tin lịch
+ * thực sự có trong database.
  */
 
 exports.getChildSchedule = async (req, res) => {
@@ -1161,14 +1299,15 @@ exports.getChildSchedule = async (req, res) => {
     const studentId = toInt(req.params.studentId);
 
     console.log("");
-    console.log("=================================================");
-    console.log("PARENT - GET SCHEDULE");
-    console.log("=================================================");
+    console.log("============================================================");
+    console.log("                 PARENT GET CHILD SCHEDULE");
+    console.log("============================================================");
     console.log("PARENT ID:", parentId);
+    console.log("CHURCH ID:", churchId);
     console.log("STUDENT ID:", studentId);
 
     if (!parentId || !churchId) {
-      return res.status(401).json({
+      return res.status(403).json({
         success: false,
         message: "Không xác định được tài khoản phụ huynh",
       });
@@ -1177,49 +1316,36 @@ exports.getChildSchedule = async (req, res) => {
     if (!studentId) {
       return res.status(400).json({
         success: false,
-        message: "studentId không hợp lệ",
+        message: "Mã học sinh không hợp lệ",
+      });
+    }
+
+    const parent = await checkParentAccount(parentId, churchId);
+
+    if (!parent) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh không hợp lệ",
+      });
+    }
+
+    if (!parent.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh đã bị khóa",
       });
     }
 
     const child = await checkParentStudent(parentId, studentId, churchId);
 
     if (!child) {
-      return res.status(403).json({
+      return res.status(404).json({
         success: false,
-        message: "Bạn không có quyền xem học sinh này",
+        message: "Học sinh không thuộc tài khoản phụ huynh",
       });
     }
 
-    const [rows] = await db.query(
-      `
-      SELECT
-        c.id,
-        c.name,
-        c.code,
-        c.category,
-        c.status,
-        c.room,
-        c.day_of_week,
-        c.start_time,
-        c.end_time,
-        c.start_date,
-        c.end_date
-
-      FROM class_students cs
-
-      INNER JOIN classes c
-        ON c.id = cs.class_id
-
-      WHERE cs.student_id = ?
-        AND cs.status = 'studying'
-        AND c.church_id = ?
-
-      ORDER BY
-        c.day_of_week ASC,
-        c.start_time ASC
-      `,
-      [studentId, churchId],
-    );
+    const classes = await getStudentClasses(studentId, churchId);
 
     return res.json({
       success: true,
@@ -1229,29 +1355,37 @@ exports.getChildSchedule = async (req, res) => {
           id: child.id,
           code: child.code,
           name: child.name,
+          avatar: child.avatar,
         },
 
-        schedules: rows.map((item) => ({
+        schedules: classes.map((item) => ({
           id: item.id,
-          class_name: item.name,
-          class_code: item.code,
-          category: item.category || null,
-          status: item.status || null,
-          room: item.room || null,
-          day_of_week: item.day_of_week,
-          start_time: item.start_time,
-          end_time: item.end_time,
+          name: item.name,
+          code: item.code,
+          category: item.category,
+          catechist_id: item.catechist_id,
+          description: item.description,
+
           start_date: item.start_date,
           end_date: item.end_date,
+
+          status: item.status,
+
+          class_student_id: item.class_student_id,
+
+          class_student_status: item.class_student_status,
+
+          joined_at: item.joined_at,
+          left_at: item.left_at,
         })),
       },
     });
   } catch (error) {
-    console.error("PARENT GET SCHEDULE ERROR:", error);
+    console.error("PARENT GET CHILD SCHEDULE ERROR:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Lỗi lấy lịch học",
+      message: "Không thể tải lịch học",
       error: error.message,
     });
   }
@@ -1259,13 +1393,16 @@ exports.getChildSchedule = async (req, res) => {
 
 /**
  * =========================================================
- * GET /api/parent/children/:studentId/certificates
- *
- * Chứng chỉ
- *
- * LƯU Ý:
- * Phần này phụ thuộc schema certificates thực tế.
+ * GET CHILD CERTIFICATES
  * =========================================================
+ *
+ * Bảng certificates chưa được cung cấp schema.
+ *
+ * Controller sẽ thử truy vấn theo schema cũ.
+ * Nếu bảng chưa tồn tại -> trả [] thay vì làm API chết.
+ *
+ * Khi có DESCRIBE certificates,
+ * cần chuẩn hóa riêng phần này theo DB thực tế.
  */
 
 exports.getChildCertificates = async (req, res) => {
@@ -1275,14 +1412,15 @@ exports.getChildCertificates = async (req, res) => {
     const studentId = toInt(req.params.studentId);
 
     console.log("");
-    console.log("=================================================");
-    console.log("PARENT - GET CERTIFICATES");
-    console.log("=================================================");
+    console.log("============================================================");
+    console.log("               PARENT GET CHILD CERTIFICATES");
+    console.log("============================================================");
     console.log("PARENT ID:", parentId);
+    console.log("CHURCH ID:", churchId);
     console.log("STUDENT ID:", studentId);
 
     if (!parentId || !churchId) {
-      return res.status(401).json({
+      return res.status(403).json({
         success: false,
         message: "Không xác định được tài khoản phụ huynh",
       });
@@ -1291,108 +1429,96 @@ exports.getChildCertificates = async (req, res) => {
     if (!studentId) {
       return res.status(400).json({
         success: false,
-        message: "studentId không hợp lệ",
+        message: "Mã học sinh không hợp lệ",
+      });
+    }
+
+    const parent = await checkParentAccount(parentId, churchId);
+
+    if (!parent) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh không hợp lệ",
+      });
+    }
+
+    if (!parent.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản phụ huynh đã bị khóa",
       });
     }
 
     const child = await checkParentStudent(parentId, studentId, churchId);
 
     if (!child) {
-      return res.status(403).json({
+      return res.status(404).json({
         success: false,
-        message: "Bạn không có quyền xem học sinh này",
+        message: "Học sinh không thuộc tài khoản phụ huynh",
       });
     }
 
-    /**
-     * =====================================================
-     * TẠM DÙNG SCHEMA:
-     *
-     * certificates
-     * - id
-     * - student_id
-     * - church_id
-     * - certificate_type
-     * - title
-     * - certificate_number
-     * - issue_date
-     * - file_url
-     * - status
-     *
-     * Nếu bảng thực tế khác, chỉ cần sửa query này.
-     * =====================================================
-     */
+    try {
+      const [certificates] = await db.query(
+        `
+        SELECT
+          id,
+          student_id,
+          certificate_type,
+          title,
+          certificate_number,
+          issue_date,
+          file_url,
+          status
 
-    const [rows] = await db.query(
-      `
-      SELECT
-        id,
-        student_id,
-        certificate_type,
-        title,
-        certificate_number,
-        issue_date,
-        file_url,
-        status
+        FROM certificates
 
-      FROM certificates
+        WHERE student_id = ?
+          AND church_id = ?
 
-      WHERE student_id = ?
-        AND church_id = ?
+        ORDER BY
+          issue_date DESC,
+          id DESC
+        `,
+        [studentId, churchId],
+      );
 
-      ORDER BY
-        issue_date DESC,
-        id DESC
-      `,
-      [studentId, churchId],
-    );
-
-    return res.json({
-      success: true,
-
-      data: {
-        total: rows.length,
-
-        certificates: rows.map((item) => ({
-          id: item.id,
-
-          certificate_type: item.certificate_type,
-
-          title: item.title,
-
-          certificate_number: item.certificate_number || null,
-
-          issue_date: item.issue_date,
-
-          file_url: item.file_url || null,
-
-          status: item.status || null,
-        })),
-      },
-    });
-  } catch (error) {
-    console.error("PARENT GET CERTIFICATES ERROR:", error);
-
-    /**
-     * Nếu bảng certificates chưa có
-     * thì trả danh sách rỗng thay vì làm
-     * toàn bộ trang phụ huynh lỗi.
-     */
-
-    if (error.code === "ER_NO_SUCH_TABLE") {
       return res.json({
         success: true,
 
         data: {
-          total: 0,
-          certificates: [],
+          certificates,
+          total: certificates.length,
         },
       });
+    } catch (certificateError) {
+      if (
+        certificateError.code === "ER_NO_SUCH_TABLE" ||
+        certificateError.code === "ER_BAD_FIELD_ERROR"
+      ) {
+        console.warn(
+          "CERTIFICATES TABLE/SCHEMA NOT READY:",
+          certificateError.message,
+        );
+
+        return res.json({
+          success: true,
+
+          data: {
+            certificates: [],
+            total: 0,
+          },
+        });
+      }
+
+      throw certificateError;
     }
+  } catch (error) {
+    console.error("PARENT GET CHILD CERTIFICATES ERROR:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Lỗi lấy chứng chỉ",
+      message: "Không thể tải chứng chỉ",
       error: error.message,
     });
   }

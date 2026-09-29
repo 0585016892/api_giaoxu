@@ -51,6 +51,7 @@ const contactMessageRoutes = require("./routes/contactMessageRoutes");
 const lessonResourceRoutes = require("./routes/lessonResourceRoutes");
 const gradingRuleRoutes = require("./routes/gradingRuleRoutes");
 const licenseRegistrationRoutes = require("./routes/licenseRegistrationRoutes");
+const parentRoutes = require("./routes/parentRoutes");
 
 // ===============================
 // APP
@@ -132,7 +133,7 @@ app.use("/api/contact-messages", contactMessageRoutes);
 app.use("/api/lesson-resources", lessonResourceRoutes);
 app.use("/api/grading-rules", gradingRuleRoutes);
 app.use("/api/license-regis", licenseRegistrationRoutes);
-
+app.use("/api/parent", parentRoutes);
 // ===============================
 // CORS MANAGEMENT
 // ===============================

@@ -4,7 +4,7 @@ const router = express.Router();
 
 const parentController = require("../controllers/parentController");
 
-const authMiddleware = require("../middleware/authMiddleware");
+const { verifyToken } = require("../middleware/verifyToken");
 
 /**
  * =========================================================
@@ -32,7 +32,7 @@ const authMiddleware = require("../middleware/authMiddleware");
  * =========================================================
  */
 
-router.get("/me", authMiddleware, parentController.getMe);
+router.get("/me", verifyToken, parentController.getMe);
 
 /**
  * =========================================================
@@ -49,7 +49,7 @@ router.get("/me", authMiddleware, parentController.getMe);
  * =========================================================
  */
 
-router.get("/children", authMiddleware, parentController.getChildren);
+router.get("/children", verifyToken, parentController.getChildren);
 
 /**
  * =========================================================
@@ -59,7 +59,7 @@ router.get("/children", authMiddleware, parentController.getChildren);
  * =========================================================
  */
 
-router.get("/children/:studentId", authMiddleware, parentController.getChild);
+router.get("/children/:studentId", verifyToken, parentController.getChild);
 
 /**
  * =========================================================
@@ -83,7 +83,7 @@ router.get("/children/:studentId", authMiddleware, parentController.getChild);
 
 router.get(
   "/children/:studentId/attendance",
-  authMiddleware,
+  verifyToken,
   parentController.getChildAttendance,
 );
 
@@ -105,7 +105,7 @@ router.get(
 
 router.get(
   "/children/:studentId/results",
-  authMiddleware,
+  verifyToken,
   parentController.getChildResults,
 );
 
@@ -119,7 +119,7 @@ router.get(
 
 router.get(
   "/children/:studentId/schedule",
-  authMiddleware,
+  verifyToken,
   parentController.getChildSchedule,
 );
 
@@ -133,7 +133,7 @@ router.get(
 
 router.get(
   "/children/:studentId/certificates",
-  authMiddleware,
+  verifyToken,
   parentController.getChildCertificates,
 );
 

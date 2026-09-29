@@ -34,13 +34,75 @@ const toPositiveInt = (value) => {
 
 // =====================================================
 // SAFE ACTIVITY LOG
+//
+// QUAN TRỌNG:
+// writeLog() của activityLogger nhận 1 OBJECT.
+// Không gọi:
+// await writeLog(req, data)
+//
+// Phải gọi:
+// await writeLog(data)
 // =====================================================
 
 const safeWriteLog = async (req, data) => {
   try {
-    await writeLog(req, data);
+    const payload = {
+      admin_id: req.user?.id || null,
+      action: data?.action || null,
+      target_type: data?.target_type || null,
+      target_id: data?.target_id || null,
+      description: data?.description || null,
+      ip_address:
+        req.ip ||
+        req.headers?.["x-forwarded-for"] ||
+        req.socket?.remoteAddress ||
+        null,
+    };
+
+    console.log("");
+    console.log("------------------------------------------------------------");
+    console.log("📝 ACTIVITY LOG");
+    console.log("------------------------------------------------------------");
+    console.log(payload);
+
+    await writeLog(payload);
+
+    console.log("✅ ACTIVITY LOG SUCCESS");
+    console.log("------------------------------------------------------------");
   } catch (error) {
-    console.error("⚠️ ACTIVITY LOG ERROR:", error.message);
+    // Log lỗi activity KHÔNG được làm hỏng nghiệp vụ chính.
+    console.error("");
+    console.error(
+      "------------------------------------------------------------",
+    );
+    console.error("⚠️ ACTIVITY LOG ERROR");
+    console.error(
+      "------------------------------------------------------------",
+    );
+    console.error("MESSAGE:", error.message);
+    console.error("CODE:", error.code);
+    console.error("SQL:", error.sqlMessage);
+    console.error(
+      "------------------------------------------------------------",
+    );
+  }
+};
+
+// =====================================================
+// SAFE ROLLBACK
+// =====================================================
+
+const safeRollback = async (connection, transactionStarted, requestId) => {
+  if (!connection || !transactionStarted) {
+    return;
+  }
+
+  try {
+    await connection.rollback();
+
+    console.log(`🔄 [${requestId}] ROLLBACK SUCCESS`);
+  } catch (rollbackError) {
+    console.error(`❌ [${requestId}] ROLLBACK ERROR:`, rollbackError.message);
   }
 };
 
@@ -48,8 +110,8 @@ const safeWriteLog = async (req, data) => {
 // GET CLASS BY ID + CHURCH
 // =====================================================
 
-const getClassById = async (classId, churchId) => {
-  const [rows] = await db.query(
+const getClassById = async (classId, churchId, connection = db) => {
+  const [rows] = await connection.query(
     `
     SELECT
       id,
@@ -71,10 +133,13 @@ const getClassById = async (classId, churchId) => {
 
 // =====================================================
 // GET STUDENT BY ID + CHURCH
+//
+// KHÔNG CÓ "diocese"
+// vì bảng students hiện tại không có cột này.
 // =====================================================
 
-const getStudentById = async (studentId, churchId) => {
-  const [rows] = await db.query(
+const getStudentById = async (studentId, churchId, connection = db) => {
+  const [rows] = await connection.query(
     `
     SELECT
       id,
@@ -86,7 +151,6 @@ const getStudentById = async (studentId, churchId) => {
       email,
       address,
       parish,
-      diocese,
       avatar,
       status,
       church_id
@@ -104,16 +168,15 @@ const getStudentById = async (studentId, churchId) => {
 // =====================================================
 // GET CLASS SCHEDULES
 //
-// Lưu ý:
 // Không dùng cs.church_id.
-// Bảo vệ giáo xứ thông qua classes.church_id.
+// Bảo vệ giáo xứ bằng classes.church_id.
 //
-// Điều này tránh lỗi nếu class_schedules hiện tại
-// chưa có cột church_id.
+// Điều này phù hợp nếu class_schedules hiện tại
+// chưa có church_id.
 // =====================================================
 
-const getSchedulesByClassId = async (classId, churchId) => {
-  const [rows] = await db.query(
+const getSchedulesByClassId = async (classId, churchId, connection = db) => {
+  const [rows] = await connection.query(
     `
     SELECT
       cs.id,
@@ -190,10 +253,12 @@ exports.getStudentsByClass = async (req, res) => {
     });
 
     // =====================================================
-    // CHURCH
+    // AUTH
     // =====================================================
 
     if (!churchId) {
+      console.log(`❌ [${requestId}] NO CHURCH ID`);
+
       return res.status(403).json({
         success: false,
         code: "NO_CHURCH_ID",
@@ -202,7 +267,7 @@ exports.getStudentsByClass = async (req, res) => {
     }
 
     // =====================================================
-    // CLASS ID
+    // VALIDATE
     // =====================================================
 
     if (!classId) {
@@ -214,14 +279,14 @@ exports.getStudentsByClass = async (req, res) => {
     }
 
     // =====================================================
-    // GET CLASS
+    // CLASS
     // =====================================================
 
     const classData = await getClassById(classId, churchId);
 
-    if (!classData) {
-      console.log(`❌ [${requestId}] CLASS NOT FOUND`);
+    console.log(`📚 [${requestId}] CLASS:`, classData);
 
+    if (!classData) {
       return res.status(404).json({
         success: false,
         code: "CLASS_NOT_FOUND",
@@ -230,37 +295,29 @@ exports.getStudentsByClass = async (req, res) => {
     }
 
     // =====================================================
-    // GET SCHEDULE
+    // SCHEDULE
     // =====================================================
 
     let schedules = [];
 
     try {
       schedules = await getSchedulesByClassId(classId, churchId);
+
+      console.log(`📅 [${requestId}] SCHEDULE COUNT:`, schedules.length);
     } catch (scheduleError) {
-      console.error(
-        `❌ [${requestId}] GET SCHEDULE ERROR:`,
-        scheduleError.message,
-      );
+      console.error(`❌ [${requestId}] SCHEDULE ERROR:`, scheduleError.message);
 
       throw scheduleError;
     }
 
     // =====================================================
-    // GET STUDENTS
-    //
-    // QUAN TRỌNG:
-    // Kiểm tra cả:
-    // - class_id
-    // - student church
-    // - class church
+    // STUDENTS
     // =====================================================
 
     const [rows] = await db.query(
       `
       SELECT
         cs.id,
-
         cs.class_id,
         cs.student_id,
 
@@ -276,7 +333,6 @@ exports.getStudentsByClass = async (req, res) => {
         s.email,
         s.address,
         s.parish,
-        s.diocese,
         s.avatar,
 
         s.status AS student_status,
@@ -313,7 +369,7 @@ exports.getStudentsByClass = async (req, res) => {
     );
 
     console.log("");
-    console.log(`📊 [${requestId}] STUDENT COUNT:`, rows.length);
+    console.log(`📊 [${requestId}] STUDENT COUNT: ${rows.length}`);
 
     console.table(
       rows.map((row) => ({
@@ -328,12 +384,6 @@ exports.getStudentsByClass = async (req, res) => {
         class_church_id: row.class_church_id,
       })),
     );
-
-    console.log(`📅 [${requestId}] SCHEDULE COUNT:`, schedules.length);
-
-    // =====================================================
-    // RESPONSE
-    // =====================================================
 
     return res.json({
       success: true,
@@ -367,6 +417,8 @@ exports.getStudentsByClass = async (req, res) => {
 
     console.error("MESSAGE:", error.message);
     console.error("CODE:", error.code);
+    console.error("ERRNO:", error.errno);
+    console.error("SQL STATE:", error.sqlState);
     console.error("SQL MESSAGE:", error.sqlMessage);
     console.error("STACK:", error.stack);
 
@@ -404,11 +456,13 @@ exports.getClassesByStudent = async (req, res) => {
       "================================================================",
     );
 
-    console.log("studentId:", studentId);
-    console.log("churchId:", churchId);
+    console.log({
+      studentId,
+      churchId,
+    });
 
     // =====================================================
-    // CHURCH
+    // AUTH
     // =====================================================
 
     if (!churchId) {
@@ -419,10 +473,6 @@ exports.getClassesByStudent = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // STUDENT
-    // =====================================================
-
     if (!studentId) {
       return res.status(400).json({
         success: false,
@@ -430,6 +480,10 @@ exports.getClassesByStudent = async (req, res) => {
         message: "studentId không hợp lệ",
       });
     }
+
+    // =====================================================
+    // STUDENT
+    // =====================================================
 
     const student = await getStudentById(studentId, churchId);
 
@@ -489,7 +543,7 @@ exports.getClassesByStudent = async (req, res) => {
     );
 
     // =====================================================
-    // ATTACH SCHEDULES
+    // SCHEDULE
     // =====================================================
 
     const classes = [];
@@ -522,7 +576,9 @@ exports.getClassesByStudent = async (req, res) => {
 
     return res.json({
       success: true,
+
       data: classes,
+
       student,
 
       debug: {
@@ -544,6 +600,8 @@ exports.getClassesByStudent = async (req, res) => {
 
     console.error("MESSAGE:", error.message);
     console.error("CODE:", error.code);
+    console.error("ERRNO:", error.errno);
+    console.error("SQL STATE:", error.sqlState);
     console.error("SQL MESSAGE:", error.sqlMessage);
 
     return res.status(500).json({
@@ -561,6 +619,14 @@ exports.getClassesByStudent = async (req, res) => {
 // 3. ADD STUDENT TO CLASS
 //
 // POST /api/class-students
+//
+// BODY:
+// {
+//   class_id: 190,
+//   student_id: 1903,
+//   status: "studying",
+//   joined_at: null
+// }
 // =====================================================
 
 exports.addStudentToClass = async (req, res) => {
@@ -581,7 +647,7 @@ exports.addStudentToClass = async (req, res) => {
     const joinedAt = req.body?.joined_at ?? null;
 
     // =====================================================
-    // REQUEST LOG
+    // REQUEST
     // =====================================================
 
     console.log("");
@@ -611,6 +677,7 @@ exports.addStudentToClass = async (req, res) => {
       classId,
       studentId,
       churchId,
+      status,
     });
 
     // =====================================================
@@ -628,10 +695,12 @@ exports.addStudentToClass = async (req, res) => {
     }
 
     // =====================================================
-    // VALIDATE IDS
+    // VALIDATE
     // =====================================================
 
     if (!classId) {
+      console.log(`❌ [${requestId}] INVALID CLASS ID`);
+
       return res.status(400).json({
         success: false,
         code: "INVALID_CLASS_ID",
@@ -640,6 +709,8 @@ exports.addStudentToClass = async (req, res) => {
     }
 
     if (!studentId) {
+      console.log(`❌ [${requestId}] INVALID STUDENT ID`);
+
       return res.status(400).json({
         success: false,
         code: "INVALID_STUDENT_ID",
@@ -647,11 +718,9 @@ exports.addStudentToClass = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // VALIDATE STATUS
-    // =====================================================
-
     if (!ALLOWED_STATUS.includes(status)) {
+      console.log(`❌ [${requestId}] INVALID STATUS:`, status);
+
       return res.status(400).json({
         success: false,
         code: "INVALID_STATUS",
@@ -675,27 +744,30 @@ exports.addStudentToClass = async (req, res) => {
     // 1. CHECK CLASS
     // =====================================================
 
+    console.log(`🔍 [${requestId}] STEP 1 - CHECK CLASS`);
+
     const [classRows] = await connection.query(
       `
-      SELECT
-        id,
-        name,
-        code,
-        category,
-        status,
-        church_id
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
-      `,
+        SELECT
+          id,
+          name,
+          code,
+          category,
+          status,
+          church_id
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
+        `,
       [classId, churchId],
     );
 
     console.log(`📚 [${requestId}] CLASS RESULT:`, classRows);
 
     if (!classRows.length) {
-      await connection.rollback();
+      await safeRollback(connection, transactionStarted, requestId);
+
       transactionStarted = false;
 
       return res.status(404).json({
@@ -709,7 +781,11 @@ exports.addStudentToClass = async (req, res) => {
 
     // =====================================================
     // 2. CHECK STUDENT
+    //
+    // KHÔNG CÓ diocese
     // =====================================================
+
+    console.log(`🔍 [${requestId}] STEP 2 - CHECK STUDENT`);
 
     const [studentRows] = await connection.query(
       `
@@ -723,7 +799,6 @@ exports.addStudentToClass = async (req, res) => {
           email,
           address,
           parish,
-          diocese,
           avatar,
           status,
           church_id
@@ -738,7 +813,8 @@ exports.addStudentToClass = async (req, res) => {
     console.log(`👨‍🎓 [${requestId}] STUDENT RESULT:`, studentRows);
 
     if (!studentRows.length) {
-      await connection.rollback();
+      await safeRollback(connection, transactionStarted, requestId);
+
       transactionStarted = false;
 
       return res.status(404).json({
@@ -751,10 +827,12 @@ exports.addStudentToClass = async (req, res) => {
     const student = studentRows[0];
 
     // =====================================================
-    // 3. LẤY TẤT CẢ QUAN HỆ CỦA STUDENT
+    // 3. ALL RELATIONS
     //
-    // Đây là phần quan trọng để debug.
+    // Chỉ lấy relation thuộc giáo xứ hiện tại.
     // =====================================================
+
+    console.log(`🔍 [${requestId}] STEP 3 - ALL STUDENT RELATIONS`);
 
     const [allRelations] = await connection.query(
       `
@@ -772,39 +850,43 @@ exports.addStudentToClass = async (req, res) => {
 
         FROM class_students cs
 
-        LEFT JOIN classes c
+        INNER JOIN classes c
           ON c.id = cs.class_id
 
         WHERE cs.student_id = ?
+          AND c.church_id = ?
 
         ORDER BY cs.id DESC
         `,
-      [studentId],
+      [studentId, churchId],
     );
 
     console.log("");
     console.log(`🔎 [${requestId}] ALL RELATIONS OF STUDENT`);
 
-    console.table(
-      allRelations.map((item) => ({
-        relation_id: item.id,
-        class_id: item.class_id,
-        student_id: item.student_id,
-        status: item.status,
-        joined_at: item.joined_at,
-        left_at: item.left_at,
-        class_name: item.class_name,
-        class_code: item.class_code,
-        class_church_id: item.class_church_id,
-      })),
-    );
+    if (allRelations.length) {
+      console.table(
+        allRelations.map((item) => ({
+          relation_id: item.id,
+          class_id: item.class_id,
+          student_id: item.student_id,
+          status: item.status,
+          joined_at: item.joined_at,
+          left_at: item.left_at,
+          class_name: item.class_name,
+          class_code: item.class_code,
+          class_church_id: item.class_church_id,
+        })),
+      );
+    } else {
+      console.log(`ℹ️ [${requestId}] STUDENT HAS NO CLASS RELATION`);
+    }
 
     // =====================================================
-    // 4. CHECK EXACT RELATION
-    //
-    // QUAN TRỌNG:
-    // Kiểm tra class + student + church.
+    // 4. EXACT TARGET RELATION
     // =====================================================
+
+    console.log(`🔍 [${requestId}] STEP 4 - CHECK EXACT TARGET RELATION`);
 
     const [existingRelations] = await connection.query(
       `
@@ -825,29 +907,33 @@ exports.addStudentToClass = async (req, res) => {
         INNER JOIN classes c
           ON c.id = cs.class_id
 
+        INNER JOIN students s
+          ON s.id = cs.student_id
+
         WHERE cs.class_id = ?
           AND cs.student_id = ?
           AND c.church_id = ?
+          AND s.church_id = ?
 
         ORDER BY cs.id DESC
         `,
-      [classId, studentId, churchId],
+      [classId, studentId, churchId, churchId],
     );
 
     console.log("");
-    console.log(`🔎 [${requestId}] EXACT RELATION`);
+    console.log(`🔎 [${requestId}] EXACT TARGET RELATION`);
 
     console.table(existingRelations);
 
     // =====================================================
-    // 5. NẾU ĐÃ CÓ QUAN HỆ
+    // 5. TARGET RELATION EXISTS
     // =====================================================
 
     if (existingRelations.length) {
       const relation = existingRelations[0];
 
       console.log("");
-      console.log(`⚠️ [${requestId}] EXACT RELATION EXISTS`);
+      console.log(`⚠️ [${requestId}] TARGET RELATION EXISTS`);
 
       console.log({
         relationId: relation.id,
@@ -857,15 +943,18 @@ exports.addStudentToClass = async (req, res) => {
         joinedAt: relation.joined_at,
         leftAt: relation.left_at,
         className: relation.class_name,
+        classCode: relation.class_code,
       });
 
       // ===================================================
-      // NẾU ĐANG STUDYING
-      // THỰC SỰ ĐANG Ở LỚP NÀY
+      // ACTIVE
       // ===================================================
 
       if (relation.status === "studying" && !relation.left_at) {
-        await connection.rollback();
+        console.log(`🚫 [${requestId}] ALREADY ACTIVE IN TARGET CLASS`);
+
+        await safeRollback(connection, transactionStarted, requestId);
+
         transactionStarted = false;
 
         return res.status(409).json({
@@ -873,7 +962,9 @@ exports.addStudentToClass = async (req, res) => {
 
           code: "ALREADY_IN_CLASS",
 
-          message: `Học sinh "${student.name}" đang học tại lớp "${relation.class_name}"`,
+          message:
+            `Học sinh "${student.name}" ` +
+            `đang học tại lớp "${relation.class_name}"`,
 
           data: {
             relation_id: Number(relation.id),
@@ -901,28 +992,28 @@ exports.addStudentToClass = async (req, res) => {
       }
 
       // ===================================================
-      // NẾU QUAN HỆ CŨ ĐÃ KẾT THÚC
-      //
-      // Không tạo thêm relation.
-      // Reactivate relation cũ.
+      // OLD RELATION
       // ===================================================
 
-      console.log(`♻️ [${requestId}] REACTIVATE OLD RELATION`);
+      console.log(`♻️ [${requestId}] OLD RELATION -> REACTIVATE`);
 
       const [reactivateResult] = await connection.query(
         `
           UPDATE class_students
           SET
-            status = 'studying',
+            status = ?,
             joined_at = COALESCE(?, NOW()),
             left_at = NULL
           WHERE id = ?
           `,
-        [joinedAt, relation.id],
+        [status, joinedAt, relation.id],
       );
 
+      console.log(`♻️ [${requestId}] REACTIVATE RESULT:`, reactivateResult);
+
       if (!reactivateResult.affectedRows) {
-        await connection.rollback();
+        await safeRollback(connection, transactionStarted, requestId);
+
         transactionStarted = false;
 
         return res.status(400).json({
@@ -932,8 +1023,36 @@ exports.addStudentToClass = async (req, res) => {
         });
       }
 
+      // ===================================================
+      // VERIFY REACTIVATE
+      // ===================================================
+
+      const [reactivatedRows] = await connection.query(
+        `
+          SELECT
+            cs.id,
+            cs.class_id,
+            cs.student_id,
+            cs.status,
+            cs.joined_at,
+            cs.left_at
+
+          FROM class_students cs
+
+          WHERE cs.id = ?
+
+          LIMIT 1
+          `,
+        [relation.id],
+      );
+
+      console.log(`🔍 [${requestId}] REACTIVATE VERIFY:`, reactivatedRows);
+
       await connection.commit();
+
       transactionStarted = false;
+
+      console.log(`✅ [${requestId}] REACTIVATE COMMIT SUCCESS`);
 
       await safeWriteLog(req, {
         action: "REACTIVATE_STUDENT_CLASS",
@@ -963,7 +1082,11 @@ exports.addStudentToClass = async (req, res) => {
 
           student_id: studentId,
 
-          status: "studying",
+          status,
+
+          joined_at: reactivatedRows[0]?.joined_at || joinedAt || new Date(),
+
+          left_at: null,
 
           class: targetClass,
 
@@ -977,8 +1100,10 @@ exports.addStudentToClass = async (req, res) => {
     }
 
     // =====================================================
-    // 6. CHECK STUDYING CLASS KHÁC
+    // 6. CHECK ACTIVE CLASS KHÁC
     // =====================================================
+
+    console.log(`🔍 [${requestId}] STEP 6 - CHECK OTHER ACTIVE CLASS`);
 
     const [activeRelations] = await connection.query(
       `
@@ -998,44 +1123,62 @@ exports.addStudentToClass = async (req, res) => {
         INNER JOIN classes c
           ON c.id = cs.class_id
 
+        INNER JOIN students s
+          ON s.id = cs.student_id
+
         WHERE cs.student_id = ?
           AND cs.status = 'studying'
           AND cs.left_at IS NULL
           AND c.church_id = ?
+          AND s.church_id = ?
 
         ORDER BY cs.id DESC
         `,
-      [studentId, churchId],
+      [studentId, churchId, churchId],
     );
 
     console.log("");
     console.log(`🔎 [${requestId}] ACTIVE RELATIONS`);
 
-    console.table(
-      activeRelations.map((item) => ({
-        relation_id: item.id,
-        class_id: item.class_id,
-        student_id: item.student_id,
-        status: item.status,
-        class_name: item.class_name,
-        class_code: item.class_code,
-      })),
-    );
+    if (activeRelations.length) {
+      console.table(
+        activeRelations.map((item) => ({
+          relation_id: item.id,
+          class_id: item.class_id,
+          student_id: item.student_id,
+          status: item.status,
+          joined_at: item.joined_at,
+          left_at: item.left_at,
+          class_name: item.class_name,
+          class_code: item.class_code,
+        })),
+      );
+    } else {
+      console.log(`ℹ️ [${requestId}] NO OTHER ACTIVE CLASS`);
+    }
+
+    // =====================================================
+    // 7. ALREADY STUDYING OTHER CLASS
+    // =====================================================
 
     if (status === "studying" && activeRelations.length) {
       const current = activeRelations[0];
 
-      await connection.rollback();
-      transactionStarted = false;
+      console.log("");
+      console.log(`🚫 [${requestId}] STUDENT ALREADY STUDYING`);
 
-      console.log(`⚠️ [${requestId}] STUDENT ALREADY STUDYING`);
+      await safeRollback(connection, transactionStarted, requestId);
+
+      transactionStarted = false;
 
       return res.status(409).json({
         success: false,
 
         code: "STUDENT_ALREADY_STUDYING",
 
-        message: `Học sinh "${student.name}" đang học tại lớp "${current.class_name}"`,
+        message:
+          `Học sinh "${student.name}" ` +
+          `đang học tại lớp "${current.class_name}"`,
 
         data: {
           student_id: studentId,
@@ -1048,6 +1191,12 @@ exports.addStudentToClass = async (req, res) => {
             code: current.class_code,
 
             relation_id: Number(current.id),
+
+            status: current.status,
+
+            joined_at: current.joined_at,
+
+            left_at: current.left_at,
           },
 
           target_class: {
@@ -1061,16 +1210,18 @@ exports.addStudentToClass = async (req, res) => {
 
         debug: {
           request_id: requestId,
+
+          reason: "ACTIVE_RELATION_IN_OTHER_CLASS",
         },
       });
     }
 
     // =====================================================
-    // 7. INSERT
+    // 8. INSERT
     // =====================================================
 
     console.log("");
-    console.log(`➕ [${requestId}] INSERT class_students`);
+    console.log(`➕ [${requestId}] STEP 8 - INSERT CLASS STUDENT`);
 
     const [insertResult] = await connection.query(
       `
@@ -1094,11 +1245,18 @@ exports.addStudentToClass = async (req, res) => {
       [classId, studentId, status, joinedAt],
     );
 
-    console.log(`INSERT ID: ${insertResult.insertId}`);
+    console.log(`✅ [${requestId}] INSERT SUCCESS`);
+
+    console.log("INSERT ID:", insertResult.insertId);
+
+    console.log("AFFECTED ROWS:", insertResult.affectedRows);
 
     // =====================================================
-    // 8. VERIFY INSERT
+    // 9. VERIFY INSERT
     // =====================================================
+
+    console.log("");
+    console.log(`🔍 [${requestId}] STEP 9 - VERIFY INSERT`);
 
     const [verifyRows] = await connection.query(
       `
@@ -1119,20 +1277,27 @@ exports.addStudentToClass = async (req, res) => {
         INNER JOIN classes c
           ON c.id = cs.class_id
 
+        INNER JOIN students s
+          ON s.id = cs.student_id
+
         WHERE cs.id = ?
+          AND c.church_id = ?
+          AND s.church_id = ?
 
         LIMIT 1
         `,
-      [insertResult.insertId],
+      [insertResult.insertId, churchId, churchId],
     );
 
-    console.log("");
-    console.log(`🔍 [${requestId}] VERIFY INSERT`);
+    console.log(`🔍 [${requestId}] VERIFY RESULT:`, verifyRows);
 
     console.table(verifyRows);
 
     if (!verifyRows.length) {
-      await connection.rollback();
+      console.error(`❌ [${requestId}] INSERT VERIFY FAILED`);
+
+      await safeRollback(connection, transactionStarted, requestId);
+
       transactionStarted = false;
 
       return res.status(500).json({
@@ -1141,23 +1306,26 @@ exports.addStudentToClass = async (req, res) => {
         message: "Đã thêm nhưng không thể xác nhận dữ liệu trong database",
         debug: {
           request_id: requestId,
+          inserted_id: insertResult.insertId,
         },
       });
     }
 
     // =====================================================
-    // 9. COMMIT
+    // 10. COMMIT
     // =====================================================
+
+    console.log("");
+    console.log(`💾 [${requestId}] STEP 10 - COMMIT`);
 
     await connection.commit();
 
     transactionStarted = false;
 
-    console.log("");
     console.log(`✅ [${requestId}] COMMIT SUCCESS`);
 
     // =====================================================
-    // 10. LOG
+    // 11. ACTIVITY LOG
     // =====================================================
 
     await safeWriteLog(req, {
@@ -1178,6 +1346,13 @@ exports.addStudentToClass = async (req, res) => {
     // RESPONSE
     // =====================================================
 
+    console.log("");
+    console.log(`🎉 [${requestId}] ADD STUDENT SUCCESS`);
+
+    console.log(
+      "================================================================",
+    );
+
     return res.status(201).json({
       success: true,
 
@@ -1194,7 +1369,9 @@ exports.addStudentToClass = async (req, res) => {
 
         status,
 
-        joined_at: joinedAt || new Date(),
+        joined_at: verifyRows[0]?.joined_at || joinedAt || new Date(),
+
+        left_at: null,
 
         class: targetClass,
 
@@ -1210,21 +1387,12 @@ exports.addStudentToClass = async (req, res) => {
     // ROLLBACK
     // =====================================================
 
-    if (connection && transactionStarted) {
-      try {
-        await connection.rollback();
+    await safeRollback(connection, transactionStarted, requestId);
 
-        console.log(`🔄 [${requestId}] ROLLBACK`);
-      } catch (rollbackError) {
-        console.error(
-          `❌ [${requestId}] ROLLBACK ERROR:`,
-          rollbackError.message,
-        );
-      }
-    }
+    transactionStarted = false;
 
     // =====================================================
-    // ERROR LOG
+    // ERROR
     // =====================================================
 
     console.error("");
@@ -1243,64 +1411,93 @@ exports.addStudentToClass = async (req, res) => {
     console.error("SQL MESSAGE:", error.sqlMessage);
 
     console.error("BODY:", req.body);
+
     console.error("USER:", req.user);
 
     // =====================================================
-    // DUPLICATE
+    // DATABASE DUPLICATE
     // =====================================================
 
     if (error.code === "ER_DUP_ENTRY") {
+      console.error("");
       console.error(`🚨 [${requestId}] DATABASE DUPLICATE`);
 
+      console.error("DUPLICATE SQL MESSAGE:", error.sqlMessage);
+
       // ---------------------------------------------------
-      // KIỂM TRA LẠI DB
+      // DEBUG DATABASE
       // ---------------------------------------------------
 
       try {
-        const [duplicateRows] = await db.query(
-          `
-          SELECT
-            cs.id,
-            cs.class_id,
-            cs.student_id,
-            cs.status,
-            cs.joined_at,
-            cs.left_at,
+        const debugClassId = toPositiveInt(req.body?.class_id);
 
-            c.name AS class_name,
-            c.code AS class_code,
-            c.church_id AS class_church_id
+        const debugStudentId = toPositiveInt(req.body?.student_id);
 
-          FROM class_students cs
+        const debugChurchId = toPositiveInt(req.user?.church_id);
 
-          LEFT JOIN classes c
-            ON c.id = cs.class_id
+        if (debugClassId && debugStudentId && debugChurchId) {
+          const [duplicateRows] = await db.query(
+            `
+            SELECT
+              cs.id,
+              cs.class_id,
+              cs.student_id,
+              cs.status,
+              cs.joined_at,
+              cs.left_at,
 
-          WHERE
-            (
-              cs.class_id = ?
-              AND cs.student_id = ?
-            )
+              c.name AS class_name,
+              c.code AS class_code,
+              c.church_id AS class_church_id
 
-            OR cs.student_id = ?
+            FROM class_students cs
 
-          ORDER BY cs.id DESC
-          `,
-          [
-            Number(req.body?.class_id),
+            LEFT JOIN classes c
+              ON c.id = cs.class_id
 
-            Number(req.body?.student_id),
+            WHERE
+              cs.student_id = ?
 
-            Number(req.body?.student_id),
-          ],
-        );
+            ORDER BY cs.id DESC
+            `,
+            [debugStudentId],
+          );
 
-        console.log("");
-        console.log(`🔍 [${requestId}] DB AFTER DUPLICATE`);
+          console.log("");
+          console.log(`🔍 [${requestId}] DUPLICATE DEBUG RELATIONS`);
 
-        console.table(duplicateRows);
+          console.table(
+            duplicateRows.map((item) => ({
+              relation_id: item.id,
+
+              class_id: item.class_id,
+
+              student_id: item.student_id,
+
+              status: item.status,
+
+              joined_at: item.joined_at,
+
+              left_at: item.left_at,
+
+              class_name: item.class_name,
+
+              class_code: item.class_code,
+
+              class_church_id: item.class_church_id,
+
+              is_target: Number(item.class_id) === Number(debugClassId),
+
+              is_same_church:
+                Number(item.class_church_id) === Number(debugChurchId),
+            })),
+          );
+        }
       } catch (debugError) {
-        console.error("DUPLICATE DEBUG ERROR:", debugError.message);
+        console.error(
+          `❌ [${requestId}] DUPLICATE DEBUG ERROR:`,
+          debugError.message,
+        );
       }
 
       return res.status(409).json({
@@ -1318,6 +1515,10 @@ exports.addStudentToClass = async (req, res) => {
           class_id: req.body?.class_id,
 
           student_id: req.body?.student_id,
+
+          church_id: req.user?.church_id,
+
+          reason: "DATABASE_UNIQUE_CONSTRAINT",
         },
       });
     }
@@ -1338,6 +1539,33 @@ exports.addStudentToClass = async (req, res) => {
 
         debug: {
           request_id: requestId,
+        },
+      });
+    }
+
+    // =====================================================
+    // UNKNOWN COLUMN
+    // =====================================================
+
+    if (error.code === "ER_BAD_FIELD_ERROR") {
+      console.error("");
+      console.error(`🚨 [${requestId}] UNKNOWN DATABASE COLUMN`);
+
+      console.error("COLUMN ERROR:", error.sqlMessage);
+
+      return res.status(500).json({
+        success: false,
+
+        code: "DATABASE_COLUMN_ERROR",
+
+        message: "Cấu trúc database không khớp với code backend",
+
+        error: error.sqlMessage,
+
+        debug: {
+          request_id: requestId,
+
+          hint: "Kiểm tra tên cột trong bảng students/classes/class_students/class_schedules",
         },
       });
     }
@@ -1365,6 +1593,10 @@ exports.addStudentToClass = async (req, res) => {
     }
 
     console.log(`🏁 [${requestId}] ADD STUDENT REQUEST FINISHED`);
+
+    console.log(
+      "================================================================",
+    );
   }
 };
 
@@ -1406,6 +1638,10 @@ exports.updateClassStudent = async (req, res) => {
       left_at,
     });
 
+    // =====================================================
+    // AUTH
+    // =====================================================
+
     if (!churchId) {
       return res.status(403).json({
         success: false,
@@ -1433,7 +1669,7 @@ exports.updateClassStudent = async (req, res) => {
     connection = await db.getConnection();
 
     // =====================================================
-    // GET RELATION
+    // RELATION
     // =====================================================
 
     const [relations] = await connection.query(
@@ -1471,6 +1707,8 @@ exports.updateClassStudent = async (req, res) => {
       [classId, studentId, churchId, churchId],
     );
 
+    console.log(`🔎 [${requestId}] RELATION:`, relations);
+
     if (!relations.length) {
       return res.status(404).json({
         success: false,
@@ -1499,17 +1737,19 @@ exports.updateClassStudent = async (req, res) => {
           INNER JOIN classes c
             ON c.id = cs.class_id
 
+          INNER JOIN students s
+            ON s.id = cs.student_id
+
           WHERE cs.student_id = ?
             AND cs.status = 'studying'
             AND cs.left_at IS NULL
-
             AND c.church_id = ?
-
+            AND s.church_id = ?
             AND cs.class_id != ?
 
           LIMIT 1
           `,
-        [studentId, churchId, classId],
+        [studentId, churchId, churchId, classId],
       );
 
       if (otherClass.length) {
@@ -1522,6 +1762,10 @@ exports.updateClassStudent = async (req, res) => {
 
           data: {
             current_class: otherClass[0],
+          },
+
+          debug: {
+            request_id: requestId,
           },
         });
       }
@@ -1536,19 +1780,16 @@ exports.updateClassStudent = async (req, res) => {
 
     if (status !== undefined) {
       fields.push("status = ?");
-
       values.push(status);
     }
 
     if (joined_at !== undefined) {
       fields.push("joined_at = ?");
-
       values.push(joined_at);
     }
 
     if (left_at !== undefined) {
       fields.push("left_at = ?");
-
       values.push(left_at);
     }
 
@@ -1576,6 +1817,8 @@ exports.updateClassStudent = async (req, res) => {
         `,
       values,
     );
+
+    console.log(`✏️ [${requestId}] UPDATE RESULT:`, result);
 
     // =====================================================
     // LOG
@@ -1609,12 +1852,22 @@ exports.updateClassStudent = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error(`[${requestId}] updateClassStudent ERROR:`, error);
+    console.error("");
+    console.error(`💥 [${requestId}] UPDATE CLASS STUDENT ERROR`);
+
+    console.error("MESSAGE:", error.message);
+
+    console.error("CODE:", error.code);
+
+    console.error("SQL:", error.sqlMessage);
 
     return res.status(500).json({
       success: false,
       code: "UPDATE_CLASS_STUDENT_ERROR",
       message: "Không thể cập nhật quan hệ lớp - học sinh",
+      debug: {
+        request_id: requestId,
+      },
     });
   } finally {
     if (connection) {
@@ -1628,7 +1881,7 @@ exports.updateClassStudent = async (req, res) => {
 //
 // PUT /api/class-students/:classId/:studentId/change-class
 //
-// Body:
+// BODY:
 // {
 //   "new_class_id": 5
 // }
@@ -1705,23 +1958,11 @@ exports.changeClassStudent = async (req, res) => {
     // OLD CLASS
     // =====================================================
 
-    const [oldClasses] = await connection.query(
-      `
-        SELECT
-          id,
-          name,
-          code,
-          church_id
-        FROM classes
-        WHERE id = ?
-          AND church_id = ?
-        LIMIT 1
-        `,
-      [classId, churchId],
-    );
+    const oldClass = await getClassById(classId, churchId, connection);
 
-    if (!oldClasses.length) {
-      await connection.rollback();
+    if (!oldClass) {
+      await safeRollback(connection, transactionStarted, requestId);
+
       transactionStarted = false;
 
       return res.status(404).json({
@@ -1731,31 +1972,15 @@ exports.changeClassStudent = async (req, res) => {
       });
     }
 
-    const oldClass = oldClasses[0];
-
     // =====================================================
     // NEW CLASS
     // =====================================================
 
-    const [newClasses] = await connection.query(
-      `
-        SELECT
-          id,
-          name,
-          code,
-          category,
-          status,
-          church_id
-        FROM classes
-        WHERE id = ?
-          AND church_id = ?
-        LIMIT 1
-        `,
-      [newClassId, churchId],
-    );
+    const newClass = await getClassById(newClassId, churchId, connection);
 
-    if (!newClasses.length) {
-      await connection.rollback();
+    if (!newClass) {
+      await safeRollback(connection, transactionStarted, requestId);
+
       transactionStarted = false;
 
       return res.status(404).json({
@@ -1765,16 +1990,15 @@ exports.changeClassStudent = async (req, res) => {
       });
     }
 
-    const newClass = newClasses[0];
-
     // =====================================================
     // STUDENT
     // =====================================================
 
-    const student = await getStudentById(studentId, churchId);
+    const student = await getStudentById(studentId, churchId, connection);
 
     if (!student) {
-      await connection.rollback();
+      await safeRollback(connection, transactionStarted, requestId);
+
       transactionStarted = false;
 
       return res.status(404).json({
@@ -1808,7 +2032,6 @@ exports.changeClassStudent = async (req, res) => {
 
         WHERE cs.class_id = ?
           AND cs.student_id = ?
-
           AND c.church_id = ?
           AND s.church_id = ?
 
@@ -1818,7 +2041,8 @@ exports.changeClassStudent = async (req, res) => {
     );
 
     if (!relations.length) {
-      await connection.rollback();
+      await safeRollback(connection, transactionStarted, requestId);
+
       transactionStarted = false;
 
       return res.status(404).json({
@@ -1849,25 +2073,100 @@ exports.changeClassStudent = async (req, res) => {
         INNER JOIN classes c
           ON c.id = cs.class_id
 
+        INNER JOIN students s
+          ON s.id = cs.student_id
+
         WHERE cs.class_id = ?
           AND cs.student_id = ?
           AND c.church_id = ?
+          AND s.church_id = ?
 
         LIMIT 1
         `,
-      [newClassId, studentId, churchId],
+      [newClassId, studentId, churchId, churchId],
     );
 
     if (newRelations.length) {
-      await connection.rollback();
+      const targetRelation = newRelations[0];
+
+      // Nếu relation đích đã cũ thì có thể
+      // xóa relation cũ rồi activate relation đích.
+      //
+      // Tuy nhiên để tránh mất lịch sử ngoài ý muốn,
+      // ở đây báo rõ conflict.
+
+      await safeRollback(connection, transactionStarted, requestId);
+
       transactionStarted = false;
 
       return res.status(409).json({
         success: false,
+
         code: "ALREADY_IN_TARGET_CLASS",
-        message: `Học sinh đã có trong lớp "${newClass.name}"`,
+
+        message: `Học sinh đã có quan hệ với lớp "${newClass.name}"`,
+
         data: {
-          relation: newRelations[0],
+          relation: targetRelation,
+        },
+
+        debug: {
+          request_id: requestId,
+        },
+      });
+    }
+
+    // =====================================================
+    // CHECK OTHER ACTIVE CLASS
+    // =====================================================
+
+    const [otherActive] = await connection.query(
+      `
+        SELECT
+          cs.id,
+          cs.class_id,
+          c.name AS class_name,
+          c.code AS class_code
+
+        FROM class_students cs
+
+        INNER JOIN classes c
+          ON c.id = cs.class_id
+
+        INNER JOIN students s
+          ON s.id = cs.student_id
+
+        WHERE cs.student_id = ?
+          AND cs.status = 'studying'
+          AND cs.left_at IS NULL
+          AND cs.class_id != ?
+          AND cs.class_id != ?
+          AND c.church_id = ?
+          AND s.church_id = ?
+
+        LIMIT 1
+        `,
+      [studentId, classId, newClassId, churchId, churchId],
+    );
+
+    if (otherActive.length) {
+      await safeRollback(connection, transactionStarted, requestId);
+
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+
+        code: "STUDENT_ALREADY_STUDYING",
+
+        message: `Học sinh đang học tại lớp "${otherActive[0].class_name}"`,
+
+        data: {
+          current_class: otherActive[0],
+        },
+
+        debug: {
+          request_id: requestId,
         },
       });
     }
@@ -1889,7 +2188,8 @@ exports.changeClassStudent = async (req, res) => {
     );
 
     if (!result.affectedRows) {
-      await connection.rollback();
+      await safeRollback(connection, transactionStarted, requestId);
+
       transactionStarted = false;
 
       return res.status(400).json({
@@ -1906,6 +2206,8 @@ exports.changeClassStudent = async (req, res) => {
     await connection.commit();
 
     transactionStarted = false;
+
+    console.log(`✅ [${requestId}] CHANGE CLASS COMMIT SUCCESS`);
 
     // =====================================================
     // LOG
@@ -1951,11 +2253,9 @@ exports.changeClassStudent = async (req, res) => {
       },
     });
   } catch (error) {
-    if (connection && transactionStarted) {
-      try {
-        await connection.rollback();
-      } catch (_) {}
-    }
+    await safeRollback(connection, transactionStarted, requestId);
+
+    transactionStarted = false;
 
     console.error("");
     console.error(`💥 [${requestId}] CHANGE CLASS ERROR`);
@@ -1984,16 +2284,15 @@ exports.changeClassStudent = async (req, res) => {
 // =====================================================
 // 6. CHANGE MANY STUDENTS
 //
-// ROUTE HIỆN TẠI:
-//
 // PUT /api/class-students/classes/:classId/change-students
 //
-// Body:
+// IMPORTANT:
+// :classId = LỚP MỚI
+//
+// BODY:
 // {
 //   "studentIds": [1,2,3]
 // }
-//
-// classId trong URL = LỚP MỚI
 // =====================================================
 
 exports.changeClassStudents = async (req, res) => {
@@ -2025,7 +2324,7 @@ exports.changeClassStudents = async (req, res) => {
     });
 
     // =====================================================
-    // CHURCH
+    // AUTH
     // =====================================================
 
     if (!churchId) {
@@ -2076,6 +2375,10 @@ exports.changeClassStudents = async (req, res) => {
       });
     }
 
+    // =====================================================
+    // CONNECTION
+    // =====================================================
+
     connection = await db.getConnection();
 
     await connection.beginTransaction();
@@ -2086,25 +2389,11 @@ exports.changeClassStudents = async (req, res) => {
     // TARGET CLASS
     // =====================================================
 
-    const [classRows] = await connection.query(
-      `
-        SELECT
-          id,
-          name,
-          code,
-          category,
-          status,
-          church_id
-        FROM classes
-        WHERE id = ?
-          AND church_id = ?
-        LIMIT 1
-        `,
-      [newClassId, churchId],
-    );
+    const newClass = await getClassById(newClassId, churchId, connection);
 
-    if (!classRows.length) {
-      await connection.rollback();
+    if (!newClass) {
+      await safeRollback(connection, transactionStarted, requestId);
+
       transactionStarted = false;
 
       return res.status(404).json({
@@ -2114,8 +2403,6 @@ exports.changeClassStudents = async (req, res) => {
       });
     }
 
-    const newClass = classRows[0];
-
     // =====================================================
     // STUDENTS
     // =====================================================
@@ -2124,18 +2411,18 @@ exports.changeClassStudents = async (req, res) => {
 
     const [students] = await connection.query(
       `
-      SELECT
-        id,
-        code,
-        name,
-        status,
-        church_id
+        SELECT
+          id,
+          code,
+          name,
+          status,
+          church_id
 
-      FROM students
+        FROM students
 
-      WHERE id IN (${placeholders})
-        AND church_id = ?
-      `,
+        WHERE id IN (${placeholders})
+          AND church_id = ?
+        `,
       [...uniqueStudentIds, churchId],
     );
 
@@ -2146,7 +2433,8 @@ exports.changeClassStudents = async (req, res) => {
     );
 
     if (notFoundIds.length) {
-      await connection.rollback();
+      await safeRollback(connection, transactionStarted, requestId);
+
       transactionStarted = false;
 
       return res.status(404).json({
@@ -2160,33 +2448,38 @@ exports.changeClassStudents = async (req, res) => {
     }
 
     // =====================================================
-    // GET ALL RELATIONS
+    // CURRENT RELATIONS
     // =====================================================
 
     const [relations] = await connection.query(
       `
-      SELECT
-        cs.id,
-        cs.class_id,
-        cs.student_id,
-        cs.status,
-        cs.joined_at,
-        cs.left_at,
+        SELECT
+          cs.id,
+          cs.class_id,
+          cs.student_id,
+          cs.status,
+          cs.joined_at,
+          cs.left_at,
 
-        c.name AS class_name,
-        c.code AS class_code
+          c.name AS class_name,
+          c.code AS class_code,
+          c.church_id AS class_church_id
 
-      FROM class_students cs
+        FROM class_students cs
 
-      INNER JOIN classes c
-        ON c.id = cs.class_id
+        INNER JOIN classes c
+          ON c.id = cs.class_id
 
-      WHERE cs.student_id IN (${placeholders})
-        AND c.church_id = ?
+        INNER JOIN students s
+          ON s.id = cs.student_id
 
-      ORDER BY cs.id DESC
-      `,
-      [...uniqueStudentIds, churchId],
+        WHERE cs.student_id IN (${placeholders})
+          AND c.church_id = ?
+          AND s.church_id = ?
+
+        ORDER BY cs.id DESC
+        `,
+      [...uniqueStudentIds, churchId, churchId],
     );
 
     console.log("");
@@ -2219,32 +2512,40 @@ exports.changeClassStudents = async (req, res) => {
     // =====================================================
 
     for (const studentId of uniqueStudentIds) {
+      console.log("");
+      console.log(`👤 [${requestId}] PROCESS STUDENT ${studentId}`);
+
       const studentRelations = relationMap.get(studentId) || [];
 
-      // -----------------------------------------------
-      // ĐÃ CÓ TRONG TARGET
-      // -----------------------------------------------
+      // ===================================================
+      // TARGET RELATION
+      // ===================================================
 
       const targetRelation = studentRelations.find(
         (relation) => Number(relation.class_id) === newClassId,
       );
 
       if (targetRelation) {
-        // Nếu relation cũ nhưng không active
-        // thì kích hoạt lại.
+        console.log(`📌 [${requestId}] TARGET RELATION EXISTS`, targetRelation);
+
+        // -----------------------------------------------
+        // OLD TARGET RELATION -> REACTIVATE
+        // -----------------------------------------------
 
         if (targetRelation.status !== "studying" || targetRelation.left_at) {
-          await connection.query(
+          const [reactivateResult] = await connection.query(
             `
-            UPDATE class_students
-            SET
-              status = 'studying',
-              joined_at = NOW(),
-              left_at = NULL
-            WHERE id = ?
-            `,
+              UPDATE class_students
+              SET
+                status = 'studying',
+                joined_at = NOW(),
+                left_at = NULL
+              WHERE id = ?
+              `,
             [targetRelation.id],
           );
+
+          console.log(`♻️ [${requestId}] REACTIVATE RESULT:`, reactivateResult);
 
           updated.push({
             student_id: studentId,
@@ -2264,31 +2565,33 @@ exports.changeClassStudents = async (req, res) => {
         continue;
       }
 
-      // -----------------------------------------------
-      // TÌM ACTIVE CLASS
-      // -----------------------------------------------
+      // ===================================================
+      // ACTIVE CLASS
+      // ===================================================
 
       const activeRelation = studentRelations.find(
         (relation) => relation.status === "studying" && !relation.left_at,
       );
 
-      // -----------------------------------------------
-      // CÓ ACTIVE CLASS
-      // → UPDATE
-      // -----------------------------------------------
-
       if (activeRelation) {
-        await connection.query(
+        console.log(
+          `🔄 [${requestId}] TRANSFER ACTIVE RELATION`,
+          activeRelation,
+        );
+
+        const [updateResult] = await connection.query(
           `
-          UPDATE class_students
-          SET
-            class_id = ?,
-            status = 'studying',
-            left_at = NULL
-          WHERE id = ?
-          `,
+            UPDATE class_students
+            SET
+              class_id = ?,
+              status = 'studying',
+              left_at = NULL
+            WHERE id = ?
+            `,
           [newClassId, activeRelation.id],
         );
+
+        console.log(`🔄 [${requestId}] TRANSFER RESULT:`, updateResult);
 
         updated.push({
           student_id: studentId,
@@ -2305,30 +2608,31 @@ exports.changeClassStudents = async (req, res) => {
         continue;
       }
 
-      // -----------------------------------------------
-      // KHÔNG CÓ ACTIVE CLASS
-      // → INSERT
-      // -----------------------------------------------
+      // ===================================================
+      // NO ACTIVE CLASS
+      // ===================================================
+
+      console.log(`➕ [${requestId}] INSERT NEW RELATION`);
 
       const [insertResult] = await connection.query(
         `
-        INSERT INTO class_students
-        (
-          class_id,
-          student_id,
-          status,
-          joined_at,
-          left_at
-        )
-        VALUES
-        (
-          ?,
-          ?,
-          'studying',
-          NOW(),
-          NULL
-        )
-        `,
+          INSERT INTO class_students
+          (
+            class_id,
+            student_id,
+            status,
+            joined_at,
+            left_at
+          )
+          VALUES
+          (
+            ?,
+            ?,
+            'studying',
+            NOW(),
+            NULL
+          )
+          `,
         [newClassId, studentId],
       );
 
@@ -2348,6 +2652,9 @@ exports.changeClassStudents = async (req, res) => {
     await connection.commit();
 
     transactionStarted = false;
+
+    console.log("");
+    console.log(`✅ [${requestId}] BULK COMMIT SUCCESS`);
 
     // =====================================================
     // LOG
@@ -2393,9 +2700,9 @@ exports.changeClassStudents = async (req, res) => {
 
         total: uniqueStudentIds.length,
 
-        updated: updated,
+        updated,
 
-        inserted: inserted,
+        inserted,
 
         already_in_target: alreadyInTarget,
 
@@ -2417,11 +2724,9 @@ exports.changeClassStudents = async (req, res) => {
       },
     });
   } catch (error) {
-    if (connection && transactionStarted) {
-      try {
-        await connection.rollback();
-      } catch (_) {}
-    }
+    await safeRollback(connection, transactionStarted, requestId);
+
+    transactionStarted = false;
 
     console.error("");
     console.error(`💥 [${requestId}] BULK CHANGE ERROR`);
@@ -2429,6 +2734,10 @@ exports.changeClassStudents = async (req, res) => {
     console.error("MESSAGE:", error.message);
 
     console.error("CODE:", error.code);
+
+    console.error("ERRNO:", error.errno);
+
+    console.error("SQL STATE:", error.sqlState);
 
     console.error("SQL:", error.sqlMessage);
 
@@ -2480,6 +2789,10 @@ exports.removeStudentFromClass = async (req, res) => {
       churchId,
     });
 
+    // =====================================================
+    // AUTH
+    // =====================================================
+
     if (!churchId) {
       return res.status(403).json({
         success: false,
@@ -2504,38 +2817,38 @@ exports.removeStudentFromClass = async (req, res) => {
 
     const [rows] = await connection.query(
       `
-        SELECT
-          cs.id,
-          cs.class_id,
-          cs.student_id,
-          cs.status,
-          cs.joined_at,
-          cs.left_at,
+          SELECT
+            cs.id,
+            cs.class_id,
+            cs.student_id,
+            cs.status,
+            cs.joined_at,
+            cs.left_at,
 
-          s.name AS student_name,
-          s.code AS student_code,
+            s.name AS student_name,
+            s.code AS student_code,
 
-          c.name AS class_name,
-          c.code AS class_code,
+            c.name AS class_name,
+            c.code AS class_code,
 
-          c.church_id AS class_church_id
+            c.church_id AS class_church_id
 
-        FROM class_students cs
+          FROM class_students cs
 
-        INNER JOIN students s
-          ON s.id = cs.student_id
+          INNER JOIN students s
+            ON s.id = cs.student_id
 
-        INNER JOIN classes c
-          ON c.id = cs.class_id
+          INNER JOIN classes c
+            ON c.id = cs.class_id
 
-        WHERE cs.class_id = ?
-          AND cs.student_id = ?
+          WHERE cs.class_id = ?
+            AND cs.student_id = ?
 
-          AND s.church_id = ?
-          AND c.church_id = ?
+            AND s.church_id = ?
+            AND c.church_id = ?
 
-        LIMIT 1
-        `,
+          LIMIT 1
+          `,
       [classId, studentId, churchId, churchId],
     );
 
@@ -2557,11 +2870,13 @@ exports.removeStudentFromClass = async (req, res) => {
 
     const [result] = await connection.query(
       `
-        DELETE FROM class_students
-        WHERE id = ?
-        `,
+          DELETE FROM class_students
+          WHERE id = ?
+          `,
       [relation.id],
     );
+
+    console.log(`🗑️ [${requestId}] DELETE RESULT:`, result);
 
     if (!result.affectedRows) {
       return res.status(404).json({

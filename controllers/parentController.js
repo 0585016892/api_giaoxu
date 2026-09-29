@@ -101,14 +101,34 @@ const checkParentAccount = async (parentId, churchId) => {
 
 /**
  * =========================================================
- * CHECK PARENT -> STUDENT
+ * CHECK PARENT - STUDENT
+ * =========================================================
+ *
+ * Kiểm tra học sinh có thuộc tài khoản phụ huynh hay không.
+ *
+ * parent_students:
+ * - id
+ * - church_id
+ * - parent_id
+ * - student_id
+ * - relationship
+ * - created_at
+ *
+ * students:
+ * - lấy toàn bộ bằng s.*
+ *
  * =========================================================
  */
-
 const checkParentStudent = async (parentId, studentId, churchId) => {
   if (!parentId || !studentId || !churchId) {
     return null;
   }
+
+  console.log("");
+  console.log("---------------- CHECK PARENT STUDENT ----------------");
+  console.log("PARENT ID:", parentId);
+  console.log("STUDENT ID:", studentId);
+  console.log("CHURCH ID:", churchId);
 
   const [rows] = await db.query(
     `
@@ -117,7 +137,7 @@ const checkParentStudent = async (parentId, studentId, churchId) => {
 
       ps.id AS parent_student_id,
       ps.relationship,
-      ps.is_primary
+      ps.created_at AS parent_student_created_at
 
     FROM parent_students ps
 
@@ -133,6 +153,14 @@ const checkParentStudent = async (parentId, studentId, churchId) => {
     `,
     [parentId, studentId, churchId],
   );
+
+  console.log("PARENT STUDENT FOUND:", rows.length);
+
+  if (rows.length > 0) {
+    console.log("PARENT STUDENT ID:", rows[0].parent_student_id);
+
+    console.log("RELATIONSHIP:", rows[0].relationship);
+  }
 
   return rows.length ? rows[0] : null;
 };
@@ -723,6 +751,15 @@ exports.getChildren = async (req, res) => {
  *
  * =========================================================
  */
+/**
+ * =========================================================
+ * PARENT GET CHILD DETAIL
+ * =========================================================
+ *
+ * GET /parent/children/:studentId
+ *
+ * =========================================================
+ */
 exports.getChild = async (req, res) => {
   try {
     const parentId = getParentId(req);
@@ -738,12 +775,10 @@ exports.getChild = async (req, res) => {
     console.log("STUDENT ID:", studentId);
 
     // =======================================================
-    // VALIDATE AUTH
+    // VALIDATE
     // =======================================================
 
     if (!parentId || !churchId) {
-      console.log("❌ KHÔNG XÁC ĐỊNH ĐƯỢC PARENT / CHURCH");
-
       return res.status(403).json({
         success: false,
         message: "Không xác định được tài khoản phụ huynh",
@@ -751,8 +786,6 @@ exports.getChild = async (req, res) => {
     }
 
     if (!studentId) {
-      console.log("❌ STUDENT ID KHÔNG HỢP LỆ");
-
       return res.status(400).json({
         success: false,
         message: "Mã học sinh không hợp lệ",
@@ -766,8 +799,6 @@ exports.getChild = async (req, res) => {
     const parent = await checkParentAccount(parentId, churchId);
 
     if (!parent) {
-      console.log("❌ PARENT KHÔNG HỢP LỆ");
-
       return res.status(403).json({
         success: false,
         message: "Tài khoản phụ huynh không hợp lệ",
@@ -775,8 +806,6 @@ exports.getChild = async (req, res) => {
     }
 
     if (!parent.is_active) {
-      console.log("❌ PARENT ĐÃ BỊ KHÓA");
-
       return res.status(403).json({
         success: false,
         message: "Tài khoản phụ huynh đã bị khóa",
@@ -784,13 +813,13 @@ exports.getChild = async (req, res) => {
     }
 
     // =======================================================
-    // CHECK PARENT - STUDENT
+    // CHECK STUDENT THUỘC PARENT
     // =======================================================
 
     const child = await checkParentStudent(parentId, studentId, churchId);
 
     if (!child) {
-      console.log("❌ STUDENT KHÔNG THUỘC TÀI KHOẢN PARENT");
+      console.log("❌ STUDENT KHÔNG THUỘC PARENT");
 
       return res.status(404).json({
         success: false,
@@ -798,88 +827,85 @@ exports.getChild = async (req, res) => {
       });
     }
 
-    console.log("✅ STUDENT FOUND");
-    console.log("STUDENT ID:", child.id);
-    console.log("STUDENT CODE:", child.code);
-    console.log("STUDENT NAME:", child.name);
-    console.log("RELATIONSHIP:", child.relationship);
-    console.log("IS PRIMARY:", child.is_primary);
-
     // =======================================================
-    // LẤY LỚP HỌC
+    // GET CLASSES
     // =======================================================
 
     const classes = await getStudentClasses(studentId, churchId);
 
-    console.log("CLASS COUNT:", classes.length);
-
-    // =======================================================
-    // LẤY ATTENDANCE
-    // =======================================================
-
-    const attendance = await getAttendanceSummary(studentId, churchId);
-
-    console.log("ATTENDANCE:", attendance);
-
-    // =======================================================
-    // LẤY KẾT QUẢ MỚI NHẤT
-    // =======================================================
-
-    const latestResult = await getLatestResult(studentId, churchId);
-
-    console.log("LATEST RESULT:", latestResult);
-
-    // =======================================================
-    // LỚP HIỆN TẠI
-    // =======================================================
-
     const formattedClasses = classes.map(formatClass);
+
+    console.log("CLASS COUNT:", formattedClasses.length);
+
+    // =======================================================
+    // CURRENT CLASS
+    // =======================================================
 
     const currentClass =
       formattedClasses.length > 0 ? formattedClasses[0] : null;
 
     // =======================================================
-    // LỊCH HỌC HIỆN TẠI
+    // CURRENT SCHEDULE
     // =======================================================
 
     const currentSchedule = currentClass?.schedules?.[0] || null;
 
     // =======================================================
-    // THÔNG TIN STUDENT
+    // ATTENDANCE
+    // =======================================================
+
+    const attendance = await getAttendanceSummary(studentId, churchId);
+
+    // =======================================================
+    // LATEST RESULT
+    // =======================================================
+
+    const latestResult = await getLatestResult(studentId, churchId);
+
+    // =======================================================
+    // STUDENT
     // =======================================================
     //
-    // students hiện có 39 field.
+    // students có 39 field.
     //
-    // Không dùng child = {...child} trực tiếp vì child còn
-    // có các field join từ parent_students.
-    //
-    // Explicit mapping để API rõ ràng.
+    // Mapping đầy đủ theo DESCRIBE students.
     //
     // =======================================================
 
     const student = {
       // -----------------------------------------------------
-      // BASIC
+      // ID
       // -----------------------------------------------------
 
       id: child.id,
       church_id: child.church_id,
 
+      // -----------------------------------------------------
+      // CODE
+      // -----------------------------------------------------
+
       code: child.code,
       qr_token: child.qr_token,
+
+      // -----------------------------------------------------
+      // BASIC INFORMATION
+      // -----------------------------------------------------
 
       name: child.name,
       gender: child.gender,
 
       date_of_birth: child.date_of_birth,
+
       birth_place: child.birth_place,
 
       nationality: child.nationality,
 
       phone: child.phone,
+
       email: child.email,
 
       address: child.address,
+
       parish: child.parish,
 
       // -----------------------------------------------------
@@ -887,6 +913,7 @@ exports.getChild = async (req, res) => {
       // -----------------------------------------------------
 
       father_name: child.father_name,
+
       father_phone: child.father_phone,
 
       // -----------------------------------------------------
@@ -894,6 +921,7 @@ exports.getChild = async (req, res) => {
       // -----------------------------------------------------
 
       mother_name: child.mother_name,
+
       mother_phone: child.mother_phone,
 
       // -----------------------------------------------------
@@ -901,7 +929,9 @@ exports.getChild = async (req, res) => {
       // -----------------------------------------------------
 
       guardian_name: child.guardian_name,
+
       guardian_phone: child.guardian_phone,
+
       guardian_relationship: child.guardian_relationship,
 
       // -----------------------------------------------------
@@ -909,9 +939,13 @@ exports.getChild = async (req, res) => {
       // -----------------------------------------------------
 
       baptism_name: child.baptism_name,
+
       baptism_date: child.baptism_date,
+
       baptism_place: child.baptism_place,
+
       baptism_parish: child.baptism_parish,
+
       baptism_certificate_no: child.baptism_certificate_no,
 
       // -----------------------------------------------------
@@ -955,6 +989,7 @@ exports.getChild = async (req, res) => {
       // -----------------------------------------------------
 
       created_at: child.created_at,
+
       updated_at: child.updated_at,
     };
 
@@ -964,19 +999,23 @@ exports.getChild = async (req, res) => {
 
     const family = {
       father: {
-        name: child.father_name,
-        phone: child.father_phone,
+        name: child.father_name || null,
+
+        phone: child.father_phone || null,
       },
 
       mother: {
-        name: child.mother_name,
-        phone: child.mother_phone,
+        name: child.mother_name || null,
+
+        phone: child.mother_phone || null,
       },
 
       guardian: {
-        name: child.guardian_name,
-        phone: child.guardian_phone,
-        relationship: child.guardian_relationship,
+        name: child.guardian_name || null,
+
+        phone: child.guardian_phone || null,
+
+        relationship: child.guardian_relationship || null,
       },
     };
 
@@ -985,11 +1024,15 @@ exports.getChild = async (req, res) => {
     // =======================================================
 
     const baptism = {
-      name: child.baptism_name,
-      date: child.baptism_date,
-      place: child.baptism_place,
-      parish: child.baptism_parish,
-      certificate_no: child.baptism_certificate_no,
+      name: child.baptism_name || null,
+
+      date: child.baptism_date || null,
+
+      place: child.baptism_place || null,
+
+      parish: child.baptism_parish || null,
+
+      certificate_no: child.baptism_certificate_no || null,
     };
 
     // =======================================================
@@ -997,8 +1040,9 @@ exports.getChild = async (req, res) => {
     // =======================================================
 
     const firstCommunion = {
-      date: child.first_communion_date,
-      place: child.first_communion_place,
+      date: child.first_communion_date || null,
+
+      place: child.first_communion_place || null,
     };
 
     // =======================================================
@@ -1006,39 +1050,39 @@ exports.getChild = async (req, res) => {
     // =======================================================
 
     const confirmation = {
-      date: child.confirmation_date,
-      place: child.confirmation_place,
-      saint_name: child.confirmation_saint_name,
+      date: child.confirmation_date || null,
+
+      place: child.confirmation_place || null,
+
+      saint_name: child.confirmation_saint_name || null,
     };
 
     // =======================================================
-    // RESPONSE
+    // RESPONSE DATA
     // =======================================================
 
     const responseData = {
-      // -----------------------------------------------------
-      // FULL STUDENT
-      // -----------------------------------------------------
+      // =====================================================
+      // STUDENT
+      // =====================================================
 
       student,
 
-      // -----------------------------------------------------
+      // =====================================================
       // PARENT RELATIONSHIP
-      // -----------------------------------------------------
+      // =====================================================
 
       relationship: child.relationship || null,
 
-      is_primary: child.is_primary ?? false,
-
-      // -----------------------------------------------------
+      // =====================================================
       // FAMILY
-      // -----------------------------------------------------
+      // =====================================================
 
       family,
 
-      // -----------------------------------------------------
+      // =====================================================
       // SACRAMENTS
-      // -----------------------------------------------------
+      // =====================================================
 
       baptism,
 
@@ -1046,11 +1090,15 @@ exports.getChild = async (req, res) => {
 
       confirmation,
 
-      // -----------------------------------------------------
-      // CLASS
-      // -----------------------------------------------------
+      // =====================================================
+      // CLASSES
+      // =====================================================
 
       classes: formattedClasses,
+
+      // =====================================================
+      // CURRENT CLASS
+      // =====================================================
 
       class: currentClass,
 
@@ -1058,50 +1106,56 @@ exports.getChild = async (req, res) => {
 
       classCode: currentClass?.code || null,
 
+      // =====================================================
+      // CURRENT ROOM
+      // =====================================================
+
       room: currentSchedule?.room || null,
 
-      // -----------------------------------------------------
+      // =====================================================
       // CATECHIST
-      // -----------------------------------------------------
-      //
-      // Hiện tại class có thể có catechist_id = null.
-      // Không tự đoán tên GLV.
-      //
-      // Khi backend join catechists thì thay object này
-      // bằng thông tin GLV thật.
-      //
-      // -----------------------------------------------------
+      // =====================================================
 
       catechist:
         currentClass?.catechist_name || currentClass?.catechistName || null,
 
       catechist_id: currentClass?.catechist_id || null,
 
-      // -----------------------------------------------------
+      // =====================================================
       // ATTENDANCE
-      // -----------------------------------------------------
+      // =====================================================
 
       attendance,
 
-      // -----------------------------------------------------
-      // RESULT
-      // -----------------------------------------------------
+      // =====================================================
+      // LATEST RESULT
+      // =====================================================
 
       latest_result: latestResult || null,
     };
 
-    console.log("");
-    console.log("---------------- PARENT GET CHILD RESULT ----------------");
+    // =======================================================
+    // DEBUG
+    // =======================================================
 
-    console.log("STUDENT:", {
-      id: student.id,
-      code: student.code,
-      name: student.name,
-    });
+    console.log("");
+    console.log("---------------- PARENT CHILD RESULT ----------------");
+
+    console.log("STUDENT ID:", student.id);
+    console.log("STUDENT CODE:", student.code);
+    console.log("STUDENT NAME:", student.name);
 
     console.log("RELATIONSHIP:", responseData.relationship);
 
-    console.log("IS PRIMARY:", responseData.is_primary);
+    console.log("ADDRESS:", student.address);
+
+    console.log("PHONE:", student.phone);
+
+    console.log("FATHER:", student.father_name);
+
+    console.log("MOTHER:", student.mother_name);
+
+    console.log("GUARDIAN:", student.guardian_name);
 
     console.log("CLASS:", responseData.className);
 
@@ -1117,7 +1171,11 @@ exports.getChild = async (req, res) => {
 
     console.log("LATEST RESULT:", responseData.latest_result);
 
-    console.log("----------------------------------------------------------");
+    console.log("------------------------------------------------------");
+
+    // =======================================================
+    // RESPONSE
+    // =======================================================
 
     return res.json({
       success: true,
@@ -1135,8 +1193,11 @@ exports.getChild = async (req, res) => {
     );
 
     console.error("ERROR CODE:", error.code);
+
     console.error("ERROR MESSAGE:", error.message);
+
     console.error("ERROR SQL:", error.sql);
+
     console.error("ERROR STACK:", error.stack);
 
     return res.status(500).json({

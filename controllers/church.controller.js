@@ -659,6 +659,11 @@ exports.getById = async (req, res) => {
       });
     }
 
+    console.log("==========================================");
+    console.log("🏛️ GET CHURCH BY ID");
+    console.log("Church ID:", churchId);
+    console.log("==========================================");
+
     // =====================================================
     // QUERY
     // =====================================================
@@ -710,7 +715,7 @@ exports.getById = async (req, res) => {
         c.updated_at,
 
         -- =================================================
-        -- GIÁO PHẬN
+        -- DIOCESE
         -- =================================================
 
         d.id AS diocese_ref_id,
@@ -720,7 +725,7 @@ exports.getById = async (req, res) => {
         d.parent_diocese_id AS diocese_parent_id,
 
         -- =================================================
-        -- TỔNG GIÁO PHẬN
+        -- ARCHDIOCESE
         -- =================================================
 
         parent.id AS archdiocese_ref_id,
@@ -729,7 +734,7 @@ exports.getById = async (req, res) => {
         parent.type AS archdiocese_type,
 
         -- =================================================
-        -- GIÁO HẠT
+        -- DEANERY
         -- =================================================
 
         de.id AS deanery_ref_id,
@@ -741,7 +746,7 @@ exports.getById = async (req, res) => {
         de.is_active AS deanery_is_active,
 
         -- =================================================
-        -- GIÁO DÂN
+        -- PARISHIONERS
         -- =================================================
 
         COUNT(DISTINCT p.id) AS total_parishioners,
@@ -770,30 +775,14 @@ exports.getById = async (req, res) => {
 
       FROM churches c
 
-      -- ===================================================
-      -- GIÁO PHẬN
-      -- ===================================================
-
       LEFT JOIN dioceses d
         ON d.id = c.diocese_id
-
-      -- ===================================================
-      -- TỔNG GIÁO PHẬN
-      -- ===================================================
 
       LEFT JOIN dioceses parent
         ON parent.id = d.parent_diocese_id
 
-      -- ===================================================
-      -- GIÁO HẠT
-      -- ===================================================
-
       LEFT JOIN deaneries de
         ON de.id = c.deanery_id
-
-      -- ===================================================
-      -- GIÁO DÂN
-      -- ===================================================
 
       LEFT JOIN parishioners p
         ON p.churches_id = c.id
@@ -833,20 +822,17 @@ exports.getById = async (req, res) => {
         c.created_at,
         c.updated_at,
 
-        -- Giáo phận
         d.id,
         d.code,
         d.name,
         d.type,
         d.parent_diocese_id,
 
-        -- Tổng Giáo phận
         parent.id,
         parent.code,
         parent.name,
         parent.type,
 
-        -- Giáo hạt
         de.id,
         de.code,
         de.name,
@@ -856,14 +842,11 @@ exports.getById = async (req, res) => {
         de.is_active
     `;
 
-    console.log("==========================================");
-    console.log("GET CHURCH BY ID");
-    console.log("Church ID:", churchId);
-    console.log("==========================================");
-
     const [rows] = await db.query(sql, [churchId]);
 
     if (!rows.length) {
+      console.log("❌ Không tìm thấy giáo xứ:", churchId);
+
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy giáo xứ",
@@ -871,6 +854,37 @@ exports.getById = async (req, res) => {
     }
 
     const church = rows[0];
+
+    // =====================================================
+    // DEBUG DATABASE RESULT
+    // =====================================================
+
+    console.log("----------- DATABASE RESULT -----------");
+
+    console.log("Church:", {
+      id: church.id,
+      name: church.name,
+      code: church.code,
+      diocese_id: church.diocese_id,
+      deanery_id: church.deanery_id,
+    });
+
+    console.log("Diocese:", {
+      id: church.diocese_ref_id,
+      code: church.diocese_code,
+      name: church.diocese_name,
+      type: church.diocese_type,
+      parent_id: church.diocese_parent_id,
+    });
+
+    console.log("Deanery:", {
+      id: church.deanery_ref_id,
+      code: church.deanery_code,
+      name: church.deanery_name,
+      diocese_id: church.deanery_diocese_id,
+    });
+
+    console.log("---------------------------------------");
 
     // =====================================================
     // LICENSE
@@ -915,9 +929,7 @@ exports.getById = async (req, res) => {
           );
 
           licenseStatus = "expired";
-
           daysRemaining = 0;
-
           isExpired = true;
         } else {
           const diffMs = expiresAt.getTime() - now.getTime();
@@ -938,193 +950,208 @@ exports.getById = async (req, res) => {
     }
 
     // =====================================================
+    // BUILD DIOCESE OBJECT
+    // =====================================================
+
+    const diocese =
+      church.diocese_ref_id !== null
+        ? {
+            id: Number(church.diocese_ref_id),
+            code: church.diocese_code,
+            name: church.diocese_name,
+            type: church.diocese_type,
+            parent_diocese_id:
+              church.diocese_parent_id !== null
+                ? Number(church.diocese_parent_id)
+                : null,
+          }
+        : null;
+
+    // =====================================================
+    // BUILD ARCHDIOCESE OBJECT
+    // =====================================================
+
+    const archdiocese =
+      church.archdiocese_ref_id !== null
+        ? {
+            id: Number(church.archdiocese_ref_id),
+            code: church.archdiocese_code,
+            name: church.archdiocese_name,
+            type: church.archdiocese_type,
+          }
+        : null;
+
+    // =====================================================
+    // BUILD DEANERY OBJECT
+    // =====================================================
+
+    const deanery =
+      church.deanery_ref_id !== null
+        ? {
+            id: Number(church.deanery_ref_id),
+            code: church.deanery_code,
+            name: church.deanery_name,
+
+            diocese_id:
+              church.deanery_diocese_id !== null
+                ? Number(church.deanery_diocese_id)
+                : null,
+
+            address: church.deanery_address,
+            phone: church.deanery_phone,
+
+            is_active: Number(church.deanery_is_active) === 1,
+          }
+        : null;
+
+    // =====================================================
+    // RESPONSE OBJECT
+    // =====================================================
+
+    const responseChurch = {
+      // ===================================================
+      // BASIC
+      // ===================================================
+
+      id: Number(church.id),
+
+      name: church.name,
+
+      type: church.type,
+
+      code: church.code,
+
+      // ===================================================
+      // ARCHDIOCESE
+      // ===================================================
+
+      archdiocese_id: archdiocese?.id ?? null,
+
+      archdiocese,
+
+      // ===================================================
+      // DIOCESE
+      // ===================================================
+
+      diocese_id: church.diocese_id !== null ? Number(church.diocese_id) : null,
+
+      diocese,
+
+      // ===================================================
+      // DEANERY
+      // ===================================================
+
+      deanery_id: church.deanery_id !== null ? Number(church.deanery_id) : null,
+
+      deanery,
+
+      // ===================================================
+      // ADDRESS
+      // ===================================================
+
+      address: church.address,
+
+      ward: church.ward,
+
+      district: church.district,
+
+      // ===================================================
+      // CONTACT
+      // ===================================================
+
+      phone: church.phone,
+
+      email: church.email,
+
+      pastor_name: church.pastor_name,
+
+      // ===================================================
+      // MAP
+      // ===================================================
+
+      latitude: church.latitude !== null ? Number(church.latitude) : null,
+
+      longitude: church.longitude !== null ? Number(church.longitude) : null,
+
+      // ===================================================
+      // OTHER
+      // ===================================================
+
+      description: church.description,
+
+      image: church.image,
+
+      is_active: Number(church.is_active) === 1,
+
+      // ===================================================
+      // LICENSE
+      // ===================================================
+
+      license_status: licenseStatus,
+
+      trial_started_at: church.trial_started_at || null,
+
+      trial_expires_at: church.trial_expires_at || null,
+
+      activated_at: church.activated_at || null,
+
+      days_remaining: daysRemaining,
+
+      is_expired: isExpired,
+
+      is_trial: licenseStatus === "trial",
+
+      is_active_license: licenseStatus === "active",
+
+      // ===================================================
+      // STATISTICS
+      // ===================================================
+
+      total_parishioners: Number(church.total_parishioners || 0),
+
+      total_male: Number(church.total_male || 0),
+
+      total_female: Number(church.total_female || 0),
+
+      // ===================================================
+      // SYSTEM
+      // ===================================================
+
+      created_at: church.created_at,
+
+      updated_at: church.updated_at,
+    };
+
+    // =====================================================
+    // FINAL DEBUG
+    // =====================================================
+
+    console.log("----------- FINAL RESPONSE -----------");
+
+    console.log("Diocese:", JSON.stringify(diocese, null, 2));
+
+    console.log("Deanery:", JSON.stringify(deanery, null, 2));
+
+    console.log("Church:", JSON.stringify(responseChurch, null, 2));
+
+    console.log("--------------------------------------");
+
+    // =====================================================
     // RESPONSE
     // =====================================================
 
     return res.status(200).json({
       success: true,
-
-      church: {
-        // =================================================
-        // BASIC
-        // =================================================
-
-        id: Number(church.id),
-
-        name: church.name,
-
-        type: church.type,
-
-        code: church.code,
-
-        // =================================================
-        // TỔNG GIÁO PHẬN
-        // =================================================
-
-        archdiocese_id:
-          church.archdiocese_ref_id !== null
-            ? Number(church.archdiocese_ref_id)
-            : null,
-
-        archdiocese:
-          church.archdiocese_ref_id !== null
-            ? {
-                id: Number(church.archdiocese_ref_id),
-
-                code: church.archdiocese_code,
-
-                name: church.archdiocese_name,
-
-                type: church.archdiocese_type,
-              }
-            : null,
-
-        // =================================================
-        // GIÁO PHẬN
-        // =================================================
-
-        diocese_id:
-          church.diocese_id !== null ? Number(church.diocese_id) : null,
-
-        diocese:
-          church.diocese_ref_id !== null
-            ? {
-                id: Number(church.diocese_ref_id),
-
-                code: church.diocese_code,
-
-                name: church.diocese_name,
-
-                type: church.diocese_type,
-
-                parent_diocese_id:
-                  church.diocese_parent_id !== null
-                    ? Number(church.diocese_parent_id)
-                    : null,
-              }
-            : null,
-
-        // =================================================
-        // GIÁO HẠT
-        // =================================================
-
-        deanery_id:
-          church.deanery_id !== null ? Number(church.deanery_id) : null,
-
-        deanery:
-          church.deanery_ref_id !== null
-            ? {
-                id: Number(church.deanery_ref_id),
-
-                code: church.deanery_code,
-
-                name: church.deanery_name,
-
-                diocese_id:
-                  church.deanery_diocese_id !== null
-                    ? Number(church.deanery_diocese_id)
-                    : null,
-
-                address: church.deanery_address,
-
-                phone: church.deanery_phone,
-
-                is_active: Number(church.deanery_is_active) === 1,
-              }
-            : null,
-
-        // =================================================
-        // ADDRESS
-        // =================================================
-
-        address: church.address,
-
-        ward: church.ward,
-
-        district: church.district,
-
-        // =================================================
-        // CONTACT
-        // =================================================
-
-        phone: church.phone,
-
-        email: church.email,
-
-        pastor_name: church.pastor_name,
-
-        // =================================================
-        // MAP
-        // =================================================
-
-        latitude: church.latitude !== null ? Number(church.latitude) : null,
-
-        longitude: church.longitude !== null ? Number(church.longitude) : null,
-
-        // =================================================
-        // OTHER
-        // =================================================
-
-        description: church.description,
-
-        image: church.image,
-
-        is_active: Number(church.is_active) === 1,
-
-        // =================================================
-        // LICENSE
-        // =================================================
-
-        license_status: licenseStatus,
-
-        trial_started_at: church.trial_started_at || null,
-
-        trial_expires_at: church.trial_expires_at || null,
-
-        activated_at: church.activated_at || null,
-
-        days_remaining: daysRemaining,
-
-        is_expired: isExpired,
-
-        is_trial: licenseStatus === "trial",
-
-        is_active_license: licenseStatus === "active",
-
-        // =================================================
-        // STATISTICS
-        // =================================================
-
-        total_parishioners: Number(church.total_parishioners || 0),
-
-        total_male: Number(church.total_male || 0),
-
-        total_female: Number(church.total_female || 0),
-
-        // =================================================
-        // SYSTEM
-        // =================================================
-
-        created_at: church.created_at,
-
-        updated_at: church.updated_at,
-      },
+      church: responseChurch,
     });
   } catch (err) {
     console.error("==========================================");
-
     console.error("❌ GET CHURCH BY ID ERROR");
-
     console.error("Message:", err.message);
-
     console.error("Code:", err.code);
-
     console.error("SQL State:", err.sqlState);
-
     console.error("SQL Message:", err.sqlMessage);
-
     console.error("Stack:", err.stack);
-
     console.error("==========================================");
 
     return res.status(500).json({

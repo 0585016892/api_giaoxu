@@ -57,7 +57,7 @@ const parseNullableId = (value) => {
 
 const validateDioceseAndDeanery = async ({ dioceseId, deaneryId }) => {
   // =====================================================
-  // Không bắt buộc
+  // KHÔNG CÓ CẢ HAI
   // =====================================================
 
   if (!dioceseId && !deaneryId) {
@@ -68,26 +68,40 @@ const validateDioceseAndDeanery = async ({ dioceseId, deaneryId }) => {
     };
   }
 
+  // =====================================================
+  // CÓ GIÁO HẠT THÌ BẮT BUỘC PHẢI CÓ GIÁO PHẬN
+  // =====================================================
+
+  if (deaneryId && !dioceseId) {
+    return {
+      valid: false,
+      message: "Đã chọn Giáo hạt thì bắt buộc phải chọn Giáo phận",
+    };
+  }
+
   let diocese = null;
   let deanery = null;
 
   // =====================================================
-  // CHECK DIOCESE
+  // CHECK GIÁO PHẬN
   // =====================================================
 
   if (dioceseId) {
     const [rows] = await db.query(
       `
-      SELECT
-        id,
-        code,
-        name,
-        type,
-        parent_diocese_id,
-        is_active
-      FROM dioceses
-      WHERE id = ?
-      LIMIT 1
+        SELECT
+          id,
+          code,
+          name,
+          type,
+          parent_diocese_id,
+          is_active
+
+        FROM dioceses
+
+        WHERE id = ?
+
+        LIMIT 1
       `,
       [dioceseId],
     );
@@ -101,6 +115,14 @@ const validateDioceseAndDeanery = async ({ dioceseId, deaneryId }) => {
 
     diocese = rows[0];
 
+    // Phải là Giáo phận, không phải Tổng Giáo phận
+    if (diocese.type !== "GIAO_PHAN") {
+      return {
+        valid: false,
+        message: "Giáo xứ chỉ có thể thuộc một Giáo phận",
+      };
+    }
+
     if (Number(diocese.is_active) !== 1) {
       return {
         valid: false,
@@ -110,21 +132,26 @@ const validateDioceseAndDeanery = async ({ dioceseId, deaneryId }) => {
   }
 
   // =====================================================
-  // CHECK DEANERY
+  // CHECK GIÁO HẠT
   // =====================================================
 
   if (deaneryId) {
     const [rows] = await db.query(
       `
-      SELECT
-        id,
-        diocese_id,
-        code,
-        name,
-        is_active
-      FROM deaneries
-      WHERE id = ?
-      LIMIT 1
+        SELECT
+          id,
+          diocese_id,
+          code,
+          name,
+          address,
+          phone,
+          is_active
+
+        FROM deaneries
+
+        WHERE id = ?
+
+        LIMIT 1
       `,
       [deaneryId],
     );
@@ -146,14 +173,13 @@ const validateDioceseAndDeanery = async ({ dioceseId, deaneryId }) => {
     }
 
     // ===================================================
-    // Nếu có cả giáo phận + giáo hạt
-    // thì giáo hạt phải thuộc giáo phận đó
+    // GIÁO HẠT PHẢI THUỘC GIÁO PHẬN ĐÃ CHỌN
     // ===================================================
 
-    if (dioceseId && Number(deanery.diocese_id) !== Number(dioceseId)) {
+    if (Number(deanery.diocese_id) !== Number(dioceseId)) {
       return {
         valid: false,
-        message: "Giáo hạt không thuộc giáo phận đã chọn",
+        message: "Giáo hạt không thuộc Giáo phận đã chọn",
       };
     }
   }
@@ -626,7 +652,7 @@ exports.getById = async (req, res) => {
   try {
     const churchId = Number(req.params.id);
 
-    if (!churchId || Number.isNaN(churchId)) {
+    if (!Number.isInteger(churchId) || churchId <= 0) {
       return res.status(400).json({
         success: false,
         message: "ID giáo xứ không hợp lệ",
@@ -639,6 +665,10 @@ exports.getById = async (req, res) => {
 
     const sql = `
       SELECT
+        -- =================================================
+        -- CHURCH
+        -- =================================================
+
         c.id,
         c.name,
         c.type,
@@ -711,7 +741,7 @@ exports.getById = async (req, res) => {
         de.is_active AS deanery_is_active,
 
         -- =================================================
-        -- GIÁO XỨ / GIÁO DÂN
+        -- GIÁO DÂN
         -- =================================================
 
         COUNT(DISTINCT p.id) AS total_parishioners,
@@ -741,7 +771,7 @@ exports.getById = async (req, res) => {
       FROM churches c
 
       -- ===================================================
-      -- GIÁO PHẬN CỦA GIÁO XỨ
+      -- GIÁO PHẬN
       -- ===================================================
 
       LEFT JOIN dioceses d
@@ -825,6 +855,11 @@ exports.getById = async (req, res) => {
         de.phone,
         de.is_active
     `;
+
+    console.log("==========================================");
+    console.log("GET CHURCH BY ID");
+    console.log("Church ID:", churchId);
+    console.log("==========================================");
 
     const [rows] = await db.query(sql, [churchId]);
 
@@ -994,9 +1029,7 @@ exports.getById = async (req, res) => {
 
                 phone: church.deanery_phone,
 
-                is_active:
-                  church.deanery_is_active === 1 ||
-                  church.deanery_is_active === true,
+                is_active: Number(church.deanery_is_active) === 1,
               }
             : null,
 
@@ -1036,7 +1069,7 @@ exports.getById = async (req, res) => {
 
         image: church.image,
 
-        is_active: church.is_active === 1 || church.is_active === true,
+        is_active: Number(church.is_active) === 1,
 
         // =================================================
         // LICENSE
@@ -1044,11 +1077,11 @@ exports.getById = async (req, res) => {
 
         license_status: licenseStatus,
 
-        trial_started_at: church.trial_started_at,
+        trial_started_at: church.trial_started_at || null,
 
-        trial_expires_at: church.trial_expires_at,
+        trial_expires_at: church.trial_expires_at || null,
 
-        activated_at: church.activated_at,
+        activated_at: church.activated_at || null,
 
         days_remaining: daysRemaining,
 

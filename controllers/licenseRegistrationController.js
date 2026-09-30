@@ -2,7 +2,7 @@ const db = require("../config/db");
 
 const PACKAGE_CODE = "FAITHEDU_CHURCH";
 const PACKAGE_NAME = "FaithEdu - Giáo xứ";
-const PACKAGE_AMOUNT = 299000;
+const PACKAGE_AMOUNT = 599000;
 
 const getChurchId = (req) => {
   const churchId = Number(

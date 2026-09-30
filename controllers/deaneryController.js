@@ -21,8 +21,9 @@ const normalizeBoolean = (value) => {
  *
  * Query:
  * ?diocese_id=8
+ * ?archdiocese_id=1
  * ?is_active=1
- * ?keyword=...
+ * ?search=...
  * =========================================================
  */
 exports.getAllDeaneries = async (req, res) => {
@@ -59,9 +60,11 @@ exports.getAllDeaneries = async (req, res) => {
 
     const params = [];
 
-    // ==============================
-    // SEARCH
-    // ==============================
+    /**
+     * ==============================
+     * SEARCH
+     * ==============================
+     */
     if (search.trim()) {
       sql += `
         AND (
@@ -77,9 +80,11 @@ exports.getAllDeaneries = async (req, res) => {
       params.push(keyword, keyword, keyword, keyword);
     }
 
-    // ==============================
-    // FILTER GIÁO PHẬN
-    // ==============================
+    /**
+     * ==============================
+     * FILTER GIÁO PHẬN
+     * ==============================
+     */
     if (diocese_id) {
       sql += `
         AND d.diocese_id = ?
@@ -88,9 +93,11 @@ exports.getAllDeaneries = async (req, res) => {
       params.push(diocese_id);
     }
 
-    // ==============================
-    // FILTER TỔNG GIÁO PHẬN
-    // ==============================
+    /**
+     * ==============================
+     * FILTER TỔNG GIÁO PHẬN
+     * ==============================
+     */
     if (archdiocese_id) {
       sql += `
         AND gp.parent_diocese_id = ?
@@ -99,9 +106,11 @@ exports.getAllDeaneries = async (req, res) => {
       params.push(archdiocese_id);
     }
 
-    // ==============================
-    // FILTER ACTIVE
-    // ==============================
+    /**
+     * ==============================
+     * FILTER ACTIVE
+     * ==============================
+     */
     if (is_active !== undefined && is_active !== "") {
       sql += `
         AND d.is_active = ?
@@ -125,13 +134,14 @@ exports.getAllDeaneries = async (req, res) => {
     return res.json({
       success: true,
       data: rows,
+      total: rows.length,
     });
   } catch (error) {
     console.error("[getAllDeaneries] ERROR:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể lấy danh sách giáo hạt",
+      message: "Không thể lấy danh sách Giáo hạt",
       error: error.message,
     });
   }
@@ -164,7 +174,6 @@ exports.getDeaneryById = async (req, res) => {
           d.diocese_id,
           d.address,
           d.phone,
-          d.email,
           d.is_active,
 
           gp.code AS diocese_code,
@@ -217,8 +226,6 @@ exports.getDeaneryById = async (req, res) => {
  *
  * GET /api/deaneries/diocese/:dioceseId
  *
- * Dùng cho cascading:
- *
  * Tổng GP
  *     ↓
  * Giáo phận
@@ -238,7 +245,9 @@ exports.getDeaneriesByDiocese = async (req, res) => {
     }
 
     /**
+     * ===============================
      * CHECK GIÁO PHẬN
+     * ===============================
      */
     const [dioceseRows] = await db.query(
       `
@@ -247,7 +256,8 @@ exports.getDeaneriesByDiocese = async (req, res) => {
           code,
           name,
           parent_diocese_id,
-          type
+          type,
+          is_active
 
         FROM dioceses
 
@@ -273,7 +283,9 @@ exports.getDeaneriesByDiocese = async (req, res) => {
     }
 
     /**
+     * ===============================
      * LẤY GIÁO HẠT
+     * ===============================
      */
     const [rows] = await db.query(
       `
@@ -284,7 +296,6 @@ exports.getDeaneriesByDiocese = async (req, res) => {
           diocese_id,
           address,
           phone,
-          email,
           is_active
 
         FROM deaneries
@@ -322,8 +333,7 @@ exports.getDeaneriesByDiocese = async (req, res) => {
  */
 exports.createDeanery = async (req, res) => {
   try {
-    const { code, name, diocese_id, address, phone, email, is_active } =
-      req.body;
+    const { code, name, diocese_id, address, phone, is_active } = req.body;
 
     /**
      * ===============================
@@ -423,11 +433,10 @@ exports.createDeanery = async (req, res) => {
           diocese_id,
           address,
           phone,
-          email,
           is_active
         )
 
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?)
       `,
       [
         code.trim(),
@@ -435,13 +444,14 @@ exports.createDeanery = async (req, res) => {
         diocese_id,
         address?.trim() || null,
         phone?.trim() || null,
-        email?.trim() || null,
         normalizeBoolean(is_active === undefined ? 1 : is_active),
       ],
     );
 
     /**
-     * Lấy lại
+     * ===============================
+     * GET CREATED
+     * ===============================
      */
     const [rows] = await db.query(
       `
@@ -490,8 +500,7 @@ exports.updateDeanery = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const { code, name, diocese_id, address, phone, email, is_active } =
-      req.body;
+    const { code, name, diocese_id, address, phone, is_active } = req.body;
 
     if (!id) {
       return res.status(400).json({
@@ -530,6 +539,25 @@ exports.updateDeanery = async (req, res) => {
 
     const finalDioceseId =
       diocese_id !== undefined ? diocese_id : existing.diocese_id;
+
+    /**
+     * ===============================
+     * VALIDATE CODE / NAME
+     * ===============================
+     */
+    if (!finalCode) {
+      return res.status(400).json({
+        success: false,
+        message: "Mã Giáo hạt không được để trống",
+      });
+    }
+
+    if (!finalName) {
+      return res.status(400).json({
+        success: false,
+        message: "Tên Giáo hạt không được để trống",
+      });
+    }
 
     /**
      * ===============================
@@ -608,7 +636,6 @@ exports.updateDeanery = async (req, res) => {
           diocese_id = ?,
           address = ?,
           phone = ?,
-          email = ?,
           is_active = ?
 
         WHERE id = ?
@@ -622,8 +649,6 @@ exports.updateDeanery = async (req, res) => {
 
         phone !== undefined ? phone?.trim() || null : existing.phone,
 
-        email !== undefined ? email?.trim() || null : existing.email,
-
         is_active !== undefined
           ? normalizeBoolean(is_active)
           : existing.is_active,
@@ -634,7 +659,7 @@ exports.updateDeanery = async (req, res) => {
 
     /**
      * ===============================
-     * GET RESULT
+     * GET UPDATED
      * ===============================
      */
     const [rows] = await db.query(
@@ -728,7 +753,8 @@ exports.deleteDeanery = async (req, res) => {
      */
     const [churchRows] = await connection.query(
       `
-        SELECT COUNT(*) AS total
+        SELECT
+          COUNT(*) AS total
 
         FROM churches
 
@@ -801,6 +827,11 @@ exports.toggleDeaneryActive = async (req, res) => {
       });
     }
 
+    /**
+     * ===============================
+     * GET CURRENT
+     * ===============================
+     */
     const [rows] = await db.query(
       `
         SELECT
@@ -826,6 +857,11 @@ exports.toggleDeaneryActive = async (req, res) => {
 
     const nextStatus = rows[0].is_active ? 0 : 1;
 
+    /**
+     * ===============================
+     * UPDATE
+     * ===============================
+     */
     await db.execute(
       `
         UPDATE deaneries

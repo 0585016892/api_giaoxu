@@ -52,7 +52,8 @@ const lessonResourceRoutes = require("./routes/lessonResourceRoutes");
 const gradingRuleRoutes = require("./routes/gradingRuleRoutes");
 const licenseRegistrationRoutes = require("./routes/licenseRegistrationRoutes");
 const parentRoutes = require("./routes/parentRoutes");
-
+const dioceseRoutes = require("./routes/dioceseRoutes");
+const deaneryRoutes = require("./routes/deaneryRoutes");
 // ===============================
 // APP
 // ===============================
@@ -134,6 +135,8 @@ app.use("/api/lesson-resources", lessonResourceRoutes);
 app.use("/api/grading-rules", gradingRuleRoutes);
 app.use("/api/license-regis", licenseRegistrationRoutes);
 app.use("/api/parent", parentRoutes);
+app.use("/api/dioceses", dioceseRoutes);
+app.use("/api/deaneries", deaneryRoutes);
 // ===============================
 // CORS MANAGEMENT
 // ===============================

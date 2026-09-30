@@ -2189,7 +2189,7 @@ exports.toggleActive = async (req, res) => {
 };
 
 // ======================================================
-// 7. SEARCH MAP
+// 7. SEARCH MAP LOG
 // ======================================================
 
 exports.searchMap = async (req, res) => {

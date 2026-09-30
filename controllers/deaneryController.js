@@ -27,7 +27,7 @@ const normalizeBoolean = (value) => {
  */
 exports.getAllDeaneries = async (req, res) => {
   try {
-    const { diocese_id, is_active, keyword } = req.query;
+    const { search = "", diocese_id, archdiocese_id, is_active } = req.query;
 
     let sql = `
       SELECT
@@ -37,7 +37,6 @@ exports.getAllDeaneries = async (req, res) => {
         d.diocese_id,
         d.address,
         d.phone,
-        d.email,
         d.is_active,
 
         gp.code AS diocese_code,
@@ -60,57 +59,79 @@ exports.getAllDeaneries = async (req, res) => {
 
     const params = [];
 
-    /**
-     * FILTER GIÁO PHẬN
-     */
-    if (diocese_id !== undefined && diocese_id !== null && diocese_id !== "") {
-      sql += ` AND d.diocese_id = ?`;
-      params.push(diocese_id);
-    }
-
-    /**
-     * FILTER ACTIVE
-     */
-    if (is_active !== undefined && is_active !== null && is_active !== "") {
-      sql += ` AND d.is_active = ?`;
-      params.push(normalizeBoolean(is_active));
-    }
-
-    /**
-     * SEARCH
-     */
-    if (keyword && keyword.trim()) {
+    // ==============================
+    // SEARCH
+    // ==============================
+    if (search.trim()) {
       sql += `
         AND (
           d.code LIKE ?
           OR d.name LIKE ?
           OR gp.name LIKE ?
+          OR parent.name LIKE ?
         )
       `;
 
-      const search = `%${keyword.trim()}%`;
+      const keyword = `%${search.trim()}%`;
 
-      params.push(search, search, search);
+      params.push(keyword, keyword, keyword, keyword);
+    }
+
+    // ==============================
+    // FILTER GIÁO PHẬN
+    // ==============================
+    if (diocese_id) {
+      sql += `
+        AND d.diocese_id = ?
+      `;
+
+      params.push(diocese_id);
+    }
+
+    // ==============================
+    // FILTER TỔNG GIÁO PHẬN
+    // ==============================
+    if (archdiocese_id) {
+      sql += `
+        AND gp.parent_diocese_id = ?
+      `;
+
+      params.push(archdiocese_id);
+    }
+
+    // ==============================
+    // FILTER ACTIVE
+    // ==============================
+    if (is_active !== undefined && is_active !== "") {
+      sql += `
+        AND d.is_active = ?
+      `;
+
+      params.push(Number(is_active));
     }
 
     sql += `
-      ORDER BY
-        d.name ASC
+      ORDER BY d.name ASC
     `;
 
+    console.log("[getAllDeaneries] SQL:", sql);
+
+    console.log("[getAllDeaneries] PARAMS:", params);
+
     const [rows] = await db.query(sql, params);
+
+    console.log("[getAllDeaneries] RESULT:", rows.length);
 
     return res.json({
       success: true,
       data: rows,
-      total: rows.length,
     });
   } catch (error) {
     console.error("[getAllDeaneries] ERROR:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể lấy danh sách Giáo hạt",
+      message: "Không thể lấy danh sách giáo hạt",
       error: error.message,
     });
   }

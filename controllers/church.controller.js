@@ -680,7 +680,7 @@ exports.getById = async (req, res) => {
         c.updated_at,
 
         -- =================================================
-        -- DIOCESE
+        -- GIÁO PHẬN
         -- =================================================
 
         d.id AS diocese_ref_id,
@@ -690,16 +690,28 @@ exports.getById = async (req, res) => {
         d.parent_diocese_id AS diocese_parent_id,
 
         -- =================================================
-        -- DEANERY
+        -- TỔNG GIÁO PHẬN
+        -- =================================================
+
+        parent.id AS archdiocese_ref_id,
+        parent.code AS archdiocese_code,
+        parent.name AS archdiocese_name,
+        parent.type AS archdiocese_type,
+
+        -- =================================================
+        -- GIÁO HẠT
         -- =================================================
 
         de.id AS deanery_ref_id,
         de.code AS deanery_code,
         de.name AS deanery_name,
         de.diocese_id AS deanery_diocese_id,
+        de.address AS deanery_address,
+        de.phone AS deanery_phone,
+        de.is_active AS deanery_is_active,
 
         -- =================================================
-        -- PARISHIONERS
+        -- GIÁO XỨ / GIÁO DÂN
         -- =================================================
 
         COUNT(DISTINCT p.id) AS total_parishioners,
@@ -728,11 +740,30 @@ exports.getById = async (req, res) => {
 
       FROM churches c
 
+      -- ===================================================
+      -- GIÁO PHẬN CỦA GIÁO XỨ
+      -- ===================================================
+
       LEFT JOIN dioceses d
         ON d.id = c.diocese_id
 
+      -- ===================================================
+      -- TỔNG GIÁO PHẬN
+      -- ===================================================
+
+      LEFT JOIN dioceses parent
+        ON parent.id = d.parent_diocese_id
+
+      -- ===================================================
+      -- GIÁO HẠT
+      -- ===================================================
+
       LEFT JOIN deaneries de
         ON de.id = c.deanery_id
+
+      -- ===================================================
+      -- GIÁO DÂN
+      -- ===================================================
 
       LEFT JOIN parishioners p
         ON p.churches_id = c.id
@@ -772,16 +803,27 @@ exports.getById = async (req, res) => {
         c.created_at,
         c.updated_at,
 
+        -- Giáo phận
         d.id,
         d.code,
         d.name,
         d.type,
         d.parent_diocese_id,
 
+        -- Tổng Giáo phận
+        parent.id,
+        parent.code,
+        parent.name,
+        parent.type,
+
+        -- Giáo hạt
         de.id,
         de.code,
         de.name,
-        de.diocese_id
+        de.diocese_id,
+        de.address,
+        de.phone,
+        de.is_active
     `;
 
     const [rows] = await db.query(sql, [churchId]);
@@ -821,7 +863,6 @@ exports.getById = async (req, res) => {
     // =====================================================
     else if (licenseStatus === "trial") {
       if (!church.trial_expires_at) {
-        // Giữ logic tương thích dữ liệu cũ
         daysRemaining = null;
         isExpired = false;
       } else {
@@ -830,10 +871,10 @@ exports.getById = async (req, res) => {
         if (expiresAt <= now) {
           await db.query(
             `
-            UPDATE churches
-            SET license_status = 'expired'
-            WHERE id = ?
-              AND license_status = 'trial'
+              UPDATE churches
+              SET license_status = 'expired'
+              WHERE id = ?
+                AND license_status = 'trial'
             `,
             [churchId],
           );
@@ -869,6 +910,10 @@ exports.getById = async (req, res) => {
       success: true,
 
       church: {
+        // =================================================
+        // BASIC
+        // =================================================
+
         id: Number(church.id),
 
         name: church.name,
@@ -878,7 +923,29 @@ exports.getById = async (req, res) => {
         code: church.code,
 
         // =================================================
-        // DIOCESE
+        // TỔNG GIÁO PHẬN
+        // =================================================
+
+        archdiocese_id:
+          church.archdiocese_ref_id !== null
+            ? Number(church.archdiocese_ref_id)
+            : null,
+
+        archdiocese:
+          church.archdiocese_ref_id !== null
+            ? {
+                id: Number(church.archdiocese_ref_id),
+
+                code: church.archdiocese_code,
+
+                name: church.archdiocese_name,
+
+                type: church.archdiocese_type,
+              }
+            : null,
+
+        // =================================================
+        // GIÁO PHẬN
         // =================================================
 
         diocese_id:
@@ -903,7 +970,7 @@ exports.getById = async (req, res) => {
             : null,
 
         // =================================================
-        // DEANERY
+        // GIÁO HẠT
         // =================================================
 
         deanery_id:
@@ -922,6 +989,14 @@ exports.getById = async (req, res) => {
                   church.deanery_diocese_id !== null
                     ? Number(church.deanery_diocese_id)
                     : null,
+
+                address: church.deanery_address,
+
+                phone: church.deanery_phone,
+
+                is_active:
+                  church.deanery_is_active === 1 ||
+                  church.deanery_is_active === true,
               }
             : null,
 
@@ -1026,7 +1101,6 @@ exports.getById = async (req, res) => {
     });
   }
 };
-
 // ======================================================
 // 3. CREATE
 // ======================================================

@@ -164,7 +164,6 @@ exports.getDeaneryById = async (req, res) => {
           d.diocese_id,
           d.address,
           d.phone,
-          d.email,
           d.is_active,
 
           gp.code AS diocese_code,
@@ -284,7 +283,6 @@ exports.getDeaneriesByDiocese = async (req, res) => {
           diocese_id,
           address,
           phone,
-          email,
           is_active
 
         FROM deaneries
@@ -423,11 +421,10 @@ exports.createDeanery = async (req, res) => {
           diocese_id,
           address,
           phone,
-          email,
           is_active
         )
 
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?)
       `,
       [
         code.trim(),
@@ -435,7 +432,6 @@ exports.createDeanery = async (req, res) => {
         diocese_id,
         address?.trim() || null,
         phone?.trim() || null,
-        email?.trim() || null,
         normalizeBoolean(is_active === undefined ? 1 : is_active),
       ],
     );
@@ -608,7 +604,6 @@ exports.updateDeanery = async (req, res) => {
           diocese_id = ?,
           address = ?,
           phone = ?,
-          email = ?,
           is_active = ?
 
         WHERE id = ?
@@ -621,8 +616,6 @@ exports.updateDeanery = async (req, res) => {
         address !== undefined ? address?.trim() || null : existing.address,
 
         phone !== undefined ? phone?.trim() || null : existing.phone,
-
-        email !== undefined ? email?.trim() || null : existing.email,
 
         is_active !== undefined
           ? normalizeBoolean(is_active)

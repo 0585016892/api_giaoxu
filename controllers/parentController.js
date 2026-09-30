@@ -57,7 +57,35 @@ const normalizePageSize = (value, defaultValue = 20) => {
 
   return Math.min(pageSize, 100);
 };
+const getAvatarUrl = (avatar) => {
+  if (!avatar) {
+    return null;
+  }
 
+  let value = String(avatar).trim();
+
+  // Nếu DB đang lưu Windows absolute path
+  value = value.replace(/\\/g, "/");
+
+  // Tìm từ uploads trở đi
+  const uploadsIndex = value.toLowerCase().indexOf("/uploads/");
+
+  if (uploadsIndex !== -1) {
+    return value.substring(uploadsIndex);
+  }
+
+  // Nếu đã là URL
+  if (/^https?:\/\//i.test(value)) {
+    return value;
+  }
+
+  // Nếu đã là path tương đối
+  if (value.startsWith("/")) {
+    return value;
+  }
+
+  return `/${value}`;
+};
 /**
  * =========================================================
  * CHECK PARENT ACCOUNT
@@ -679,7 +707,7 @@ exports.getChildren = async (req, res) => {
 
         parish: student.parish,
 
-        avatar: student.avatar,
+        avatar: getAvatarUrl(student.avatar),
 
         status: student.status,
 
@@ -980,7 +1008,7 @@ exports.getChild = async (req, res) => {
 
       note: child.note,
 
-      avatar: child.avatar,
+      avatar: getAvatarUrl(child.avatar),
 
       status: child.status,
 
@@ -1880,7 +1908,7 @@ exports.getChildSchedule = async (req, res) => {
 
           name: child.name,
 
-          avatar: child.avatar,
+          avatar: getAvatarUrl(child.avatar),
         },
 
         classes: classes.map(formatClass),

@@ -8,6 +8,7 @@ const requireSystemAdmin = require("../middleware/requireSystemAdmin");
 
 // ================= CRUD =================
 router.get("/", churchController.getAll);
+router.get("/dioceses", churchController.getDioceses);
 router.get("/:id", churchController.getById);
 router.post(
   "/:id/activate-license",

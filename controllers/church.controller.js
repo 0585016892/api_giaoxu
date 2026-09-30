@@ -1649,3 +1649,77 @@ exports.activateLicense = async (req, res) => {
     });
   }
 };
+
+exports.getDioceses = async (req, res) => {
+  try {
+    const { type, parent_diocese_id } = req.query;
+
+    let sql = `
+      SELECT
+        d.id,
+        d.code,
+        d.name,
+        d.bishop_name,
+        d.address,
+        d.phone,
+        d.email,
+        d.parent_diocese_id,
+        d.type,
+        d.is_active,
+        d.description,
+        d.created_at,
+        d.updated_at,
+
+        p.id AS parent_id,
+        p.code AS parent_code,
+        p.name AS parent_name
+
+      FROM dioceses d
+
+      LEFT JOIN dioceses p
+        ON p.id = d.parent_diocese_id
+
+      WHERE 1 = 1
+    `;
+
+    const params = [];
+
+    // Lọc type
+    if (type) {
+      sql += ` AND d.type = ?`;
+      params.push(type);
+    }
+
+    // Lọc theo Tổng Giáo phận
+    if (parent_diocese_id) {
+      sql += ` AND d.parent_diocese_id = ?`;
+      params.push(parent_diocese_id);
+    }
+
+    sql += `
+      ORDER BY
+        CASE
+          WHEN d.type = 'TONG_GIAO_PHAN' THEN 0
+          ELSE 1
+        END,
+        d.parent_diocese_id,
+        d.name
+    `;
+
+    const [rows] = await db.query(sql, params);
+
+    return res.status(200).json({
+      success: true,
+      data: rows,
+      total: rows.length,
+    });
+  } catch (error) {
+    console.error("[GET /dioceses] Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể lấy danh sách giáo phận",
+      error: error.message,
+    });
+  }
+};

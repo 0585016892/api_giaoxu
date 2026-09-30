@@ -7,8 +7,15 @@ const { verifyToken } = require("../middleware/authMiddleware");
 const requireSystemAdmin = require("../middleware/requireSystemAdmin");
 
 // ================= CRUD =================
+// Tổng Giáo phận
+router.get("/archdioceses", churchController.getArchdioceses);
+
+// Giáo phận thuộc Tổng Giáo phận
+router.get("/by-parent/:parentDioceseId", churchController.getDiocesesByParent);
+router.get("/by-diocese/:dioceseId", churchController.getDeaneriesByDiocese);
+
 router.get("/", churchController.getAll);
-router.get("/dioceses", churchController.getDioceses);
+
 router.get("/:id", churchController.getById);
 router.post(
   "/:id/activate-license",

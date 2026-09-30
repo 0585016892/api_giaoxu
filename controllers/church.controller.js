@@ -30,6 +30,146 @@ const deletePhysicalFile = (imagePath) => {
 // 1. GET ALL
 // SEARCH + FILTER + PAGINATION + SỐ LƯỢNG GIÁO DÂN
 // ======================================================
+
+// ======================================================
+// HELPER
+// ======================================================
+
+const parseNullableId = (value) => {
+  if (
+    value === undefined ||
+    value === null ||
+    value === "" ||
+    value === "null" ||
+    value === "undefined"
+  ) {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  return parsed;
+};
+
+const validateDioceseAndDeanery = async ({ dioceseId, deaneryId }) => {
+  // =====================================================
+  // Không bắt buộc
+  // =====================================================
+
+  if (!dioceseId && !deaneryId) {
+    return {
+      valid: true,
+      diocese: null,
+      deanery: null,
+    };
+  }
+
+  let diocese = null;
+  let deanery = null;
+
+  // =====================================================
+  // CHECK DIOCESE
+  // =====================================================
+
+  if (dioceseId) {
+    const [rows] = await db.query(
+      `
+      SELECT
+        id,
+        code,
+        name,
+        type,
+        parent_diocese_id,
+        is_active
+      FROM dioceses
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [dioceseId],
+    );
+
+    if (!rows.length) {
+      return {
+        valid: false,
+        message: "Giáo phận không tồn tại",
+      };
+    }
+
+    diocese = rows[0];
+
+    if (Number(diocese.is_active) !== 1) {
+      return {
+        valid: false,
+        message: "Giáo phận đang bị khóa",
+      };
+    }
+  }
+
+  // =====================================================
+  // CHECK DEANERY
+  // =====================================================
+
+  if (deaneryId) {
+    const [rows] = await db.query(
+      `
+      SELECT
+        id,
+        diocese_id,
+        code,
+        name,
+        is_active
+      FROM deaneries
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [deaneryId],
+    );
+
+    if (!rows.length) {
+      return {
+        valid: false,
+        message: "Giáo hạt không tồn tại",
+      };
+    }
+
+    deanery = rows[0];
+
+    if (Number(deanery.is_active) !== 1) {
+      return {
+        valid: false,
+        message: "Giáo hạt đang bị khóa",
+      };
+    }
+
+    // ===================================================
+    // Nếu có cả giáo phận + giáo hạt
+    // thì giáo hạt phải thuộc giáo phận đó
+    // ===================================================
+
+    if (dioceseId && Number(deanery.diocese_id) !== Number(dioceseId)) {
+      return {
+        valid: false,
+        message: "Giáo hạt không thuộc giáo phận đã chọn",
+      };
+    }
+  }
+
+  return {
+    valid: true,
+    diocese,
+    deanery,
+  };
+};
+
+// ======================================================
+// 1. GET ALL
+// DANH SÁCH GIÁO XỨ
+// ======================================================
+
 exports.getAll = async (req, res) => {
   try {
     // =====================================================
@@ -44,10 +184,14 @@ exports.getAll = async (req, res) => {
       district,
       ward,
       is_active,
+
+      // NEW
+      diocese_id,
+      deanery_id,
     } = req.query;
 
     // =====================================================
-    // PARSE PAGINATION
+    // PAGINATION
     // =====================================================
 
     page = parseInt(page, 10);
@@ -61,10 +205,14 @@ exports.getAll = async (req, res) => {
       limit = 10;
     }
 
-    // Giới hạn số record mỗi trang nếu cần
-    // limit = Math.min(limit, 100);
-
     const offset = (page - 1) * limit;
+
+    // =====================================================
+    // NORMALIZE IDS
+    // =====================================================
+
+    const dioceseId = parseNullableId(diocese_id);
+    const deaneryId = parseNullableId(deanery_id);
 
     // =====================================================
     // WHERE
@@ -87,10 +235,23 @@ exports.getAll = async (req, res) => {
           OR c.code LIKE ?
           OR c.pastor_name LIKE ?
           OR c.address LIKE ?
+          OR d.name LIKE ?
+          OR d.code LIKE ?
+          OR de.name LIKE ?
+          OR de.code LIKE ?
         )
       `;
 
-      params.push(searchValue, searchValue, searchValue, searchValue);
+      params.push(
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+      );
     }
 
     // =====================================================
@@ -142,6 +303,30 @@ exports.getAll = async (req, res) => {
     }
 
     // =====================================================
+    // DIOCESE
+    // =====================================================
+
+    if (dioceseId) {
+      where += `
+        AND c.diocese_id = ?
+      `;
+
+      params.push(dioceseId);
+    }
+
+    // =====================================================
+    // DEANERY
+    // =====================================================
+
+    if (deaneryId) {
+      where += `
+        AND c.deanery_id = ?
+      `;
+
+      params.push(deaneryId);
+    }
+
+    // =====================================================
     // DEBUG
     // =====================================================
 
@@ -150,6 +335,8 @@ exports.getAll = async (req, res) => {
     console.log("QUERY:", req.query);
     console.log("SEARCH:", search);
     console.log("TYPE:", type);
+    console.log("DIOCESE ID:", dioceseId);
+    console.log("DEANERY ID:", deaneryId);
     console.log("WHERE:", where);
     console.log("PARAMS:", params);
     console.log("PAGE:", page);
@@ -164,6 +351,13 @@ exports.getAll = async (req, res) => {
     const countSql = `
       SELECT COUNT(*) AS total
       FROM churches c
+
+      LEFT JOIN dioceses d
+        ON d.id = c.diocese_id
+
+      LEFT JOIN deaneries de
+        ON de.id = c.deanery_id
+
       ${where}
     `;
 
@@ -179,9 +373,38 @@ exports.getAll = async (req, res) => {
       SELECT
         c.*,
 
+        -- =================================================
+        -- DIOCESE
+        -- =================================================
+
+        d.id AS diocese_ref_id,
+        d.code AS diocese_code,
+        d.name AS diocese_name,
+        d.type AS diocese_type,
+        d.parent_diocese_id AS diocese_parent_id,
+
+        -- =================================================
+        -- DEANERY
+        -- =================================================
+
+        de.id AS deanery_ref_id,
+        de.code AS deanery_code,
+        de.name AS deanery_name,
+        de.diocese_id AS deanery_diocese_id,
+
+        -- =================================================
+        -- PARISHIONERS
+        -- =================================================
+
         COUNT(DISTINCT p.id) AS total_parishioners
 
       FROM churches c
+
+      LEFT JOIN dioceses d
+        ON d.id = c.diocese_id
+
+      LEFT JOIN deaneries de
+        ON de.id = c.deanery_id
 
       LEFT JOIN parishioners p
         ON p.churches_id = c.id
@@ -194,9 +417,6 @@ exports.getAll = async (req, res) => {
 
       LIMIT ? OFFSET ?
     `;
-
-    // Không được dùng params trực tiếp
-    // vì LIMIT/OFFSET phải thêm vào cuối
 
     const dataParams = [...params, limit, offset];
 
@@ -222,7 +442,6 @@ exports.getAll = async (req, res) => {
 
         if (licenseStatus === "active") {
           isExpired = false;
-
           daysRemaining = null;
         }
 
@@ -232,10 +451,6 @@ exports.getAll = async (req, res) => {
         else if (licenseStatus === "trial") {
           if (church.trial_expires_at) {
             const expiresAt = new Date(church.trial_expires_at);
-
-            // =============================================
-            // TRIAL EXPIRED
-            // =============================================
 
             if (expiresAt <= now) {
               await db.query(
@@ -253,24 +468,14 @@ exports.getAll = async (req, res) => {
               isExpired = true;
 
               daysRemaining = 0;
-            }
-
-            // =============================================
-            // TRIAL STILL ACTIVE
-            // =============================================
-            else {
+            } else {
               const diffMs = expiresAt.getTime() - now.getTime();
 
               daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 
               isExpired = false;
             }
-          }
-
-          // =============================================
-          // TRIAL WITHOUT EXPIRATION DATE
-          // =============================================
-          else {
+          } else {
             await db.query(
               `
               UPDATE churches
@@ -294,22 +499,68 @@ exports.getAll = async (req, res) => {
         // =================================================
         else if (licenseStatus === "expired") {
           isExpired = true;
-
           daysRemaining = 0;
         }
 
         // =================================================
-        // RETURN DATA
+        // RESPONSE OBJECT
         // =================================================
 
         return {
           ...church,
 
+          // =================================================
+          // DIOCESE
+          // =================================================
+
+          diocese_id:
+            church.diocese_ref_id !== null
+              ? Number(church.diocese_ref_id)
+              : null,
+
+          diocese: church.diocese_ref_id
+            ? {
+                id: Number(church.diocese_ref_id),
+                code: church.diocese_code,
+                name: church.diocese_name,
+                type: church.diocese_type,
+                parent_diocese_id:
+                  church.diocese_parent_id !== null
+                    ? Number(church.diocese_parent_id)
+                    : null,
+              }
+            : null,
+
+          // =================================================
+          // DEANERY
+          // =================================================
+
+          deanery_id:
+            church.deanery_ref_id !== null
+              ? Number(church.deanery_ref_id)
+              : null,
+
+          deanery: church.deanery_ref_id
+            ? {
+                id: Number(church.deanery_ref_id),
+                code: church.deanery_code,
+                name: church.deanery_name,
+                diocese_id:
+                  church.deanery_diocese_id !== null
+                    ? Number(church.deanery_diocese_id)
+                    : null,
+              }
+            : null,
+
+          // =================================================
+          // STATISTICS
+          // =================================================
+
           total_parishioners: Number(church.total_parishioners || 0),
 
-          // ===============================================
+          // =================================================
           // LICENSE
-          // ===============================================
+          // =================================================
 
           license_status: licenseStatus,
 
@@ -347,24 +598,20 @@ exports.getAll = async (req, res) => {
 
       pagination: {
         total,
-
         page,
-
         limit,
-
         totalPages,
       },
     });
   } catch (err) {
-    // =====================================================
-    // ERROR
-    // =====================================================
+    console.error("====================================");
 
     console.error("GET ALL CHURCHES ERROR:", err);
 
+    console.error("====================================");
+
     return res.status(500).json({
       success: false,
-
       message: err.message || "Không thể lấy danh sách giáo xứ",
     });
   }
@@ -372,7 +619,7 @@ exports.getAll = async (req, res) => {
 
 // ======================================================
 // 2. GET BY ID
-// CHI TIẾT + LICENSE + THỐNG KÊ GIÁO DÂN
+// CHI TIẾT + DIOCESE + DEANERY + LICENSE
 // ======================================================
 
 exports.getById = async (req, res) => {
@@ -386,12 +633,19 @@ exports.getById = async (req, res) => {
       });
     }
 
+    // =====================================================
+    // QUERY
+    // =====================================================
+
     const sql = `
       SELECT
         c.id,
         c.name,
         c.type,
         c.code,
+
+        c.diocese_id,
+        c.deanery_id,
 
         c.address,
         c.ward,
@@ -409,18 +663,46 @@ exports.getById = async (req, res) => {
 
         c.is_active,
 
+        -- =================================================
         -- LICENSE
+        -- =================================================
+
         c.license_status,
         c.trial_started_at,
         c.trial_expires_at,
         c.activated_at,
 
+        -- =================================================
         -- SYSTEM
+        -- =================================================
+
         c.created_at,
         c.updated_at,
 
+        -- =================================================
+        -- DIOCESE
+        -- =================================================
+
+        d.id AS diocese_ref_id,
+        d.code AS diocese_code,
+        d.name AS diocese_name,
+        d.type AS diocese_type,
+        d.parent_diocese_id AS diocese_parent_id,
+
+        -- =================================================
+        -- DEANERY
+        -- =================================================
+
+        de.id AS deanery_ref_id,
+        de.code AS deanery_code,
+        de.name AS deanery_name,
+        de.diocese_id AS deanery_diocese_id,
+
+        -- =================================================
         -- PARISHIONERS
-        COUNT(p.id) AS total_parishioners,
+        -- =================================================
+
+        COUNT(DISTINCT p.id) AS total_parishioners,
 
         COALESCE(
           SUM(
@@ -446,6 +728,12 @@ exports.getById = async (req, res) => {
 
       FROM churches c
 
+      LEFT JOIN dioceses d
+        ON d.id = c.diocese_id
+
+      LEFT JOIN deaneries de
+        ON de.id = c.deanery_id
+
       LEFT JOIN parishioners p
         ON p.churches_id = c.id
 
@@ -456,23 +744,44 @@ exports.getById = async (req, res) => {
         c.name,
         c.type,
         c.code,
+
+        c.diocese_id,
+        c.deanery_id,
+
         c.address,
         c.ward,
         c.district,
+
         c.phone,
         c.email,
         c.pastor_name,
+
         c.latitude,
         c.longitude,
+
         c.description,
         c.image,
+
         c.is_active,
+
         c.license_status,
         c.trial_started_at,
         c.trial_expires_at,
         c.activated_at,
+
         c.created_at,
-        c.updated_at
+        c.updated_at,
+
+        d.id,
+        d.code,
+        d.name,
+        d.type,
+        d.parent_diocese_id,
+
+        de.id,
+        de.code,
+        de.name,
+        de.diocese_id
     `;
 
     const [rows] = await db.query(sql, [churchId]);
@@ -486,21 +795,33 @@ exports.getById = async (req, res) => {
 
     const church = rows[0];
 
+    // =====================================================
+    // LICENSE
+    // =====================================================
+
     let licenseStatus = church.license_status || "trial";
+
     let daysRemaining = null;
+
     let isExpired = false;
 
     const now = new Date();
 
+    // =====================================================
     // ACTIVE
+    // =====================================================
+
     if (licenseStatus === "active") {
       daysRemaining = null;
       isExpired = false;
     }
 
+    // =====================================================
     // TRIAL
+    // =====================================================
     else if (licenseStatus === "trial") {
       if (!church.trial_expires_at) {
+        // Giữ logic tương thích dữ liệu cũ
         daysRemaining = null;
         isExpired = false;
       } else {
@@ -518,7 +839,9 @@ exports.getById = async (req, res) => {
           );
 
           licenseStatus = "expired";
+
           daysRemaining = 0;
+
           isExpired = true;
         } else {
           const diffMs = expiresAt.getTime() - now.getTime();
@@ -530,11 +853,17 @@ exports.getById = async (req, res) => {
       }
     }
 
+    // =====================================================
     // EXPIRED
+    // =====================================================
     else if (licenseStatus === "expired") {
       daysRemaining = 0;
       isExpired = true;
     }
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
 
     return res.status(200).json({
       success: true,
@@ -543,20 +872,90 @@ exports.getById = async (req, res) => {
         id: Number(church.id),
 
         name: church.name,
+
         type: church.type,
+
         code: church.code,
 
+        // =================================================
+        // DIOCESE
+        // =================================================
+
+        diocese_id:
+          church.diocese_id !== null ? Number(church.diocese_id) : null,
+
+        diocese:
+          church.diocese_ref_id !== null
+            ? {
+                id: Number(church.diocese_ref_id),
+
+                code: church.diocese_code,
+
+                name: church.diocese_name,
+
+                type: church.diocese_type,
+
+                parent_diocese_id:
+                  church.diocese_parent_id !== null
+                    ? Number(church.diocese_parent_id)
+                    : null,
+              }
+            : null,
+
+        // =================================================
+        // DEANERY
+        // =================================================
+
+        deanery_id:
+          church.deanery_id !== null ? Number(church.deanery_id) : null,
+
+        deanery:
+          church.deanery_ref_id !== null
+            ? {
+                id: Number(church.deanery_ref_id),
+
+                code: church.deanery_code,
+
+                name: church.deanery_name,
+
+                diocese_id:
+                  church.deanery_diocese_id !== null
+                    ? Number(church.deanery_diocese_id)
+                    : null,
+              }
+            : null,
+
+        // =================================================
+        // ADDRESS
+        // =================================================
+
         address: church.address,
+
         ward: church.ward,
+
         district: church.district,
 
+        // =================================================
+        // CONTACT
+        // =================================================
+
         phone: church.phone,
+
         email: church.email,
+
         pastor_name: church.pastor_name,
+
+        // =================================================
+        // MAP
+        // =================================================
 
         latitude: church.latitude !== null ? Number(church.latitude) : null,
 
         longitude: church.longitude !== null ? Number(church.longitude) : null,
+
+        // =================================================
+        // OTHER
+        // =================================================
 
         description: church.description,
 
@@ -564,7 +963,10 @@ exports.getById = async (req, res) => {
 
         is_active: church.is_active === 1 || church.is_active === true,
 
+        // =================================================
         // LICENSE
+        // =================================================
+
         license_status: licenseStatus,
 
         trial_started_at: church.trial_started_at,
@@ -581,27 +983,40 @@ exports.getById = async (req, res) => {
 
         is_active_license: licenseStatus === "active",
 
+        // =================================================
         // STATISTICS
+        // =================================================
+
         total_parishioners: Number(church.total_parishioners || 0),
 
         total_male: Number(church.total_male || 0),
 
         total_female: Number(church.total_female || 0),
 
+        // =================================================
         // SYSTEM
+        // =================================================
+
         created_at: church.created_at,
+
         updated_at: church.updated_at,
       },
     });
   } catch (err) {
     console.error("==========================================");
+
     console.error("❌ GET CHURCH BY ID ERROR");
-    console.error("==========================================");
+
     console.error("Message:", err.message);
+
     console.error("Code:", err.code);
+
     console.error("SQL State:", err.sqlState);
+
     console.error("SQL Message:", err.sqlMessage);
+
     console.error("Stack:", err.stack);
+
     console.error("==========================================");
 
     return res.status(500).json({
@@ -619,31 +1034,81 @@ exports.getById = async (req, res) => {
 exports.create = async (req, res) => {
   try {
     console.log("===== CREATE CHURCH REQUEST =====");
+
     console.log("BODY:", req.body);
+
     console.log("FILE:", req.file);
 
     const {
       name,
+
       type = "GIAO_HO",
+
+      // NEW
+      diocese_id,
+      deanery_id,
+
       address,
+
       is_active = 1,
+
       phone,
+
       email,
+
       pastor_name,
+
       district,
+
       ward,
+
       latitude,
+
       longitude,
+
       description,
+
       code,
     } = req.body;
 
-    if (!name) {
+    // =====================================================
+    // NAME
+    // =====================================================
+
+    if (!name || !String(name).trim()) {
       return res.status(400).json({
         success: false,
         message: "Tên giáo xứ/giáo họ không được để trống!",
       });
     }
+
+    // =====================================================
+    // NORMALIZE RELATIONS
+    // =====================================================
+
+    const dioceseId = parseNullableId(diocese_id);
+
+    const deaneryId = parseNullableId(deanery_id);
+
+    // =====================================================
+    // VALIDATE DIOCESE / DEANERY
+    // =====================================================
+
+    const relationCheck = await validateDioceseAndDeanery({
+      dioceseId,
+      deaneryId,
+    });
+
+    if (!relationCheck.valid) {
+      return res.status(400).json({
+        success: false,
+        message: relationCheck.message,
+      });
+    }
+
+    // =====================================================
+    // IMAGE
+    // =====================================================
 
     let imagePath = null;
 
@@ -653,35 +1118,73 @@ exports.create = async (req, res) => {
       imagePath = req.body.image;
     }
 
+    // =====================================================
+    // LAT / LNG
+    // =====================================================
+
     const parsedLat =
       latitude && !isNaN(parseFloat(latitude)) ? parseFloat(latitude) : null;
 
     const parsedLng =
       longitude && !isNaN(parseFloat(longitude)) ? parseFloat(longitude) : null;
 
+    // =====================================================
+    // ACTIVE
+    // =====================================================
+
     const parsedIsActive = Number(is_active) === 1 ? 1 : 0;
 
+    // =====================================================
+    // VALUES
+    // =====================================================
+
     const values = [
-      name || null,
+      name.trim(),
+
       type || "GIAO_HO",
+
+      // NEW
+      dioceseId,
+
+      deaneryId,
+
       address || null,
+
       parsedIsActive,
+
       phone || null,
+
       email || null,
+
       pastor_name || null,
+
       district || null,
+
       ward || null,
+
       parsedLat,
+
       parsedLng,
+
       description || null,
+
       code || null,
+
       imagePath,
     ];
+
+    // =====================================================
+    // INSERT
+    // =====================================================
 
     const sql = `
       INSERT INTO churches (
         name,
         type,
+
+        diocese_id,
+        deanery_id,
+
         address,
         is_active,
         phone,
@@ -695,19 +1198,47 @@ exports.create = async (req, res) => {
         code,
         image
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (
+        ?,
+        ?,
+
+        ?,
+        ?,
+
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?
+      )
     `;
 
     const [result] = await db.query(sql, values);
+
+    // =====================================================
+    // LOG
+    // =====================================================
 
     try {
       if (typeof writeLog === "function") {
         await writeLog({
           admin_id: req.user?.id,
+
           action: "CREATE_CHURCH",
+
           target_type: "churches",
+
           target_id: result.insertId,
+
           description: `Tạo giáo xứ/họ: ${name}`,
+
           ip_address: req.ip,
         });
       }
@@ -715,15 +1246,28 @@ exports.create = async (req, res) => {
       console.error("Lỗi ghi log:", logErr.message);
     }
 
+    // =====================================================
+    // RESPONSE
+    // =====================================================
+
     return res.json({
       success: true,
+
       message: "Created successfully",
+
       id: result.insertId,
+
       image: imagePath,
+
+      diocese_id: dioceseId,
+
+      deanery_id: deaneryId,
     });
   } catch (err) {
     console.error("❌ CREATE CHURCH ERROR DETAILS:");
+
     console.error("Code:", err.code);
+
     console.error("SQL Message:", err.sqlMessage || err.message);
 
     return res.status(500).json({
@@ -742,13 +1286,38 @@ exports.update = async (req, res) => {
     const { id } = req.params;
 
     console.log("===== UPDATE CHURCH REQUEST =====");
+
     console.log("ID:", id);
+
     console.log("BODY:", req.body);
+
     console.log("FILE:", req.file);
 
+    const churchId = Number(id);
+
+    if (!churchId || Number.isNaN(churchId)) {
+      return res.status(400).json({
+        success: false,
+        message: "ID giáo xứ không hợp lệ",
+      });
+    }
+
+    // =====================================================
+    // GET OLD
+    // =====================================================
+
     const [oldRows] = await db.query(
-      "SELECT image FROM churches WHERE id = ?",
-      [id],
+      `
+        SELECT
+          id,
+          image,
+          diocese_id,
+          deanery_id
+        FROM churches
+        WHERE id = ?
+        LIMIT 1
+        `,
+      [churchId],
     );
 
     if (!oldRows.length) {
@@ -758,23 +1327,93 @@ exports.update = async (req, res) => {
       });
     }
 
-    const oldImage = oldRows[0].image;
+    const oldChurch = oldRows[0];
+
+    const oldImage = oldChurch.image;
+
+    // =====================================================
+    // BODY
+    // =====================================================
 
     const {
       name,
+
       type,
+
+      // NEW
+      diocese_id,
+      deanery_id,
+
       address,
+
       is_active,
+
       phone,
+
       email,
+
       pastor_name,
+
       district,
+
       ward,
+
       latitude,
+
       longitude,
+
       description,
+
       code,
     } = req.body;
+
+    // =====================================================
+    // NAME
+    // =====================================================
+
+    if (name === undefined || name === null || !String(name).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Tên giáo xứ/giáo họ không được để trống!",
+      });
+    }
+
+    // =====================================================
+    // RELATIONS
+    // =====================================================
+
+    /*
+      Cho phép:
+      null
+      ""
+      undefined
+
+      => bỏ liên kết Giáo phận / Giáo hạt
+    */
+
+    const dioceseId = parseNullableId(diocese_id);
+
+    const deaneryId = parseNullableId(deanery_id);
+
+    // =====================================================
+    // VALIDATE
+    // =====================================================
+
+    const relationCheck = await validateDioceseAndDeanery({
+      dioceseId,
+      deaneryId,
+    });
+
+    if (!relationCheck.valid) {
+      return res.status(400).json({
+        success: false,
+        message: relationCheck.message,
+      });
+    }
+
+    // =====================================================
+    // IMAGE
+    // =====================================================
 
     let newImage = oldImage || null;
 
@@ -782,15 +1421,27 @@ exports.update = async (req, res) => {
       newImage = `uploads/church/${req.file.filename}`;
 
       if (oldImage && oldImage !== newImage) {
-        deletePhysicalFile(oldImage);
+        try {
+          deletePhysicalFile(oldImage);
+        } catch (fileErr) {
+          console.error("Không thể xóa ảnh cũ:", fileErr.message);
+        }
       }
     } else if (req.body.image !== undefined) {
       newImage = req.body.image || null;
 
       if (oldImage && !newImage) {
-        deletePhysicalFile(oldImage);
+        try {
+          deletePhysicalFile(oldImage);
+        } catch (fileErr) {
+          console.error("Không thể xóa ảnh cũ:", fileErr.message);
+        }
       }
     }
+
+    // =====================================================
+    // LAT / LNG
+    // =====================================================
 
     const parsedLat =
       latitude !== undefined && latitude !== "" && !isNaN(parseFloat(latitude))
@@ -804,8 +1455,16 @@ exports.update = async (req, res) => {
         ? parseFloat(longitude)
         : null;
 
+    // =====================================================
+    // ACTIVE
+    // =====================================================
+
     const parsedIsActive =
       is_active !== undefined ? (Number(is_active) === 1 ? 1 : 0) : 1;
+
+    // =====================================================
+    // UPDATE
+    // =====================================================
 
     await db.query(
       `
@@ -813,6 +1472,10 @@ exports.update = async (req, res) => {
       SET
         name = ?,
         type = ?,
+
+        diocese_id = ?,
+        deanery_id = ?,
+
         address = ?,
         is_active = ?,
         phone = ?,
@@ -825,36 +1488,66 @@ exports.update = async (req, res) => {
         description = ?,
         code = ?,
         image = ?,
-        updated_at = CURRENT_TIMESTAMP
+
+        updated_at =
+          CURRENT_TIMESTAMP
+
       WHERE id = ?
       `,
       [
-        name || null,
+        name.trim(),
+
         type || "GIAO_HO",
+
+        // NEW
+        dioceseId,
+        deaneryId,
+
         address || null,
+
         parsedIsActive,
+
         phone || null,
+
         email || null,
+
         pastor_name || null,
+
         district || null,
+
         ward || null,
+
         parsedLat,
+
         parsedLng,
+
         description || null,
+
         code || null,
+
         newImage,
-        id,
+
+        churchId,
       ],
     );
+
+    // =====================================================
+    // LOG
+    // =====================================================
 
     try {
       if (typeof writeLog === "function") {
         await writeLog({
           admin_id: req.user?.id,
+
           action: "UPDATE_CHURCH",
+
           target_type: "churches",
-          target_id: id,
-          description: `Cập nhật giáo xứ ${name || id}`,
+
+          target_id: churchId,
+
+          description: `Cập nhật giáo xứ ${name || churchId}`,
+
           ip_address: req.ip,
         });
       }
@@ -862,10 +1555,20 @@ exports.update = async (req, res) => {
       console.error("Lỗi ghi log:", logErr.message);
     }
 
+    // =====================================================
+    // RESPONSE
+    // =====================================================
+
     return res.json({
       success: true,
+
       message: "Updated successfully",
+
       image: newImage,
+
+      diocese_id: dioceseId,
+
+      deanery_id: deaneryId,
     });
   } catch (err) {
     console.error("❌ UPDATE CHURCH ERROR DETAILS:");
@@ -883,7 +1586,9 @@ exports.update = async (req, res) => {
 
 // ======================================================
 // 5. DELETE
+// GIỮ NGUYÊN LOGIC XÓA DỮ LIỆU
 // ======================================================
+
 exports.remove = async (req, res) => {
   const connection = await db.getConnection();
 
@@ -901,16 +1606,19 @@ exports.remove = async (req, res) => {
 
     await connection.beginTransaction();
 
-    // =========================================================
-    // 1. Kiểm tra giáo xứ
-    // =========================================================
+    // =====================================================
+    // 1. CHECK CHURCH
+    // =====================================================
+
     const [churchRows] = await connection.query(
       `
-      SELECT id, image
-      FROM churches
-      WHERE id = ?
-      FOR UPDATE
-      `,
+        SELECT
+          id,
+          image
+        FROM churches
+        WHERE id = ?
+        FOR UPDATE
+        `,
       [churchId],
     );
 
@@ -925,27 +1633,28 @@ exports.remove = async (req, res) => {
 
     churchImage = churchRows[0].image;
 
-    // =========================================================
-    // 2. Lấy danh sách ADMIN
-    // =========================================================
+    // =====================================================
+    // 2. ADMINS
+    // =====================================================
+
     const [adminRows] = await connection.query(
       `
-      SELECT id
-      FROM admins
-      WHERE church_id = ?
-      `,
+        SELECT id
+        FROM admins
+        WHERE church_id = ?
+        `,
       [churchId],
     );
 
     const adminIds = adminRows.map((row) => row.id);
 
-    // =========================================================
-    // 3. Xóa dữ liệu phụ thuộc ADMIN
-    // =========================================================
+    // =====================================================
+    // 3. ADMIN DEPENDENCIES
+    // =====================================================
+
     if (adminIds.length) {
       const placeholders = adminIds.map(() => "?").join(",");
 
-      // media.uploaded_by -> admins.id
       await connection.query(
         `
         DELETE FROM media
@@ -954,7 +1663,6 @@ exports.remove = async (req, res) => {
         adminIds,
       );
 
-      // push_tokens.admin_id -> admins.id
       await connection.query(
         `
         DELETE FROM push_tokens
@@ -963,7 +1671,6 @@ exports.remove = async (req, res) => {
         adminIds,
       );
 
-      // notification_users.user_id -> admins.id
       await connection.query(
         `
         DELETE FROM notification_users
@@ -973,9 +1680,10 @@ exports.remove = async (req, res) => {
       );
     }
 
-    // =========================================================
-    // 4. Xóa notification_users
-    // =========================================================
+    // =====================================================
+    // 4. NOTIFICATION USERS
+    // =====================================================
+
     await connection.query(
       `
       DELETE nu
@@ -987,9 +1695,10 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // =========================================================
-    // 5. Xóa notifications
-    // =========================================================
+    // =====================================================
+    // 5. NOTIFICATIONS
+    // =====================================================
+
     await connection.query(
       `
       DELETE FROM notifications
@@ -998,39 +1707,43 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // =========================================================
-    // 6. Lấy CATECHISTS
-    // =========================================================
+    // =====================================================
+    // 6. CATECHISTS
+    // =====================================================
+
     const [catechistRows] = await connection.query(
       `
-      SELECT id
-      FROM catechists
-      WHERE church_id = ?
-      `,
+        SELECT id
+        FROM catechists
+        WHERE church_id = ?
+        `,
       [churchId],
     );
 
     const catechistIds = catechistRows.map((row) => row.id);
 
-    // =========================================================
-    // 7. Lấy CLASSES
-    // =========================================================
+    // =====================================================
+    // 7. CLASSES
+    // =====================================================
+
     const [classRows] = await connection.query(
       `
-      SELECT id
-      FROM classes
-      WHERE church_id = ?
-      `,
+        SELECT id
+        FROM classes
+        WHERE church_id = ?
+        `,
       [churchId],
     );
 
     const classIds = classRows.map((row) => row.id);
 
-    // =========================================================
-    // 8. Xóa CATECHIST_CLASSES
-    // =========================================================
+    // =====================================================
+    // 8. CATECHIST_CLASSES
+    // =====================================================
+
     if (classIds.length || catechistIds.length) {
       const conditions = [];
+
       const params = [];
 
       if (classIds.length) {
@@ -1058,23 +1771,25 @@ exports.remove = async (req, res) => {
       );
     }
 
-    // =========================================================
-    // 9. Lấy STUDENTS
-    // =========================================================
+    // =====================================================
+    // 9. STUDENTS
+    // =====================================================
+
     const [studentRows] = await connection.query(
       `
-      SELECT id
-      FROM students
-      WHERE church_id = ?
-      `,
+        SELECT id
+        FROM students
+        WHERE church_id = ?
+        `,
       [churchId],
     );
 
     const studentIds = studentRows.map((row) => row.id);
 
-    // =========================================================
-    // 10. Xóa CLASS_STUDENTS theo STUDENT
-    // =========================================================
+    // =====================================================
+    // 10. CLASS STUDENTS + RESULTS
+    // =====================================================
+
     if (studentIds.length) {
       const placeholders = studentIds.map(() => "?").join(",");
 
@@ -1086,7 +1801,6 @@ exports.remove = async (req, res) => {
         studentIds,
       );
 
-      // results.student_id -> students.id
       await connection.query(
         `
         DELETE FROM results
@@ -1096,9 +1810,10 @@ exports.remove = async (req, res) => {
       );
     }
 
-    // =========================================================
-    // 11. Xóa CLASS_STUDENTS theo CLASS
-    // =========================================================
+    // =====================================================
+    // 11. CLASS STUDENTS THEO CLASS
+    // =====================================================
+
     if (classIds.length) {
       const placeholders = classIds.map(() => "?").join(",");
 
@@ -1111,9 +1826,10 @@ exports.remove = async (req, res) => {
       );
     }
 
-    // =========================================================
-    // 12. Xóa CLASSES
-    // =========================================================
+    // =====================================================
+    // 12. CLASSES
+    // =====================================================
+
     await connection.query(
       `
       DELETE FROM classes
@@ -1122,9 +1838,10 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // =========================================================
-    // 13. Xóa STUDENTS
-    // =========================================================
+    // =====================================================
+    // 13. STUDENTS
+    // =====================================================
+
     await connection.query(
       `
       DELETE FROM students
@@ -1133,9 +1850,10 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // =========================================================
-    // 14. Xóa CATECHISTS
-    // =========================================================
+    // =====================================================
+    // 14. CATECHISTS
+    // =====================================================
+
     await connection.query(
       `
       DELETE FROM catechists
@@ -1144,9 +1862,10 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // =========================================================
+    // =====================================================
     // 15. LITURGICAL EVENTS
-    // =========================================================
+    // =====================================================
+
     await connection.query(
       `
       DELETE le
@@ -1158,9 +1877,10 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // =========================================================
+    // =====================================================
     // 16. LITURGICAL SCHEDULES
-    // =========================================================
+    // =====================================================
+
     await connection.query(
       `
       DELETE FROM liturgical_schedules
@@ -1169,11 +1889,10 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // =========================================================
-    // 17. PARISHIONERS
-    // =========================================================
+    // =====================================================
+    // 17. SACRAMENTS
+    // =====================================================
 
-    // Xóa sacraments trước
     await connection.query(
       `
       DELETE s
@@ -1185,7 +1904,6 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // Trường hợp spouse_parishioner_id
     await connection.query(
       `
       DELETE s
@@ -1197,9 +1915,10 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // =========================================================
-    // 18. Xử lý parishioners tự tham chiếu
-    // =========================================================
+    // =====================================================
+    // 18. PARISHIONERS SELF REFERENCE
+    // =====================================================
+
     await connection.query(
       `
       UPDATE parishioners
@@ -1209,9 +1928,10 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // =========================================================
-    // 19. Xóa parishioners
-    // =========================================================
+    // =====================================================
+    // 19. PARISHIONERS
+    // =====================================================
+
     await connection.query(
       `
       DELETE FROM parishioners
@@ -1220,9 +1940,10 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // =========================================================
-    // 20. Xóa sacraments còn lại theo church
-    // =========================================================
+    // =====================================================
+    // 20. SACRAMENTS CÒN LẠI
+    // =====================================================
+
     await connection.query(
       `
       DELETE FROM sacraments
@@ -1231,9 +1952,10 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // =========================================================
-    // 21. Xóa ADMINS
-    // =========================================================
+    // =====================================================
+    // 21. ADMINS
+    // =====================================================
+
     await connection.query(
       `
       DELETE FROM admins
@@ -1242,9 +1964,10 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // =========================================================
-    // 22. Cuối cùng XÓA CHURCH
-    // =========================================================
+    // =====================================================
+    // 22. DELETE CHURCH
+    // =====================================================
+
     await connection.query(
       `
       DELETE FROM churches
@@ -1253,14 +1976,16 @@ exports.remove = async (req, res) => {
       [churchId],
     );
 
-    // =========================================================
+    // =====================================================
     // 23. COMMIT
-    // =========================================================
+    // =====================================================
+
     await connection.commit();
 
-    // =========================================================
-    // 24. Xóa file ảnh sau khi DB thành công
-    // =========================================================
+    // =====================================================
+    // 24. DELETE IMAGE
+    // =====================================================
+
     if (churchImage) {
       try {
         deletePhysicalFile(churchImage);
@@ -1269,16 +1994,22 @@ exports.remove = async (req, res) => {
       }
     }
 
-    // =========================================================
-    // 25. GHI LOG
-    // =========================================================
+    // =====================================================
+    // 25. LOG
+    // =====================================================
+
     try {
       await writeLog({
         admin_id: req.user?.id,
+
         action: "DELETE_CHURCH",
+
         target_type: "churches",
+
         target_id: churchId,
+
         description: `Xóa giáo xứ và toàn bộ dữ liệu liên quan ID ${churchId}`,
+
         ip_address: req.ip,
       });
     } catch (logErr) {
@@ -1287,6 +2018,7 @@ exports.remove = async (req, res) => {
 
     return res.json({
       success: true,
+
       message: "Đã xóa giáo xứ và toàn bộ dữ liệu liên quan",
     });
   } catch (err) {
@@ -1315,12 +2047,19 @@ exports.toggleActive = async (req, res) => {
   try {
     const churchId = Number(req.params.id);
 
+    if (!churchId || Number.isNaN(churchId)) {
+      return res.status(400).json({
+        success: false,
+        message: "ID giáo xứ không hợp lệ",
+      });
+    }
+
     const [rows] = await db.query(
       `
-      SELECT is_active
-      FROM churches
-      WHERE id = ?
-      `,
+        SELECT is_active
+        FROM churches
+        WHERE id = ?
+        `,
       [churchId],
     );
 
@@ -1345,10 +2084,15 @@ exports.toggleActive = async (req, res) => {
     try {
       await writeLog({
         admin_id: req.user?.id,
+
         action: "TOGGLE_CHURCH",
+
         target_type: "churches",
+
         target_id: churchId,
+
         description: "Cập nhật trạng thái giáo xứ",
+
         ip_address: req.ip,
       });
     } catch (logErr) {
@@ -1357,7 +2101,9 @@ exports.toggleActive = async (req, res) => {
 
     return res.json({
       success: true,
+
       message: "Updated",
+
       is_active: newStatus,
     });
   } catch (err) {
@@ -1374,38 +2120,104 @@ exports.toggleActive = async (req, res) => {
 
 exports.searchMap = async (req, res) => {
   try {
-    const { lat, lng, radius = 10, type } = req.query;
+    const { lat, lng, radius = 10, type, diocese_id, deanery_id } = req.query;
+
+    if (lat === undefined || lng === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu latitude hoặc longitude",
+      });
+    }
 
     let typeCondition = "";
-    let params = [lat, lng, lat, radius];
+
+    const params = [lat, lng, lat];
+
+    // =====================================================
+    // TYPE
+    // =====================================================
 
     if (type) {
-      typeCondition = " AND type = ?";
+      typeCondition += " AND c.type = ? ";
 
       params.push(type);
     }
 
+    // =====================================================
+    // DIOCESE
+    // =====================================================
+
+    const dioceseId = parseNullableId(diocese_id);
+
+    if (dioceseId) {
+      typeCondition += " AND c.diocese_id = ? ";
+
+      params.push(dioceseId);
+    }
+
+    // =====================================================
+    // DEANERY
+    // =====================================================
+
+    const deaneryId = parseNullableId(deanery_id);
+
+    if (deaneryId) {
+      typeCondition += " AND c.deanery_id = ? ";
+
+      params.push(deaneryId);
+    }
+
+    // =====================================================
+    // RADIUS
+    // =====================================================
+
+    params.push(Number(radius) || 10);
+
+    // =====================================================
+    // QUERY
+    // =====================================================
+
     const [rows] = await db.query(
       `
         SELECT
-          *,
+          c.*,
+
+          d.id AS diocese_ref_id,
+          d.code AS diocese_code,
+          d.name AS diocese_name,
+
+          de.id AS deanery_ref_id,
+          de.code AS deanery_code,
+          de.name AS deanery_name,
+
           (
-            6371 * acos(
-              cos(radians(?)) *
-              cos(radians(latitude)) *
-              cos(
-                radians(longitude) -
-                radians(?)
+            6371 * ACOS(
+              COS(RADIANS(?)) *
+              COS(RADIANS(c.latitude)) *
+              COS(
+                RADIANS(c.longitude) -
+                RADIANS(?)
               ) +
-              sin(radians(?)) *
-              sin(radians(latitude))
+              SIN(RADIANS(?)) *
+              SIN(RADIANS(c.latitude))
             )
           ) AS distance
 
-        FROM churches
+        FROM churches c
 
-        WHERE is_active = 1
-        ${typeCondition}
+        LEFT JOIN dioceses d
+          ON d.id = c.diocese_id
+
+        LEFT JOIN deaneries de
+          ON de.id = c.deanery_id
+
+        WHERE c.is_active = 1
+
+          AND c.latitude IS NOT NULL
+
+          AND c.longitude IS NOT NULL
+
+          ${typeCondition}
 
         HAVING distance < ?
 
@@ -1416,9 +2228,12 @@ exports.searchMap = async (req, res) => {
 
     return res.json({
       success: true,
+
       data: rows,
     });
   } catch (err) {
+    console.error("SEARCH MAP ERROR:", err);
+
     return res.status(500).json({
       success: false,
       message: err.message,
@@ -1428,7 +2243,7 @@ exports.searchMap = async (req, res) => {
 
 // ======================================================
 // 8. ACTIVATE LICENSE
-// CHỈ ADMIN HỆ THỐNG ĐƯỢC KÍCH HOẠT
+// CHỈ ADMIN HỆ THỐNG
 // ======================================================
 
 exports.activateLicense = async (req, res) => {
@@ -1436,7 +2251,7 @@ exports.activateLicense = async (req, res) => {
     const churchId = Number(req.params.id);
 
     // ==================================================
-    // 1. KIỂM TRA ID
+    // 1. ID
     // ==================================================
 
     if (!churchId || Number.isNaN(churchId)) {
@@ -1447,7 +2262,7 @@ exports.activateLicense = async (req, res) => {
     }
 
     // ==================================================
-    // 2. KIỂM TRA ĐĂNG NHẬP
+    // 2. LOGIN
     // ==================================================
 
     if (!req.user) {
@@ -1458,35 +2273,44 @@ exports.activateLicense = async (req, res) => {
     }
 
     // ==================================================
-    // 3. CHỈ ADMIN HỆ THỐNG
+    // 3. SYSTEM ADMIN
     // ==================================================
 
     if (req.user.role !== "admin") {
       return res.status(403).json({
         success: false,
+
         code: "LICENSE_ACTIVATION_FORBIDDEN",
+
         message: "Chỉ quản trị hệ thống mới có quyền kích hoạt FaithEdu",
       });
     }
 
     // ==================================================
-    // 4. KIỂM TRA GIÁO XỨ
+    // 4. GET CHURCH
     // ==================================================
 
     const [rows] = await db.query(
       `
-      SELECT
-        id,
-        name,
-        code,
-        license_status,
-        trial_started_at,
-        trial_expires_at,
-        activated_at
-      FROM churches
-      WHERE id = ?
-      LIMIT 1
-      `,
+        SELECT
+          id,
+          name,
+          code,
+
+          diocese_id,
+          deanery_id,
+
+          license_status,
+          trial_started_at,
+          trial_expires_at,
+          activated_at
+
+        FROM churches
+
+        WHERE id = ?
+
+        LIMIT 1
+        `,
       [churchId],
     );
 
@@ -1500,46 +2324,66 @@ exports.activateLicense = async (req, res) => {
     const church = rows[0];
 
     // ==================================================
-    // 5. NẾU ĐÃ ACTIVE
+    // 5. ALREADY ACTIVE
     // ==================================================
 
     if (church.license_status === "active") {
       return res.status(200).json({
         success: true,
+
         already_active: true,
+
         message: "FaithEdu của giáo xứ này đã được kích hoạt trước đó",
+
         license: {
           status: "active",
+
           activated_at: church.activated_at,
+
           is_expired: false,
+
           is_active: true,
         },
+
         church: {
           id: Number(church.id),
+
           name: church.name,
+
           code: church.code,
+
+          diocese_id:
+            church.diocese_id !== null ? Number(church.diocese_id) : null,
+
+          deanery_id:
+            church.deanery_id !== null ? Number(church.deanery_id) : null,
         },
       });
     }
 
     // ==================================================
-    // 6. KÍCH HOẠT
+    // 6. ACTIVATE
     // ==================================================
 
     await db.query(
       `
       UPDATE churches
+
       SET
         license_status = 'active',
+
         activated_at = NOW(),
-        updated_at = CURRENT_TIMESTAMP
+
+        updated_at =
+          CURRENT_TIMESTAMP
+
       WHERE id = ?
       `,
       [churchId],
     );
 
     // ==================================================
-    // 7. LẤY LẠI DATA SAU KHI UPDATE
+    // 7. GET UPDATED
     // ==================================================
 
     const [updatedRows] = await db.query(
@@ -1548,12 +2392,19 @@ exports.activateLicense = async (req, res) => {
           id,
           name,
           code,
+
+          diocese_id,
+          deanery_id,
+
           license_status,
           trial_started_at,
           trial_expires_at,
           activated_at
+
         FROM churches
+
         WHERE id = ?
+
         LIMIT 1
         `,
       [churchId],
@@ -1562,7 +2413,7 @@ exports.activateLicense = async (req, res) => {
     const updatedChurch = updatedRows[0];
 
     // ==================================================
-    // 8. GHI ACTIVITY LOG
+    // 8. ACTIVITY LOG
     // ==================================================
 
     try {
@@ -1621,14 +2472,22 @@ exports.activateLicense = async (req, res) => {
         name: updatedChurch.name,
 
         code: updatedChurch.code,
+
+        diocese_id:
+          updatedChurch.diocese_id !== null
+            ? Number(updatedChurch.diocese_id)
+            : null,
+
+        deanery_id:
+          updatedChurch.deanery_id !== null
+            ? Number(updatedChurch.deanery_id)
+            : null,
       },
     });
   } catch (err) {
     console.error("==========================================");
 
     console.error("❌ ACTIVATE LICENSE ERROR");
-
-    console.error("==========================================");
 
     console.error("Message:", err.message);
 
@@ -1644,82 +2503,153 @@ exports.activateLicense = async (req, res) => {
 
     return res.status(500).json({
       success: false,
+
       message: "Lỗi server khi kích hoạt FaithEdu",
+
       error: process.env.NODE_ENV === "development" ? err.message : undefined,
     });
   }
 };
+// GET /api/dioceses/archdioceses
 
-exports.getDioceses = async (req, res) => {
+exports.getArchdioceses = async (req, res) => {
   try {
-    const { type, parent_diocese_id } = req.query;
-
-    let sql = `
+    const [rows] = await db.query(`
       SELECT
-        d.id,
-        d.code,
-        d.name,
-        d.bishop_name,
-        d.address,
-        d.phone,
-        d.email,
-        d.parent_diocese_id,
-        d.type,
-        d.is_active,
-        d.description,
-        d.created_at,
-        d.updated_at,
+        id,
+        code,
+        name,
+        type,
+        is_active
+      FROM dioceses
+      WHERE type = 'TONG_GIAO_PHAN'
+        AND is_active = 1
+      ORDER BY name ASC
+    `);
 
-        p.id AS parent_id,
-        p.code AS parent_code,
-        p.name AS parent_name
-
-      FROM dioceses d
-
-      LEFT JOIN dioceses p
-        ON p.id = d.parent_diocese_id
-
-      WHERE 1 = 1
-    `;
-
-    const params = [];
-
-    // Lọc type
-    if (type) {
-      sql += ` AND d.type = ?`;
-      params.push(type);
-    }
-
-    // Lọc theo Tổng Giáo phận
-    if (parent_diocese_id) {
-      sql += ` AND d.parent_diocese_id = ?`;
-      params.push(parent_diocese_id);
-    }
-
-    sql += `
-      ORDER BY
-        CASE
-          WHEN d.type = 'TONG_GIAO_PHAN' THEN 0
-          ELSE 1
-        END,
-        d.parent_diocese_id,
-        d.name
-    `;
-
-    const [rows] = await db.query(sql, params);
-
-    return res.status(200).json({
+    return res.json({
       success: true,
-      data: rows,
+      data: rows.map((row) => ({
+        id: Number(row.id),
+        code: row.code,
+        name: row.name,
+        type: row.type,
+        is_active: Number(row.is_active) === 1,
+      })),
       total: rows.length,
     });
   } catch (error) {
-    console.error("[GET /dioceses] Error:", error);
+    console.error("GET ARCHDIOCESES ERROR:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể lấy danh sách giáo phận",
-      error: error.message,
+      message: "Không thể lấy danh sách Tổng Giáo phận",
+    });
+  }
+};
+// GET /api/dioceses/by-parent/:parentDioceseId
+
+exports.getDiocesesByParent = async (req, res) => {
+  try {
+    const parentDioceseId = Number(req.params.parentDioceseId);
+
+    if (!Number.isInteger(parentDioceseId) || parentDioceseId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "ID Tổng Giáo phận không hợp lệ",
+      });
+    }
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        id,
+        code,
+        name,
+        type,
+        parent_diocese_id,
+        is_active
+      FROM dioceses
+      WHERE parent_diocese_id = ?
+        AND type = 'GIAO_PHAN'
+        AND is_active = 1
+      ORDER BY name ASC
+      `,
+      [parentDioceseId],
+    );
+
+    return res.json({
+      success: true,
+
+      data: rows.map((row) => ({
+        id: Number(row.id),
+        code: row.code,
+        name: row.name,
+        type: row.type,
+        parent_diocese_id:
+          row.parent_diocese_id !== null ? Number(row.parent_diocese_id) : null,
+        is_active: Number(row.is_active) === 1,
+      })),
+
+      total: rows.length,
+    });
+  } catch (error) {
+    console.error("GET DIOCESES BY PARENT ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể lấy danh sách Giáo phận",
+    });
+  }
+};
+// GET /api/deaneries/by-diocese/:dioceseId
+
+exports.getDeaneriesByDiocese = async (req, res) => {
+  try {
+    const dioceseId = Number(req.params.dioceseId);
+
+    if (!Number.isInteger(dioceseId) || dioceseId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "ID Giáo phận không hợp lệ",
+      });
+    }
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        id,
+        diocese_id,
+        code,
+        name,
+        is_active
+      FROM deaneries
+      WHERE diocese_id = ?
+        AND is_active = 1
+      ORDER BY name ASC
+      `,
+      [dioceseId],
+    );
+
+    return res.json({
+      success: true,
+
+      data: rows.map((row) => ({
+        id: Number(row.id),
+        diocese_id: Number(row.diocese_id),
+        code: row.code,
+        name: row.name,
+        is_active: Number(row.is_active) === 1,
+      })),
+
+      total: rows.length,
+    });
+  } catch (error) {
+    console.error("GET DEANERIES BY DIOCESE ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể lấy danh sách Giáo hạt",
     });
   }
 };

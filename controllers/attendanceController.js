@@ -315,22 +315,297 @@ const safeRollback = async (connection, transactionStarted) => {
   }
 };
 
+const resolveTeacherClass = async (connection, req, churchId) => {
+  const username =
+    typeof req?.user?.username === "string" ? req.user.username.trim() : "";
+
+  if (!username) {
+    return {
+      ok: false,
+      status: 401,
+      message: "Không xác định được tài khoản giáo viên",
+    };
+  }
+
+  /**
+   * =====================================================
+   * FIND CATECHIST
+   * =====================================================
+   */
+
+  const [catechistRows] = await connection.execute(
+    `
+      SELECT
+        id,
+        catechist_code,
+        full_name,
+        role
+
+      FROM catechists
+
+      WHERE
+        catechist_code = ?
+        AND church_id = ?
+
+      LIMIT 1
+    `,
+    [username, churchId],
+  );
+
+  if (!catechistRows.length) {
+    return {
+      ok: false,
+      status: 403,
+      message: "Tài khoản giáo viên chưa được liên kết với giáo lý viên",
+    };
+  }
+
+  const catechist = catechistRows[0];
+
+  /**
+   * =====================================================
+   * FIND ASSIGNED CLASSES
+   * =====================================================
+   */
+
+  const [classRows] = await connection.execute(
+    `
+      SELECT
+        c.id,
+        c.name,
+        c.code
+
+      FROM catechist_classes cc
+
+      INNER JOIN classes c
+        ON c.id = cc.class_id
+        AND c.church_id = ?
+
+      WHERE
+        cc.catechist_id = ?
+
+      ORDER BY
+        c.name ASC,
+        c.id ASC
+    `,
+    [churchId, catechist.id],
+  );
+
+  /**
+   * =====================================================
+   * NO CLASS
+   * =====================================================
+   */
+
+  if (!classRows.length) {
+    return {
+      ok: false,
+      status: 404,
+      message: "Giáo viên chưa được phân công lớp học",
+    };
+  }
+
+  /**
+   * =====================================================
+   * MULTIPLE CLASSES
+   * =====================================================
+   *
+   * Không tự ý lấy class đầu tiên.
+   *
+   * Vì Thánh lễ không có class_id từ frontend,
+   * nếu giáo viên có nhiều lớp thì backend không được
+   * đoán lớp nào là lớp đang điểm danh.
+   */
+
+  if (classRows.length > 1) {
+    return {
+      ok: false,
+      status: 409,
+      message:
+        "Giáo viên đang được phân công nhiều lớp. Không thể tự xác định lớp điểm danh Thánh lễ.",
+      classes: classRows,
+    };
+  }
+
+  /**
+   * =====================================================
+   * SUCCESS
+   * =====================================================
+   */
+
+  return {
+    ok: true,
+    catechist,
+    class: classRows[0],
+  };
+};
+
+const resolveAttendanceClass = async (
+  connection,
+  req,
+  churchId,
+  attendanceType,
+  classId,
+) => {
+  /**
+   * =====================================================
+   * CATECHISM
+   * =====================================================
+   */
+
+  if (attendanceType === "catechism") {
+    const normalizedClassId = toPositiveInt(classId);
+
+    if (!normalizedClassId) {
+      return {
+        ok: false,
+        status: 400,
+        message: "class_id không hợp lệ",
+      };
+    }
+
+    const [rows] = await connection.execute(
+      `
+        SELECT
+          id,
+          name,
+          code
+
+        FROM classes
+
+        WHERE
+          id = ?
+          AND church_id = ?
+
+        LIMIT 1
+      `,
+      [normalizedClassId, churchId],
+    );
+
+    if (!rows.length) {
+      return {
+        ok: false,
+        status: 404,
+        message: "Không tìm thấy lớp học",
+      };
+    }
+
+    /**
+     * ===================================================
+     * KIỂM TRA GIÁO VIÊN
+     * ===================================================
+     */
+
+    if (req?.user?.role === "teacher") {
+      const teacherResult = await resolveTeacherClass(
+        connection,
+        req,
+        churchId,
+      );
+
+      if (!teacherResult.ok) {
+        return teacherResult;
+      }
+
+      if (Number(teacherResult.class.id) !== Number(normalizedClassId)) {
+        return {
+          ok: false,
+          status: 403,
+          message:
+            "Bạn không được phân công lớp này nên không có quyền điểm danh",
+        };
+      }
+    }
+
+    return {
+      ok: true,
+      class: rows[0],
+    };
+  }
+
+  /**
+   * =====================================================
+   * MASS
+   * =====================================================
+   */
+
+  if (attendanceType === "mass") {
+    /**
+     * Teacher:
+     * tự động xác định lớp.
+     */
+
+    if (req?.user?.role === "teacher") {
+      return resolveTeacherClass(connection, req, churchId);
+    }
+
+    /**
+     * ===================================================
+     * ADMIN / ADMIN_CATECHIST
+     * ===================================================
+     *
+     * Với tài khoản quản trị, nếu muốn xem/điểm danh
+     * Thánh lễ cho một lớp cụ thể thì vẫn cho phép
+     * truyền class_id.
+     *
+     * Nếu không truyền thì không thể xác định class_id
+     * vì DB attendances.class_id là NOT NULL.
+     */
+
+    const normalizedClassId = toPositiveInt(classId);
+
+    if (!normalizedClassId) {
+      return {
+        ok: false,
+        status: 400,
+        message:
+          "Tài khoản quản trị cần truyền class_id khi điểm danh Thánh lễ",
+      };
+    }
+
+    const [rows] = await connection.execute(
+      `
+        SELECT
+          id,
+          name,
+          code
+
+        FROM classes
+
+        WHERE
+          id = ?
+          AND church_id = ?
+
+        LIMIT 1
+      `,
+      [normalizedClassId, churchId],
+    );
+
+    if (!rows.length) {
+      return {
+        ok: false,
+        status: 404,
+        message: "Không tìm thấy lớp học",
+      };
+    }
+
+    return {
+      ok: true,
+      class: rows[0],
+    };
+  }
+
+  return {
+    ok: false,
+    status: 400,
+    message: "attendance_type không hợp lệ",
+  };
+};
+
 /**
  * =========================================================
  * GET ATTENDANCE
  * =========================================================
- *
- * GET /attendance
- *
- * Query:
- *
- * ?class_id=17
- * &date=2026-09-09
- * &attendance_type=mass
- * &page=1
- * &limit=10
- * &search=
- * &status=all
  */
 
 const getAttendance = async (req, res) => {
@@ -356,7 +631,7 @@ const getAttendance = async (req, res) => {
      * =====================================================
      */
 
-    const classId = toPositiveInt(req?.query?.class_id);
+    const requestedClassId = toPositiveInt(req?.query?.class_id);
 
     const date =
       typeof req?.query?.date === "string" ? req.query.date.trim() : "";
@@ -382,13 +657,6 @@ const getAttendance = async (req, res) => {
      * VALIDATION
      * =====================================================
      */
-
-    if (!classId) {
-      return res.status(400).json({
-        success: false,
-        message: "class_id không hợp lệ",
-      });
-    }
 
     if (!isValidDate(date)) {
       return res.status(400).json({
@@ -416,14 +684,16 @@ const getAttendance = async (req, res) => {
       limit = 100;
     }
 
-    if (
-      status !== "all" &&
-      status !== "present" &&
-      status !== "absent" &&
-      status !== "late" &&
-      status !== "excused" &&
-      status !== "not_attended"
-    ) {
+    const validStatuses = [
+      "all",
+      "present",
+      "absent",
+      "late",
+      "excused",
+      "not_attended",
+    ];
+
+    if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
         message: "status không hợp lệ",
@@ -432,35 +702,45 @@ const getAttendance = async (req, res) => {
 
     /**
      * =====================================================
-     * CHECK CLASS
+     * RESOLVE CLASS
      * =====================================================
+     *
+     * mass:
+     *   class_id có thể không được gửi.
+     *
+     * catechism:
+     *   bắt buộc class_id.
      */
 
-    const [classRows] = await db.execute(
-      `
-        SELECT
-          id,
-          name
-
-        FROM classes
-
-        WHERE
-          id = ?
-          AND church_id = ?
-
-        LIMIT 1
-      `,
-      [classId, churchId],
+    const classResult = await resolveAttendanceClass(
+      db,
+      req,
+      churchId,
+      attendanceType,
+      requestedClassId,
     );
 
-    if (!classRows.length) {
-      return res.status(404).json({
+    if (!classResult.ok) {
+      return res.status(classResult.status).json({
         success: false,
-        message: "Không tìm thấy lớp học",
+        message: classResult.message,
+        ...(classResult.classes
+          ? {
+              classes: classResult.classes,
+            }
+          : {}),
       });
     }
 
-    const classInfo = classRows[0];
+    const classInfo = classResult.class;
+
+    const classId = Number(classInfo.id);
+
+    /**
+     * =====================================================
+     * CLASS SCHEDULE
+     * =====================================================
+     */
 
     const classSchedule = await getClassSchedule(db, classId, date);
 
@@ -476,6 +756,12 @@ const getAttendance = async (req, res) => {
     `;
 
     const params = [classId];
+
+    /**
+     * =====================================================
+     * SEARCH
+     * =====================================================
+     */
 
     if (search) {
       whereSql += `
@@ -514,7 +800,8 @@ const getAttendance = async (req, res) => {
 
     const [countRows] = await db.execute(
       `
-        SELECT COUNT(*) AS total
+        SELECT
+          COUNT(*) AS total
 
         FROM class_students cs
 
@@ -552,46 +839,48 @@ const getAttendance = async (req, res) => {
 
     const [rows] = await db.execute(
       `
-    SELECT
-      s.id,
-      s.code,
-      s.name,
-      s.gender,
-      s.date_of_birth,
+        SELECT
+          s.id,
+          s.code,
+          s.name,
+          s.gender,
+          s.date_of_birth,
 
-      a.id AS attendance_id,
-      a.attendance_type,
-      a.status,
-      a.check_in_time,
-      a.note,
-      a.teacher_id,
-      a.attendance_date,
-      a.created_at,
-      a.updated_at
+          a.id AS attendance_id,
+          a.attendance_type,
+          a.status,
+          a.check_in_time,
+          a.note,
+          a.teacher_id,
+          a.attendance_date,
+          a.created_at,
+          a.updated_at
 
-    FROM class_students cs
+        FROM class_students cs
 
-    INNER JOIN students s
-      ON s.id = cs.student_id
-      AND s.church_id = ?
+        INNER JOIN students s
+          ON s.id = cs.student_id
+          AND s.church_id = ?
 
-    LEFT JOIN attendances a
-      ON a.student_id = s.id
-      AND a.class_id = ?
-      AND a.church_id = ?
-      AND a.attendance_date = ?
-      AND a.attendance_type = ?
+        LEFT JOIN attendances a
+          ON a.student_id = s.id
+          AND a.class_id = ?
+          AND a.church_id = ?
+          AND a.attendance_date = ?
+          AND a.attendance_type = ?
 
-    ${whereSql}
+        ${whereSql}
 
-    ORDER BY
-      s.name ASC,
-      s.id ASC
+        ORDER BY
+          s.name ASC,
+          s.id ASC
 
-    LIMIT ${limit} OFFSET ${offset}
-  `,
+        LIMIT ${limit}
+        OFFSET ${offset}
+      `,
       [churchId, classId, churchId, date, attendanceType, ...params],
     );
+
     /**
      * =====================================================
      * STATISTICS
@@ -683,12 +972,19 @@ const getAttendance = async (req, res) => {
         ? Number(((attended / totalStudents) * 100).toFixed(2))
         : 0;
 
+    /**
+     * =====================================================
+     * RESPONSE
+     * =====================================================
+     */
+
     return res.json({
       success: true,
 
       class: {
         id: classInfo.id,
         name: classInfo.name,
+        code: classInfo.code || null,
         start_time: classSchedule?.start_time || null,
       },
 
@@ -717,9 +1013,13 @@ const getAttendance = async (req, res) => {
 
       data: rows.map((row) => ({
         ...row,
+
         attendance_id: row.attendance_id || null,
+
         status: row.status || null,
+
         check_in_time: row.check_in_time || null,
+
         note: row.note || null,
       })),
     });
@@ -775,18 +1075,33 @@ const deleteAttendance = async (req, res) => {
 
     transactionStarted = true;
 
+    /**
+     * =====================================================
+     * LOCK RECORD
+     * =====================================================
+     */
+
     const [rows] = await connection.execute(
       `
-        SELECT
-          id,
-          status
-        FROM attendances
-        WHERE
-          id = ?
-          AND church_id = ?
-        LIMIT 1
-        FOR UPDATE
-      `,
+          SELECT
+            id,
+            class_id,
+            student_id,
+            attendance_type,
+            attendance_date,
+            status,
+            teacher_id
+
+          FROM attendances
+
+          WHERE
+            id = ?
+            AND church_id = ?
+
+          LIMIT 1
+
+          FOR UPDATE
+        `,
       [attendanceId, churchId],
     );
 
@@ -800,6 +1115,55 @@ const deleteAttendance = async (req, res) => {
         message: "Không tìm thấy bản ghi điểm danh",
       });
     }
+
+    const attendance = rows[0];
+
+    /**
+     * =====================================================
+     * TEACHER PERMISSION
+     * =====================================================
+     */
+
+    if (req?.user?.role === "teacher") {
+      const teacherResult = await resolveTeacherClass(
+        connection,
+        req,
+        churchId,
+      );
+
+      if (!teacherResult.ok) {
+        await safeRollback(connection, transactionStarted);
+
+        transactionStarted = false;
+
+        return res.status(teacherResult.status).json({
+          success: false,
+          message: teacherResult.message,
+          ...(teacherResult.classes
+            ? {
+                classes: teacherResult.classes,
+              }
+            : {}),
+        });
+      }
+
+      if (Number(teacherResult.class.id) !== Number(attendance.class_id)) {
+        await safeRollback(connection, transactionStarted);
+
+        transactionStarted = false;
+
+        return res.status(403).json({
+          success: false,
+          message: "Bạn không có quyền xóa điểm danh của lớp này",
+        });
+      }
+    }
+
+    /**
+     * =====================================================
+     * DELETE
+     * =====================================================
+     */
 
     await connection.execute(
       `
@@ -869,18 +1233,27 @@ const getStudentAttendance = async (req, res) => {
       });
     }
 
+    /**
+     * =====================================================
+     * STUDENT
+     * =====================================================
+     */
+
     const [studentRows] = await db.execute(
       `
-        SELECT
-          id,
-          code,
-          name
-        FROM students
-        WHERE
-          id = ?
-          AND church_id = ?
-        LIMIT 1
-      `,
+          SELECT
+            id,
+            code,
+            name
+
+          FROM students
+
+          WHERE
+            id = ?
+            AND church_id = ?
+
+          LIMIT 1
+        `,
       [studentId, churchId],
     );
 
@@ -892,7 +1265,9 @@ const getStudentAttendance = async (req, res) => {
     }
 
     /**
+     * =====================================================
      * HISTORY
+     * =====================================================
      */
 
     const [rows] = await db.execute(
@@ -904,12 +1279,21 @@ const getStudentAttendance = async (req, res) => {
             c.name AS class_name,
 
             (
-              SELECT cs.start_time
+              SELECT
+                cs.start_time
+
               FROM class_schedules cs
+
               WHERE
                 cs.class_id = a.class_id
-                AND cs.day_of_week = DAYOFWEEK(a.attendance_date)
-              ORDER BY cs.id ASC
+                AND cs.day_of_week =
+                  DAYOFWEEK(
+                    a.attendance_date
+                  )
+
+              ORDER BY
+                cs.id ASC
+
               LIMIT 1
             ) AS start_time,
 
@@ -926,7 +1310,8 @@ const getStudentAttendance = async (req, res) => {
 
           LEFT JOIN classes c
             ON c.id = a.class_id
-            AND c.church_id = a.church_id
+            AND c.church_id =
+              a.church_id
 
           WHERE
             a.student_id = ?
@@ -944,7 +1329,21 @@ const getStudentAttendance = async (req, res) => {
 
       student: studentRows[0],
 
-      data: rows,
+      data: rows.map((row) => ({
+        ...row,
+
+        class_id: row.class_id || null,
+
+        class_name: row.class_name || null,
+
+        attendance_type: row.attendance_type || null,
+
+        status: row.status || null,
+
+        check_in_time: row.check_in_time || null,
+
+        note: row.note || null,
+      })),
     });
   } catch (error) {
     console.error("GET STUDENT ATTENDANCE ERROR:", error);
@@ -970,6 +1369,12 @@ const getStudentAttendance = async (req, res) => {
 
 const getClassStatistics = async (req, res) => {
   try {
+    /**
+     * =====================================================
+     * AUTH
+     * =====================================================
+     */
+
     const churchId = getChurchId(req);
 
     if (!churchId) {
@@ -978,6 +1383,12 @@ const getClassStatistics = async (req, res) => {
         message: "Tài khoản chưa được gán giáo xứ",
       });
     }
+
+    /**
+     * =====================================================
+     * CLASS
+     * =====================================================
+     */
 
     const classId = toPositiveInt(req?.params?.classId);
 
@@ -988,9 +1399,17 @@ const getClassStatistics = async (req, res) => {
       });
     }
 
-    const fromDate = req?.query?.from;
+    /**
+     * =====================================================
+     * DATE RANGE
+     * =====================================================
+     */
 
-    const toDate = req?.query?.to;
+    const fromDate =
+      typeof req?.query?.from === "string" ? req.query.from.trim() : "";
+
+    const toDate =
+      typeof req?.query?.to === "string" ? req.query.to.trim() : "";
 
     if (fromDate && !isValidDate(fromDate)) {
       return res.status(400).json({
@@ -1014,14 +1433,17 @@ const getClassStatistics = async (req, res) => {
     }
 
     /**
+     * =====================================================
      * CHECK CLASS
+     * =====================================================
      */
 
     const [classRows] = await db.execute(
       `
           SELECT
             id,
-            name
+            name,
+            code
 
           FROM classes
 
@@ -1041,12 +1463,49 @@ const getClassStatistics = async (req, res) => {
       });
     }
 
+    /**
+     * =====================================================
+     * TEACHER PERMISSION
+     * =====================================================
+     */
+
+    if (req?.user?.role === "teacher") {
+      const teacherResult = await resolveTeacherClass(db, req, churchId);
+
+      if (!teacherResult.ok) {
+        return res.status(teacherResult.status).json({
+          success: false,
+          message: teacherResult.message,
+          ...(teacherResult.classes
+            ? {
+                classes: teacherResult.classes,
+              }
+            : {}),
+        });
+      }
+
+      if (Number(teacherResult.class.id) !== Number(classId)) {
+        return res.status(403).json({
+          success: false,
+          message: "Bạn không có quyền xem thống kê của lớp này",
+        });
+      }
+    }
+
+    /**
+     * =====================================================
+     * SCHEDULE
+     * =====================================================
+     */
+
     const scheduleDate = fromDate || toDate || getCurrentDate();
 
     const classSchedule = await getClassSchedule(db, classId, scheduleDate);
 
     /**
+     * =====================================================
      * QUERY
+     * =====================================================
      */
 
     let query = `
@@ -1058,7 +1517,7 @@ const getClassStatistics = async (req, res) => {
         COUNT(
           CASE
             WHEN a.attendance_type = 'mass'
-            AND a.status = 'present'
+              AND a.status = 'present'
             THEN 1
           END
         ) AS mass_present_count,
@@ -1066,7 +1525,7 @@ const getClassStatistics = async (req, res) => {
         COUNT(
           CASE
             WHEN a.attendance_type = 'mass'
-            AND a.status = 'absent'
+              AND a.status = 'absent'
             THEN 1
           END
         ) AS mass_absent_count,
@@ -1074,7 +1533,7 @@ const getClassStatistics = async (req, res) => {
         COUNT(
           CASE
             WHEN a.attendance_type = 'mass'
-            AND a.status = 'late'
+              AND a.status = 'late'
             THEN 1
           END
         ) AS mass_late_count,
@@ -1082,7 +1541,7 @@ const getClassStatistics = async (req, res) => {
         COUNT(
           CASE
             WHEN a.attendance_type = 'mass'
-            AND a.status = 'excused'
+              AND a.status = 'excused'
             THEN 1
           END
         ) AS mass_excused_count,
@@ -1097,7 +1556,7 @@ const getClassStatistics = async (req, res) => {
         COUNT(
           CASE
             WHEN a.attendance_type = 'catechism'
-            AND a.status = 'present'
+              AND a.status = 'present'
             THEN 1
           END
         ) AS catechism_present_count,
@@ -1105,7 +1564,7 @@ const getClassStatistics = async (req, res) => {
         COUNT(
           CASE
             WHEN a.attendance_type = 'catechism'
-            AND a.status = 'absent'
+              AND a.status = 'absent'
             THEN 1
           END
         ) AS catechism_absent_count,
@@ -1113,7 +1572,7 @@ const getClassStatistics = async (req, res) => {
         COUNT(
           CASE
             WHEN a.attendance_type = 'catechism'
-            AND a.status = 'late'
+              AND a.status = 'late'
             THEN 1
           END
         ) AS catechism_late_count,
@@ -1121,7 +1580,7 @@ const getClassStatistics = async (req, res) => {
         COUNT(
           CASE
             WHEN a.attendance_type = 'catechism'
-            AND a.status = 'excused'
+              AND a.status = 'excused'
             THEN 1
           END
         ) AS catechism_excused_count,
@@ -1147,6 +1606,12 @@ const getClassStatistics = async (req, res) => {
 
     const params = [churchId, classId, churchId];
 
+    /**
+     * =====================================================
+     * DATE FILTER
+     * =====================================================
+     */
+
     if (fromDate && toDate) {
       query += `
         AND a.attendance_date
@@ -1168,6 +1633,12 @@ const getClassStatistics = async (req, res) => {
       params.push(toDate);
     }
 
+    /**
+     * =====================================================
+     * WHERE
+     * =====================================================
+     */
+
     query += `
       WHERE
         cs.class_id = ?
@@ -1187,7 +1658,9 @@ const getClassStatistics = async (req, res) => {
     const [rows] = await db.execute(query, params);
 
     /**
+     * =====================================================
      * SUMMARY
+     * =====================================================
      */
 
     const summary = {
@@ -1209,6 +1682,12 @@ const getClassStatistics = async (req, res) => {
         excused: 0,
       },
     };
+
+    /**
+     * =====================================================
+     * CALCULATE SUMMARY
+     * =====================================================
+     */
 
     for (const row of rows) {
       summary.mass.total += Number(row.mass_total || 0);
@@ -1232,11 +1711,19 @@ const getClassStatistics = async (req, res) => {
       summary.catechism.excused += Number(row.catechism_excused_count || 0);
     }
 
+    /**
+     * =====================================================
+     * RESPONSE
+     * =====================================================
+     */
+
     return res.json({
       success: true,
 
       class: {
-        ...classRows[0],
+        id: classRows[0].id,
+        name: classRows[0].name,
+        code: classRows[0].code || null,
         start_time: classSchedule?.start_time || null,
       },
 
@@ -1246,7 +1733,29 @@ const getClassStatistics = async (req, res) => {
 
       summary,
 
-      data: rows,
+      data: rows.map((row) => ({
+        ...row,
+
+        mass_total: Number(row.mass_total || 0),
+
+        mass_present_count: Number(row.mass_present_count || 0),
+
+        mass_absent_count: Number(row.mass_absent_count || 0),
+
+        mass_late_count: Number(row.mass_late_count || 0),
+
+        mass_excused_count: Number(row.mass_excused_count || 0),
+
+        catechism_total: Number(row.catechism_total || 0),
+
+        catechism_present_count: Number(row.catechism_present_count || 0),
+
+        catechism_absent_count: Number(row.catechism_absent_count || 0),
+
+        catechism_late_count: Number(row.catechism_late_count || 0),
+
+        catechism_excused_count: Number(row.catechism_excused_count || 0),
+      })),
     });
   } catch (error) {
     console.error("GET CLASS STATISTICS ERROR:", error);
@@ -1263,7 +1772,6 @@ const getClassStatistics = async (req, res) => {
     });
   }
 };
-
 /**
  * =========================================================
  * SAVE BULK ATTENDANCE

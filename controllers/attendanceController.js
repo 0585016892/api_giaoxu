@@ -1550,12 +1550,11 @@ const saveBulkAttendance = async (req, res) => {
           });
         }
       } else {
-
-      /**
-       * ===================================================
-       * MASS
-       * ===================================================
-       */
+        /**
+         * ===================================================
+         * MASS
+         * ===================================================
+         */
         const [studentRows] = await connection.execute(
           `
               SELECT
@@ -1718,10 +1717,9 @@ const saveBulkAttendance = async (req, res) => {
           action: "updated",
         });
       } else {
-
-      /**
-       * INSERT
-       */
+        /**
+         * INSERT
+         */
         let insertResult;
 
         try {
@@ -2097,19 +2095,19 @@ const scanQRCode = async (req, res) => {
 
     const [lockedClassRows] = await connection.execute(
       `
-          SELECT
-            id,
-            name,
-            code,
-            church_id,
-            teacher_id
-          FROM classes
-          WHERE
-            id = ?
-            AND church_id = ?
-          LIMIT 1
-          FOR UPDATE
-        `,
+    SELECT
+      id,
+      name,
+      code,
+      church_id,
+      catechist_id
+    FROM classes
+    WHERE
+      id = ?
+      AND church_id = ?
+    LIMIT 1
+    FOR UPDATE
+  `,
       [classId, churchId],
     );
 

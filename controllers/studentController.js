@@ -2991,31 +2991,39 @@ exports.deleteStudentsBulk = async (req, res) => {
      * 7. GET STUDENTS
      *
      * Chỉ lấy học sinh thuộc church hiện tại.
-     * FOR UPDATE để tránh race condition.
+     *
+     * FOR UPDATE:
+     * Khóa các record trong transaction để tránh
+     * thay đổi dữ liệu đồng thời trong lúc xóa.
      * =======================================================
      */
 
     const [students] = await connection.execute(
       `
-          SELECT
-            id,
-            avatar,
-            name,
-            code
-          FROM students
-          WHERE church_id = ?
-            AND id IN (${placeholders})
-          FOR UPDATE
-        `,
+        SELECT
+          id,
+          avatar,
+          name,
+          code
+        FROM students
+        WHERE church_id = ?
+          AND id IN (${placeholders})
+        FOR UPDATE
+      `,
       [churchId, ...studentIds],
     );
 
+    console.log("FOUND STUDENTS:", students.length);
+
     /**
-     * Không có học sinh hợp lệ
+     * =======================================================
+     * 8. KHÔNG CÓ HỌC SINH HỢP LỆ
+     * =======================================================
      */
 
     if (students.length === 0) {
       await connection.rollback();
+
       transactionStarted = false;
 
       return res.status(404).json({
@@ -3026,7 +3034,7 @@ exports.deleteStudentsBulk = async (req, res) => {
 
     /**
      * =======================================================
-     * 8. VALID STUDENT IDS
+     * 9. VALID STUDENT IDS
      * =======================================================
      */
 
@@ -3036,58 +3044,30 @@ exports.deleteStudentsBulk = async (req, res) => {
 
     /**
      * =======================================================
-     * 9. GET ALL PARENTS
-     *
-     * Lấy parent của toàn bộ học sinh chuẩn bị xóa.
-     * DISTINCT để tránh parent bị xử lý nhiều lần.
+     * 10. NOT FOUND IDS
+     * =======================================================
+     */
+
+    const notFoundIds = studentIds.filter((id) => !validIds.includes(id));
+
+    console.log("NOT FOUND STUDENT IDS:", notFoundIds);
+
+    /**
+     * =======================================================
+     * 11. VALID PLACEHOLDERS
      * =======================================================
      */
 
     const validPlaceholders = validIds.map(() => "?").join(",");
 
-    const [parentRows] = await connection.execute(
-      `
-          SELECT DISTINCT
-            parent_id
-          FROM parent_students
-          WHERE church_id = ?
-            AND student_id IN (${validPlaceholders})
-            AND parent_id IS NOT NULL
-          FOR UPDATE
-        `,
-      [churchId, ...validIds],
-    );
-
-    const parentIds = [
-      ...new Set(
-        parentRows
-          .map((row) => Number(row.parent_id))
-          .filter((id) => Number.isInteger(id) && id > 0),
-      ),
-    ];
-
-    console.log("PARENT IDS:", parentIds);
-
     /**
      * =======================================================
-     * 10. DELETE PARENT-STUDENT
-     * =======================================================
-     */
-
-    const [parentRelationResult] = await connection.execute(
-      `
-          DELETE FROM parent_students
-          WHERE church_id = ?
-            AND student_id IN (${validPlaceholders})
-        `,
-      [churchId, ...validIds],
-    );
-
-    console.log("DELETED PARENT RELATIONS:", parentRelationResult.affectedRows);
-
-    /**
-     * =======================================================
-     * 11. DELETE CLASS-STUDENT
+     * 12. DELETE CLASS-STUDENT RELATIONS
+     *
+     * Xóa quan hệ học sinh - lớp trước.
+     *
+     * Không xóa classes.
+     * Không ảnh hưởng học sinh khác.
      * =======================================================
      */
 
@@ -3103,7 +3083,28 @@ exports.deleteStudentsBulk = async (req, res) => {
 
     /**
      * =======================================================
-     * 12. DELETE STUDENTS
+     * 13. DELETE STUDENTS
+     *
+     * RẤT QUAN TRỌNG:
+     *
+     * parent_students.student_id
+     * REFERENCES students(id)
+     * ON DELETE CASCADE
+     *
+     * Vì vậy khi xóa students:
+     *
+     * students
+     *    ↓
+     * parent_students
+     *
+     * MySQL tự động xóa các quan hệ
+     * parent_students tương ứng.
+     *
+     * KHÔNG DELETE FROM parents
+     * vì database không có bảng parents.
+     *
+     * KHÔNG DELETE FROM admins
+     * vì parent_id tham chiếu admins.id.
      * =======================================================
      */
 
@@ -3120,63 +3121,15 @@ exports.deleteStudentsBulk = async (req, res) => {
 
     /**
      * =======================================================
-     * 13. DELETE ORPHAN PARENTS
-     *
-     * Sau khi xóa quan hệ:
-     *
-     * - Parent còn con khác => giữ
-     * - Parent không còn con => xóa
+     * 14. CHECK ACTUAL DELETED COUNT
      * =======================================================
      */
 
-    const deletedParentIds = [];
-
-    for (const parentId of parentIds) {
-      const [remainingRows] = await connection.execute(
-        `
-            SELECT
-              id
-            FROM parent_students
-            WHERE parent_id = ?
-              AND church_id = ?
-            LIMIT 1
-          `,
-        [parentId, churchId],
-      );
-
-      /**
-       * Parent còn học sinh
-       */
-
-      if (remainingRows.length > 0) {
-        console.log(`PARENT ${parentId}: vẫn còn học sinh khác`);
-
-        continue;
-      }
-
-      /**
-       * Parent không còn học sinh
-       */
-
-      const [deleteParentResult] = await connection.execute(
-        `
-            DELETE FROM parents
-            WHERE id = ?
-              AND church_id = ?
-          `,
-        [parentId, churchId],
-      );
-
-      if (deleteParentResult.affectedRows > 0) {
-        deletedParentIds.push(parentId);
-
-        console.log(`PARENT ${parentId}: ĐÃ XÓA`);
-      }
-    }
+    const deletedCount = Number(deleteStudentResult.affectedRows) || 0;
 
     /**
      * =======================================================
-     * 14. COMMIT
+     * 15. COMMIT
      * =======================================================
      */
 
@@ -3184,11 +3137,23 @@ exports.deleteStudentsBulk = async (req, res) => {
 
     transactionStarted = false;
 
+    console.log("TRANSACTION COMMITTED");
+
     /**
      * =======================================================
-     * 15. DELETE AVATARS AFTER COMMIT
+     * 16. DELETE AVATARS AFTER COMMIT
+     *
+     * Chỉ xóa file sau khi DB commit thành công.
+     *
+     * Nếu xóa DB thất bại:
+     * avatar vẫn còn.
+     *
+     * Nếu DB đã commit:
+     * mới tiến hành xóa avatar.
      * =======================================================
      */
+
+    let deletedAvatarCount = 0;
 
     for (const student of students) {
       if (!student.avatar) {
@@ -3196,7 +3161,13 @@ exports.deleteStudentsBulk = async (req, res) => {
       }
 
       try {
-        deleteFileSafe(student.avatar);
+        const deleted = deleteFileSafe(student.avatar);
+
+        if (deleted !== false) {
+          deletedAvatarCount++;
+        }
+
+        console.log(`DELETED AVATAR STUDENT ${student.id}:`, student.avatar);
       } catch (fileError) {
         console.error(`❌ DELETE AVATAR STUDENT ${student.id}:`, fileError);
       }
@@ -3204,30 +3175,84 @@ exports.deleteStudentsBulk = async (req, res) => {
 
     /**
      * =======================================================
-     * 16. RESPONSE
+     * 17. RESPONSE
      * =======================================================
      */
 
     return res.json({
       success: true,
-      message: `Đã xóa ${validIds.length} học sinh`,
+
+      message: `Đã xóa ${deletedCount} học sinh`,
+
       data: {
+        /**
+         * Danh sách ID thực tế đã xóa
+         */
         deleted_ids: validIds,
 
-        deleted_count: validIds.length,
+        /**
+         * Tổng số học sinh đã xóa
+         */
+        deleted_count: deletedCount,
 
-        deleted_parent_ids: deletedParentIds,
+        /**
+         * Số quan hệ lớp đã xóa
+         */
+        deleted_class_relations: Number(classRelationResult.affectedRows) || 0,
 
-        deleted_parent_count: deletedParentIds.length,
+        /**
+         * parent_students được xóa tự động
+         * bởi ON DELETE CASCADE.
+         */
+        parent_relations_cascade: true,
 
+        /**
+         * Không xóa admins.
+         */
+        deleted_parents: 0,
+
+        /**
+         * Không xóa admin accounts.
+         */
+        deleted_admins: 0,
+
+        /**
+         * Số avatar đã xử lý.
+         */
+        deleted_avatars: deletedAvatarCount,
+
+        /**
+         * Số lượng request ban đầu.
+         */
         requested_count: studentIds.length,
 
-        not_found_ids: studentIds.filter((id) => !validIds.includes(id)),
+        /**
+         * Những ID không tồn tại
+         * hoặc không thuộc church hiện tại.
+         */
+        not_found_ids: notFoundIds,
       },
     });
   } catch (error) {
+    /**
+     * =======================================================
+     * ERROR LOG
+     * =======================================================
+     */
+
     console.error("");
-    console.error("❌ DELETE STUDENTS BULK ERROR:", error);
+    console.error(
+      "============================================================",
+    );
+    console.error("❌ DELETE STUDENTS BULK ERROR");
+    console.error(
+      "============================================================",
+    );
+
+    console.error("MESSAGE:", error.message);
+    console.error("CODE:", error.code);
+    console.error("SQL STATE:", error.sqlState);
+    console.error("SQL MESSAGE:", error.sqlMessage);
 
     /**
      * =======================================================
@@ -3238,17 +3263,36 @@ exports.deleteStudentsBulk = async (req, res) => {
     if (transactionStarted) {
       try {
         await connection.rollback();
+
+        console.log("ROLLBACK SUCCESS");
       } catch (rollbackError) {
         console.error("❌ DELETE STUDENTS BULK ROLLBACK ERROR:", rollbackError);
       }
     }
+
+    /**
+     * =======================================================
+     * RESPONSE
+     * =======================================================
+     */
 
     return res.status(500).json({
       success: false,
       message: "Không thể xóa danh sách học sinh",
     });
   } finally {
+    /**
+     * =======================================================
+     * RELEASE CONNECTION
+     * =======================================================
+     */
+
     connection.release();
+
+    console.log("DATABASE CONNECTION RELEASED");
+
+    console.log("============================================================");
+    console.log("");
   }
 };
 /**

@@ -335,62 +335,58 @@ const safeRollback = async (connection, transactionStarted) => {
 
 /**
  * =========================================================
- * TEACHER -> ASSIGNED CLASSES
+ * GET TEACHER ASSIGNED CLASSES
  * =========================================================
  *
- * SCHEMA ĐANG DÙNG:
+ * QUAN TRỌNG:
+ * - classes KHÔNG có teacher_id
+ * - Việc phân lớp nằm ở catechist_classes
  *
- * classes.teacher_id = teacher.id
- *
- * KHÔNG dùng:
- *
- * catechists.role
- *
- * KHÔNG query:
- *
- * SELECT role FROM catechists
- *
- * Teacher ID lấy từ:
- *
- * req.user.teacher_id
+ * teacher_id trong JWT / req.user phải tương ứng
+ * với catechists.id nếu hệ thống của bạn đang dùng
+ * teacher_id = catechists.id.
  *
  * =========================================================
  */
-
-const getTeacherAssignedClasses = async (executor, req, churchId) => {
+const getTeacherAssignedClasses = async (connection, req, churchId) => {
   const teacherId = getTeacherId(req);
 
   if (!teacherId) {
-    return {
-      ok: false,
-      status: 401,
-      message: "Tài khoản giáo viên chưa có teacher_id",
-    };
+    return [];
   }
 
-  const [rows] = await executor.execute(
+  const [rows] = await connection.execute(
     `
-        SELECT
-          c.id,
-          c.name,
-          c.code,
-          c.teacher_id
-        FROM classes c
-        WHERE
-          c.church_id = ?
-          AND c.teacher_id = ?
-        ORDER BY
-          c.name ASC,
-          c.id ASC
-      `,
+      SELECT DISTINCT
+        c.id,
+        c.name,
+        c.code
+
+      FROM classes c
+
+      INNER JOIN catechist_classes cc
+        ON cc.class_id = c.id
+
+      WHERE
+        c.church_id = ?
+        AND cc.catechist_id = ?
+        AND (
+          cc.status IS NULL
+          OR cc.status IN ('teaching', 'active')
+        )
+
+      ORDER BY
+        c.name ASC,
+        c.id ASC
+    `,
     [churchId, teacherId],
   );
 
-  return {
-    ok: true,
-    teacher_id: teacherId,
-    classes: rows || [],
-  };
+  return rows.map((row) => ({
+    id: Number(row.id),
+    name: row.name,
+    code: row.code || null,
+  }));
 };
 
 /**

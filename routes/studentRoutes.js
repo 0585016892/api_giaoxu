@@ -76,7 +76,11 @@ router.post(
   uploadStudentExcel.single("file"),
   studentController.importStudentsExcel,
 );
-
+router.put(
+  "/:id/bulk-update",
+  verifyToken,
+  studentController.bulkUpdateStudents,
+);
 // Cập nhật học sinh
 router.put(
   "/:id",

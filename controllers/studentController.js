@@ -2568,7 +2568,830 @@ exports.updateStudent = async (req, res) => {
     connection.release();
   }
 };
+/**
+ * =========================================================
+ * BULK UPDATE STUDENTS IN CLASS
+ * =========================================================
+ *
+ * PUT /api/students/classes/:id/bulk-update
+ *
+ */
+exports.bulkUpdateStudents = async (req, res) => {
+  let connection = null;
+  let transactionStarted = false;
 
+  try {
+    /**
+     * -------------------------------------------------------
+     * CHURCH
+     * -------------------------------------------------------
+     */
+
+    const churchId = getChurchId(req);
+
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ",
+      });
+    }
+
+    /**
+     * -------------------------------------------------------
+     * CLASS
+     * -------------------------------------------------------
+     */
+
+    const classId = toInt(req.params.id);
+
+    if (!isValidId(classId)) {
+      return res.status(400).json({
+        success: false,
+        message: "ID lớp không hợp lệ",
+      });
+    }
+
+    /**
+     * -------------------------------------------------------
+     * BODY
+     * -------------------------------------------------------
+     */
+
+    const students = req.body?.students;
+
+    if (!Array.isArray(students)) {
+      return res.status(400).json({
+        success: false,
+        message: "Dữ liệu students phải là một mảng",
+      });
+    }
+
+    if (students.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Không có học sinh cần cập nhật",
+      });
+    }
+
+    /**
+     * -------------------------------------------------------
+     * GIỚI HẠN AN TOÀN
+     * -------------------------------------------------------
+     *
+     * Không nên cho một request cập nhật vô hạn dòng.
+     * 1000 học sinh là quá đủ cho một lớp / lần chỉnh sửa.
+     */
+
+    if (students.length > 1000) {
+      return res.status(400).json({
+        success: false,
+        message: "Số lượng học sinh cập nhật tối đa là 1000",
+      });
+    }
+
+    /**
+     * -------------------------------------------------------
+     * LOAD CLASS
+     * -------------------------------------------------------
+     */
+
+    connection = await db.getConnection();
+
+    const [classRows] = await connection.execute(
+      `
+        SELECT
+          id,
+          name,
+          code
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
+      `,
+      [classId, churchId],
+    );
+
+    if (classRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy lớp học hoặc lớp không thuộc giáo xứ",
+      });
+    }
+
+    const classInfo = classRows[0];
+
+    /**
+     * -------------------------------------------------------
+     * CHECK DUPLICATE STUDENT ID
+     * -------------------------------------------------------
+     */
+
+    const studentIds = [];
+
+    const duplicateIds = [];
+
+    const seenIds = new Set();
+
+    for (let index = 0; index < students.length; index++) {
+      const item = students[index];
+
+      const studentId = toInt(item?.id);
+
+      if (!isValidId(studentId)) {
+        continue;
+      }
+
+      if (seenIds.has(studentId)) {
+        duplicateIds.push({
+          row: index + 1,
+          student_id: studentId,
+        });
+      } else {
+        seenIds.add(studentId);
+        studentIds.push(studentId);
+      }
+    }
+
+    if (duplicateIds.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Danh sách có học sinh bị trùng ID",
+        errors: duplicateIds,
+      });
+    }
+
+    /**
+     * -------------------------------------------------------
+     * LOAD ALL STUDENTS
+     * -------------------------------------------------------
+     *
+     * Lấy một lần thay vì query từng dòng.
+     */
+
+    if (studentIds.length !== students.length) {
+      const errors = [];
+
+      students.forEach((item, index) => {
+        const studentId = toInt(item?.id);
+
+        if (!isValidId(studentId)) {
+          errors.push({
+            row: index + 1,
+            student_id: item?.id || null,
+            field: "id",
+            message: "ID học sinh không hợp lệ",
+          });
+        }
+      });
+
+      return res.status(400).json({
+        success: false,
+        message: "Có học sinh có ID không hợp lệ",
+        errors,
+      });
+    }
+
+    const placeholders = studentIds.map(() => "?").join(", ");
+
+    const [oldStudentRows] = await connection.query(
+      `
+        SELECT
+          s.*,
+          cs.class_id
+        FROM students s
+        INNER JOIN class_students cs
+          ON cs.student_id = s.id
+        WHERE s.church_id = ?
+          AND cs.class_id = ?
+          AND s.id IN (${placeholders})
+      `,
+      [churchId, classId, ...studentIds],
+    );
+
+    /**
+     * -------------------------------------------------------
+     * MAP OLD STUDENTS
+     * -------------------------------------------------------
+     */
+
+    const oldStudentMap = new Map();
+
+    for (const student of oldStudentRows) {
+      oldStudentMap.set(Number(student.id), student);
+    }
+
+    /**
+     * -------------------------------------------------------
+     * CHECK ALL STUDENTS BELONG TO CLASS
+     * -------------------------------------------------------
+     */
+
+    const ownershipErrors = [];
+
+    for (let index = 0; index < students.length; index++) {
+      const item = students[index];
+      const studentId = toInt(item?.id);
+
+      if (!oldStudentMap.has(studentId)) {
+        ownershipErrors.push({
+          row: index + 1,
+          student_id: studentId,
+          field: "id",
+          message:
+            "Học sinh không tồn tại, không thuộc giáo xứ hoặc không thuộc lớp này",
+        });
+      }
+    }
+
+    if (ownershipErrors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Có học sinh không thuộc lớp đang chỉnh sửa",
+        errors: ownershipErrors,
+      });
+    }
+
+    /**
+     * =======================================================
+     * VALIDATE ALL DATA BEFORE TRANSACTION UPDATE
+     * =======================================================
+     */
+
+    const validationErrors = [];
+
+    /**
+     * -------------------------------------------------------
+     * HELPER
+     * -------------------------------------------------------
+     */
+
+    const addError = ({
+      row,
+      studentId,
+      field,
+      message,
+      value = undefined,
+    }) => {
+      const error = {
+        row,
+        student_id: studentId,
+        field,
+        message,
+      };
+
+      if (value !== undefined) {
+        error.value = value;
+      }
+
+      validationErrors.push(error);
+    };
+
+    /**
+     * -------------------------------------------------------
+     * VALIDATE EACH STUDENT
+     * -------------------------------------------------------
+     */
+
+    for (let index = 0; index < students.length; index++) {
+      const item = students[index];
+
+      const row = index + 1;
+      const studentId = toInt(item.id);
+      const oldStudent = oldStudentMap.get(studentId);
+
+      /**
+       * -----------------------------------------------------
+       * NAME
+       * -----------------------------------------------------
+       */
+
+      const normalizedName =
+        item.name !== undefined
+          ? normalizeValue(item.name)
+          : normalizeValue(oldStudent.name);
+
+      if (!normalizedName) {
+        addError({
+          row,
+          studentId,
+          field: "name",
+          message: "Tên học sinh là bắt buộc",
+        });
+      }
+
+      /**
+       * -----------------------------------------------------
+       * GENDER
+       * -----------------------------------------------------
+       */
+
+      const normalizedGender =
+        item.gender !== undefined
+          ? normalizeValue(item.gender)
+          : oldStudent.gender;
+
+      if (normalizedGender && !VALID_GENDERS.includes(normalizedGender)) {
+        addError({
+          row,
+          studentId,
+          field: "gender",
+          message: "Giới tính không hợp lệ",
+          value: normalizedGender,
+        });
+      }
+
+      /**
+       * -----------------------------------------------------
+       * CATECHISM STATUS
+       * -----------------------------------------------------
+       */
+
+      const normalizedCatechismStatus =
+        item.catechism_status !== undefined
+          ? normalizeValue(item.catechism_status)
+          : oldStudent.catechism_status || "new";
+
+      if (!VALID_CATECHISM_STATUS.includes(normalizedCatechismStatus)) {
+        addError({
+          row,
+          studentId,
+          field: "catechism_status",
+          message: "Trạng thái giáo lý không hợp lệ",
+          value: normalizedCatechismStatus,
+        });
+      }
+
+      /**
+       * -----------------------------------------------------
+       * STATUS
+       * -----------------------------------------------------
+       */
+
+      const normalizedStatus =
+        item.status !== undefined
+          ? normalizeValue(item.status)
+          : oldStudent.status || "active";
+
+      if (!VALID_STUDENT_STATUS.includes(normalizedStatus)) {
+        addError({
+          row,
+          studentId,
+          field: "status",
+          message: "Trạng thái học sinh không hợp lệ",
+          value: normalizedStatus,
+        });
+      }
+
+      /**
+       * -----------------------------------------------------
+       * DATES
+       * -----------------------------------------------------
+       */
+
+      const normalizedDateOfBirth =
+        item.date_of_birth !== undefined
+          ? normalizeDate(item.date_of_birth)
+          : oldStudent.date_of_birth;
+
+      const normalizedBaptismDate =
+        item.baptism_date !== undefined
+          ? normalizeDate(item.baptism_date)
+          : oldStudent.baptism_date;
+
+      const normalizedFirstCommunionDate =
+        item.first_communion_date !== undefined
+          ? normalizeDate(item.first_communion_date)
+          : oldStudent.first_communion_date;
+
+      const normalizedConfirmationDate =
+        item.confirmation_date !== undefined
+          ? normalizeDate(item.confirmation_date)
+          : oldStudent.confirmation_date;
+
+      const normalizedEnrollmentDate =
+        item.enrollment_date !== undefined
+          ? normalizeDate(item.enrollment_date)
+          : oldStudent.enrollment_date;
+
+      const dateFields = [
+        {
+          field: "date_of_birth",
+          value: normalizedDateOfBirth,
+        },
+        {
+          field: "baptism_date",
+          value: normalizedBaptismDate,
+        },
+        {
+          field: "first_communion_date",
+          value: normalizedFirstCommunionDate,
+        },
+        {
+          field: "confirmation_date",
+          value: normalizedConfirmationDate,
+        },
+        {
+          field: "enrollment_date",
+          value: normalizedEnrollmentDate,
+        },
+      ];
+
+      for (const dateField of dateFields) {
+        if (!isValidDateString(dateField.value)) {
+          addError({
+            row,
+            studentId,
+            field: dateField.field,
+            message: "Ngày tháng không hợp lệ",
+            value: dateField.value,
+          });
+        }
+      }
+
+      /**
+       * -----------------------------------------------------
+       * PHONE
+       * -----------------------------------------------------
+       */
+
+      const normalizedFatherPhone =
+        item.father_phone !== undefined
+          ? normalizeParentPhone(item.father_phone)
+          : oldStudent.father_phone;
+
+      const normalizedMotherPhone =
+        item.mother_phone !== undefined
+          ? normalizeParentPhone(item.mother_phone)
+          : oldStudent.mother_phone;
+
+      const normalizedGuardianPhone =
+        item.guardian_phone !== undefined
+          ? normalizeParentPhone(item.guardian_phone)
+          : oldStudent.guardian_phone;
+
+      /**
+       * -----------------------------------------------------
+       * LƯU NORMALIZED DATA
+       * -----------------------------------------------------
+       *
+       * Gắn tạm vào object để không phải normalize lại
+       * ở bước UPDATE.
+       */
+
+      item.__normalized = {
+        name: normalizedName,
+        gender: normalizedGender,
+
+        date_of_birth: normalizedDateOfBirth,
+
+        birth_place:
+          item.birth_place !== undefined
+            ? normalizeValue(item.birth_place)
+            : oldStudent.birth_place,
+
+        nationality:
+          item.nationality !== undefined
+            ? normalizeValue(item.nationality)
+            : oldStudent.nationality || "Việt Nam",
+
+        phone:
+          item.phone !== undefined
+            ? normalizeValue(item.phone)
+            : oldStudent.phone,
+
+        email:
+          item.email !== undefined
+            ? normalizeValue(item.email)
+            : oldStudent.email,
+
+        address:
+          item.address !== undefined
+            ? normalizeValue(item.address)
+            : oldStudent.address,
+
+        parish:
+          item.parish !== undefined
+            ? normalizeValue(item.parish)
+            : oldStudent.parish,
+
+        father_name:
+          item.father_name !== undefined
+            ? normalizeValue(item.father_name)
+            : oldStudent.father_name,
+
+        father_phone: normalizedFatherPhone,
+
+        mother_name:
+          item.mother_name !== undefined
+            ? normalizeValue(item.mother_name)
+            : oldStudent.mother_name,
+
+        mother_phone: normalizedMotherPhone,
+
+        guardian_name:
+          item.guardian_name !== undefined
+            ? normalizeValue(item.guardian_name)
+            : oldStudent.guardian_name,
+
+        guardian_phone: normalizedGuardianPhone,
+
+        guardian_relationship:
+          item.guardian_relationship !== undefined
+            ? normalizeValue(item.guardian_relationship)
+            : oldStudent.guardian_relationship,
+
+        baptism_name:
+          item.baptism_name !== undefined
+            ? normalizeValue(item.baptism_name)
+            : oldStudent.baptism_name,
+
+        baptism_date: normalizedBaptismDate,
+
+        baptism_place:
+          item.baptism_place !== undefined
+            ? normalizeValue(item.baptism_place)
+            : oldStudent.baptism_place,
+
+        baptism_parish:
+          item.baptism_parish !== undefined
+            ? normalizeValue(item.baptism_parish)
+            : oldStudent.baptism_parish,
+
+        baptism_certificate_no:
+          item.baptism_certificate_no !== undefined
+            ? normalizeValue(item.baptism_certificate_no)
+            : oldStudent.baptism_certificate_no,
+
+        saint_name:
+          item.saint_name !== undefined
+            ? normalizeValue(item.saint_name)
+            : oldStudent.saint_name,
+
+        first_communion_date: normalizedFirstCommunionDate,
+
+        first_communion_place:
+          item.first_communion_place !== undefined
+            ? normalizeValue(item.first_communion_place)
+            : oldStudent.first_communion_place,
+
+        confirmation_date: normalizedConfirmationDate,
+
+        confirmation_place:
+          item.confirmation_place !== undefined
+            ? normalizeValue(item.confirmation_place)
+            : oldStudent.confirmation_place,
+
+        confirmation_saint_name:
+          item.confirmation_saint_name !== undefined
+            ? normalizeValue(item.confirmation_saint_name)
+            : oldStudent.confirmation_saint_name,
+
+        catechism_level:
+          item.catechism_level !== undefined
+            ? normalizeValue(item.catechism_level)
+            : oldStudent.catechism_level,
+
+        catechism_status: normalizedCatechismStatus,
+
+        enrollment_date: normalizedEnrollmentDate,
+
+        note:
+          item.note !== undefined ? normalizeValue(item.note) : oldStudent.note,
+
+        status: normalizedStatus,
+      };
+    }
+
+    /**
+     * -------------------------------------------------------
+     * RETURN ALL VALIDATION ERRORS
+     * -------------------------------------------------------
+     */
+
+    if (validationErrors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Dữ liệu có lỗi, chưa có học sinh nào được cập nhật",
+        errors: validationErrors,
+      });
+    }
+
+    /**
+     * =======================================================
+     * TRANSACTION
+     * =======================================================
+     */
+
+    await connection.beginTransaction();
+
+    transactionStarted = true;
+
+    /**
+     * -------------------------------------------------------
+     * UPDATE STUDENTS
+     * -------------------------------------------------------
+     */
+
+    for (const item of students) {
+      const studentId = toInt(item.id);
+      const data = item.__normalized;
+
+      await connection.execute(
+        `
+          UPDATE students
+          SET
+            name = ?,
+            gender = ?,
+            date_of_birth = ?,
+            birth_place = ?,
+            nationality = ?,
+            phone = ?,
+            email = ?,
+            address = ?,
+            parish = ?,
+
+            father_name = ?,
+            father_phone = ?,
+
+            mother_name = ?,
+            mother_phone = ?,
+
+            guardian_name = ?,
+            guardian_phone = ?,
+            guardian_relationship = ?,
+
+            baptism_name = ?,
+            baptism_date = ?,
+            baptism_place = ?,
+            baptism_parish = ?,
+            baptism_certificate_no = ?,
+
+            saint_name = ?,
+
+            first_communion_date = ?,
+            first_communion_place = ?,
+
+            confirmation_date = ?,
+            confirmation_place = ?,
+            confirmation_saint_name = ?,
+
+            catechism_level = ?,
+            catechism_status = ?,
+            enrollment_date = ?,
+
+            note = ?,
+            status = ?
+
+          WHERE id = ?
+            AND church_id = ?
+        `,
+        [
+          data.name,
+          data.gender,
+          data.date_of_birth,
+          data.birth_place,
+          data.nationality,
+          data.phone,
+          data.email,
+          data.address,
+          data.parish,
+
+          data.father_name,
+          data.father_phone,
+
+          data.mother_name,
+          data.mother_phone,
+
+          data.guardian_name,
+          data.guardian_phone,
+          data.guardian_relationship,
+
+          data.baptism_name,
+          data.baptism_date,
+          data.baptism_place,
+          data.baptism_parish,
+          data.baptism_certificate_no,
+
+          data.saint_name,
+
+          data.first_communion_date,
+          data.first_communion_place,
+
+          data.confirmation_date,
+          data.confirmation_place,
+          data.confirmation_saint_name,
+
+          data.catechism_level,
+          data.catechism_status,
+          data.enrollment_date,
+
+          data.note,
+          data.status,
+
+          studentId,
+          churchId,
+        ],
+      );
+    }
+
+    /**
+     * -------------------------------------------------------
+     * SYNC PARENTS
+     * -------------------------------------------------------
+     */
+
+    const parentResults = [];
+
+    for (const item of students) {
+      const studentId = toInt(item.id);
+      const data = item.__normalized;
+
+      const parentAccounts = await syncStudentParents({
+        connection,
+        churchId,
+        studentId,
+
+        fatherName: data.father_name,
+        fatherPhone: data.father_phone,
+
+        motherName: data.mother_name,
+        motherPhone: data.mother_phone,
+
+        guardianName: data.guardian_name,
+        guardianPhone: data.guardian_phone,
+        guardianRelationship: data.guardian_relationship,
+      });
+
+      parentResults.push({
+        student_id: studentId,
+        parents: parentAccounts.map((parent) => ({
+          id: parent.id,
+          username: parent.username,
+          relationship: parent.relationship,
+          created: parent.created,
+        })),
+      });
+    }
+
+    /**
+     * -------------------------------------------------------
+     * COMMIT
+     * -------------------------------------------------------
+     */
+
+    await connection.commit();
+
+    transactionStarted = false;
+
+    /**
+     * -------------------------------------------------------
+     * RESPONSE
+     * -------------------------------------------------------
+     */
+
+    return res.json({
+      success: true,
+      message: `Đã cập nhật ${students.length} học sinh`,
+      data: {
+        class: classInfo,
+        updated: students.length,
+        failed: 0,
+        parents: parentResults,
+      },
+    });
+  } catch (error) {
+    console.error("❌ BULK UPDATE STUDENTS:", error);
+
+    /**
+     * -------------------------------------------------------
+     * ROLLBACK
+     * -------------------------------------------------------
+     */
+
+    if (transactionStarted && connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("❌ BULK UPDATE ROLLBACK:", rollbackError);
+      }
+    }
+
+    /**
+     * -------------------------------------------------------
+     * ERROR RESPONSE
+     * -------------------------------------------------------
+     */
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Không thể cập nhật danh sách học sinh",
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+};
 /**
  * =========================================================
  * DELETE ONE STUDENT

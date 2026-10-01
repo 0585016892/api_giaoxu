@@ -250,7 +250,6 @@ const getCurrentDate = () => {
  * QR HELPERS
  * =========================================================
  */
-
 const normalizeQrToken = (value) => {
   if (typeof value !== "string") {
     return null;
@@ -266,7 +265,12 @@ const normalizeQrToken = (value) => {
     token = token.substring(5).trim();
   }
 
-  if (!/^[a-fA-F0-9]{32,64}$/.test(token)) {
+  if (/\s/.test(token)) {
+    return null;
+  }
+
+  // QR token hiện tại / QR token cũ
+  if (!/^[A-Za-z0-9-]{10,128}$/.test(token)) {
     return null;
   }
 

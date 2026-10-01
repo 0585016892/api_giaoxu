@@ -467,133 +467,70 @@ const teacherCanAccessClass = async (executor, req, churchId, classId) => {
  */
 
 const resolveCatechismClass = async (
-  executor,
+  connection,
   req,
   churchId,
   requestedClassId,
 ) => {
-  let classId = toPositiveInt(requestedClassId);
+  const classes = await getTeacherAssignedClasses(connection, req, churchId);
+
+  if (!Array.isArray(classes) || classes.length === 0) {
+    return {
+      ok: false,
+      status: 403,
+      message: "Giáo viên chưa được phân công lớp giáo lý",
+      classes: [],
+    };
+  }
 
   /**
-   * =====================================================
-   * TEACHER
-   * =====================================================
+   * Có class_id từ frontend
    */
-
-  if (isTeacher(req)) {
-    const teacherResult = await getTeacherAssignedClasses(
-      executor,
-      req,
-      churchId,
+  if (requestedClassId) {
+    const classInfo = classes.find(
+      (item) => Number(item.id) === Number(requestedClassId),
     );
 
-    if (!teacherResult.ok) {
-      return teacherResult;
-    }
-
-    const assignedClasses = teacherResult.classes || [];
-
-    if (!assignedClasses.length) {
-      return {
-        ok: false,
-        status: 404,
-        message: "Giáo viên chưa được phân công lớp học",
-      };
-    }
-
-    /**
-     * Không gửi class_id
-     */
-    if (!classId) {
-      /**
-       * Chỉ 1 lớp
-       */
-      if (assignedClasses.length === 1) {
-        classId = Number(assignedClasses[0].id);
-      } else {
-        /**
-         * Nhiều lớp:
-         * Không đoán.
-         */
-        return {
-          ok: false,
-          status: 409,
-          code: "MULTIPLE_ASSIGNED_CLASSES",
-          message:
-            "Giáo viên đang được phân công nhiều lớp. Vui lòng chọn lớp học.",
-          classes: assignedClasses,
-        };
-      }
-    }
-
-    /**
-     * Kiểm tra lớp thuộc teacher
-     */
-    const allowed = assignedClasses.some(
-      (item) => Number(item.id) === Number(classId),
-    );
-
-    if (!allowed) {
+    if (!classInfo) {
       return {
         ok: false,
         status: 403,
-        message:
-          "Bạn không được phân công lớp này nên không có quyền điểm danh",
+        message: "Bạn không được phép điểm danh lớp này",
+        classes,
       };
     }
-  }
 
-  /**
-   * =====================================================
-   * ADMIN / ADMIN_CATECHIST
-   * =====================================================
-   */
-
-  if (!isTeacher(req) && !classId) {
     return {
-      ok: false,
-      status: 400,
-      message: "Học giáo lý cần truyền class_id",
+      ok: true,
+      class: classInfo,
+      classes,
     };
   }
 
   /**
-   * =====================================================
-   * CHECK CLASS
-   * =====================================================
+   * Không truyền class_id
+   *
+   * Nếu giáo viên chỉ có đúng 1 lớp
+   * thì có thể tự xác định lớp.
    */
-
-  const [classRows] = await executor.execute(
-    `
-        SELECT
-          id,
-          name,
-          code,
-          church_id,
-          teacher_id
-        FROM classes
-        WHERE
-          id = ?
-          AND church_id = ?
-        LIMIT 1
-      `,
-    [classId, churchId],
-  );
-
-  if (!classRows.length) {
+  if (classes.length === 1) {
     return {
-      ok: false,
-      status: 404,
-      message: "Không tìm thấy lớp học",
+      ok: true,
+      class: classes[0],
+      classes,
     };
   }
 
+  /**
+   * Có nhiều lớp nhưng không biết chọn lớp nào
+   */
   return {
-    ok: true,
-    class: classRows[0],
+    ok: false,
+    status: 400,
+    message: "Vui lòng chọn lớp giáo lý",
+    classes,
   };
 };
-
 /**
  * =========================================================
  * STUDENT CLASS
@@ -760,12 +697,17 @@ const getAttendance = async (req, res) => {
         churchId,
         requestedClassId,
       );
-
       if (!classResult.ok) {
-        return res.status(classResult.status).json({
+        const errorStatus =
+          Number.isInteger(classResult.status) && classResult.status >= 400
+            ? classResult.status
+            : 403;
+
+        return res.status(errorStatus).json({
           success: false,
-          message: classResult.message,
-          ...(classResult.classes
+          message:
+            classResult.message || "Giáo viên không được phân công lớp giáo lý",
+          ...(Array.isArray(classResult.classes)
             ? {
                 classes: classResult.classes,
               }

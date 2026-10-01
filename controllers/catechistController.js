@@ -202,10 +202,151 @@ exports.getCatechistById = async (req, res) => {
 
 /**
  * ================================
- * TẠO GIÁO LÝ VIÊN
+ * Lấy văn thư
  * ================================
  */
+exports.getPendingAppointments = async (req, res) => {
+  try {
+    const churchId = getChurchId(req);
 
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được gán giáo xứ",
+      });
+    }
+
+    // req.user.username = GLV20260001
+    const username = req.user?.username;
+
+    if (!username) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được tài khoản Giáo lý viên",
+      });
+    }
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        cc.id,
+        cc.catechist_id,
+        cc.class_id,
+        cc.role,
+        cc.status,
+        cc.assigned_date,
+        cc.notes,
+
+        cl.code AS class_code,
+        cl.name AS class_name,
+
+        c.catechist_code,
+        c.full_name,
+        c.holy_name
+
+      FROM catechist_classes cc
+
+      INNER JOIN catechists c
+        ON c.id = cc.catechist_id
+       AND c.church_id = ?
+
+      INNER JOIN classes cl
+        ON cl.id = cc.class_id
+       AND cl.church_id = ?
+
+      WHERE c.catechist_code = ?
+        AND cc.status = 'teaching'
+        AND cc.appointment_read = 0
+
+      ORDER BY
+        cc.assigned_date DESC,
+        cc.id DESC
+      `,
+      [churchId, churchId, username],
+    );
+
+    console.log("📨 PENDING APPOINTMENTS:", {
+      username,
+      count: rows.length,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: rows,
+    });
+  } catch (error) {
+    console.error("❌ GET PENDING APPOINTMENTS ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể lấy thư bổ nhiệm",
+      errorCode: error.code,
+    });
+  }
+};
+exports.readAppointment = async (req, res) => {
+  try {
+    const churchId = getChurchId(req);
+    const { id } = req.params;
+
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được gán giáo xứ",
+      });
+    }
+
+    const username = req.user?.username;
+
+    if (!username) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được tài khoản",
+      });
+    }
+
+    const [result] = await db.query(
+      `
+      UPDATE catechist_classes cc
+
+      INNER JOIN catechists c
+        ON c.id = cc.catechist_id
+       AND c.church_id = ?
+
+      SET cc.appointment_read = 1
+
+      WHERE cc.id = ?
+        AND c.catechist_code = ?
+      `,
+      [churchId, id, username],
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy thư bổ nhiệm",
+      });
+    }
+
+    console.log("📨 APPOINTMENT READ:", {
+      assignmentId: id,
+      username,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Đã nhận thư bổ nhiệm",
+    });
+  } catch (error) {
+    console.error("❌ READ APPOINTMENT ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể cập nhật thư bổ nhiệm",
+      errorCode: error.code,
+    });
+  }
+};
 // =========================================================
 // CREATE CATECHIST
 // =========================================================
@@ -219,7 +360,7 @@ exports.createCatechist = async (req, res) => {
     console.log("👤 req.user:", req.user);
 
     // =====================================================
-    // CHURCH ID
+    // 1. CHURCH ID
     // =====================================================
 
     const churchId = getChurchId(req);
@@ -234,7 +375,7 @@ exports.createCatechist = async (req, res) => {
     }
 
     // =====================================================
-    // GET BODY
+    // 2. GET BODY
     // =====================================================
 
     const {
@@ -266,10 +407,20 @@ exports.createCatechist = async (req, res) => {
       notes,
 
       password,
+
+      // ===================================================
+      // PHÂN LỚP
+      // ===================================================
+
+      class_id,
+      role,
+      class_status,
+      assigned_date,
+      class_notes,
     } = req.body;
 
     // =====================================================
-    // VALIDATE FULL NAME
+    // 3. VALIDATE FULL NAME
     // =====================================================
 
     if (!full_name || !String(full_name).trim()) {
@@ -282,7 +433,7 @@ exports.createCatechist = async (req, res) => {
     const cleanFullName = String(full_name).trim();
 
     // =====================================================
-    // VALIDATE EMAIL
+    // 4. VALIDATE EMAIL
     // =====================================================
 
     if (!email || !String(email).trim()) {
@@ -295,62 +446,57 @@ exports.createCatechist = async (req, res) => {
     const cleanEmail = String(email).trim().toLowerCase();
 
     // =====================================================
-    // PASSWORD
+    // 5. VALIDATE CLASS ID NẾU CÓ
+    // =====================================================
+
+    let cleanClassId = null;
+
+    if (
+      class_id !== undefined &&
+      class_id !== null &&
+      String(class_id).trim() !== ""
+    ) {
+      cleanClassId = Number(class_id);
+
+      if (!Number.isInteger(cleanClassId) || cleanClassId <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "class_id không hợp lệ",
+        });
+      }
+    }
+
+    console.log("🏫 CLASS ID:", cleanClassId);
+
+    // =====================================================
+    // 6. PASSWORD
     // =====================================================
 
     const accountPassword =
       password && String(password).trim() ? String(password).trim() : "123456";
 
     // =====================================================
-    // HASH PASSWORD
+    // 7. HASH PASSWORD
     // =====================================================
 
     const hashedPassword = await bcrypt.hash(accountPassword, 10);
 
     // =====================================================
-    // CONNECTION
+    // 8. CONNECTION
     // =====================================================
 
     connection = await db.getConnection();
 
-    /*
-     * =====================================================
-     * SINH BASE CODE
-     *
-     * Ví dụ:
-     *
-     * GLV20260049
-     *
-     * Nếu có người khác tạo cùng lúc thì phần retry
-     * bên dưới sẽ tự chuyển thành:
-     *
-     * GLV20260049_1
-     * =====================================================
-     */
+    // =====================================================
+    // 9. GENERATE BASE CODE
+    // =====================================================
 
     const baseCatechistCode = await generateCatechistCode();
 
     console.log("🔢 Base catechist code:", baseCatechistCode);
 
     // =====================================================
-    // RETRY
-    //
-    // Quan trọng:
-    //
-    // Không generate lại base code ở mỗi lần retry.
-    //
-    // Ví dụ 2 request cùng lấy:
-    //
-    // A = GLV20260050
-    // B = GLV20260050
-    //
-    // A thành công
-    // B bị duplicate
-    //
-    // B retry:
-    // GLV20260050 đã tồn tại
-    // => GLV20260050_1
-    //
+    // 10. RETRY
     // =====================================================
 
     const MAX_RETRY = 5;
@@ -368,9 +514,7 @@ exports.createCatechist = async (req, res) => {
         await connection.beginTransaction();
 
         // ===================================================
-        // KIỂM TRA EMAIL
-        //
-        // Email của tài khoản phải duy nhất.
+        // 11. CHECK EMAIL TRONG ADMINS
         // ===================================================
 
         const [existingAccount] = await connection.query(
@@ -398,24 +542,13 @@ exports.createCatechist = async (req, res) => {
         }
 
         // ===================================================
-        // TÌM CODE KHÔNG TRÙNG
-        //
-        // Kiểm tra CẢ:
-        //
-        // catechists.catechist_code
-        // admins.username
-        //
-        // Hai bên luôn dùng cùng một code.
+        // 12. TÌM CATECHIST CODE KHÔNG TRÙNG
         // ===================================================
 
         let catechistCode = baseCatechistCode;
         let codeIndex = 0;
 
         while (true) {
-          // -----------------------------------------------
-          // CHECK CATECHISTS
-          // -----------------------------------------------
-
           const [existingCatechist] = await connection.query(
             `
             SELECT id
@@ -425,10 +558,6 @@ exports.createCatechist = async (req, res) => {
             `,
             [catechistCode],
           );
-
-          // -----------------------------------------------
-          // CHECK ADMINS
-          // -----------------------------------------------
 
           const [existingAdmin] = await connection.query(
             `
@@ -445,22 +574,9 @@ exports.createCatechist = async (req, res) => {
             adminExists: existingAdmin.length > 0,
           });
 
-          // -----------------------------------------------
-          // CODE CHƯA TỒN TẠI Ở CẢ 2 BẢNG
-          // -----------------------------------------------
-
           if (existingCatechist.length === 0 && existingAdmin.length === 0) {
             break;
           }
-
-          // -----------------------------------------------
-          // CODE ĐÃ TỒN TẠI
-          //
-          // GLV20260049
-          // GLV20260049_1
-          // GLV20260049_2
-          // ...
-          // -----------------------------------------------
 
           codeIndex++;
 
@@ -469,11 +585,45 @@ exports.createCatechist = async (req, res) => {
 
         console.log("✅ Final catechist code:", catechistCode);
 
-        /*
-         * ===================================================
-         * INSERT CATECHIST
-         * ===================================================
-         */
+        // ===================================================
+        // 13. NẾU CÓ CLASS → KIỂM TRA LỚP
+        // ===================================================
+
+        let classInfo = null;
+
+        if (cleanClassId) {
+          const [classRows] = await connection.query(
+            `
+            SELECT
+              id,
+              church_id,
+              code,
+              name
+            FROM classes
+            WHERE id = ?
+              AND church_id = ?
+            LIMIT 1
+            `,
+            [cleanClassId, churchId],
+          );
+
+          if (classRows.length === 0) {
+            await connection.rollback();
+
+            return res.status(403).json({
+              success: false,
+              message: "Lớp học không thuộc giáo xứ hiện tại",
+            });
+          }
+
+          classInfo = classRows[0];
+
+          console.log("🏫 CLASS FOUND:", classInfo);
+        }
+
+        // ===================================================
+        // 14. INSERT CATECHIST
+        // ===================================================
 
         const catechistSql = `
           INSERT INTO catechists (
@@ -553,23 +703,9 @@ exports.createCatechist = async (req, res) => {
 
         console.log("✅ Catechist created:", catechistId);
 
-        /*
-         * ===================================================
-         * INSERT ADMIN ACCOUNT
-         *
-         * QUAN TRỌNG:
-         *
-         * username = catechistCode
-         *
-         * KHÔNG tạo username riêng.
-         *
-         * Ví dụ:
-         *
-         * catechist_code = GLV20260049_1
-         * username       = GLV20260049_1
-         *
-         * ===================================================
-         */
+        // ===================================================
+        // 15. INSERT ADMIN ACCOUNT
+        // ===================================================
 
         const username = catechistCode;
 
@@ -596,22 +732,14 @@ exports.createCatechist = async (req, res) => {
 
         const adminValues = [
           churchId,
-
-          // LUÔN GIỐNG catechist_code
           username,
-
           hashedPassword,
 
           cleanFullName,
-
           holy_name || null,
-
           date_of_birth || null,
-
           address || null,
-
           cleanEmail,
-
           phone || null,
         ];
 
@@ -622,31 +750,105 @@ exports.createCatechist = async (req, res) => {
         console.log("✅ Account created:", adminId);
 
         // ===================================================
-        // COMMIT
+        // 16. PHÂN LỚP NẾU CÓ
+        //
+        // appointment_read = 0
+        //
+        // => GLV đăng nhập sẽ thấy thư bổ nhiệm
+        // ===================================================
+
+        let assignment = null;
+
+        if (cleanClassId) {
+          const assignmentRole = role || "Giáo lý viên";
+          const assignmentStatus = class_status || "teaching";
+          const assignmentDate = assigned_date || new Date();
+          const assignmentNotes = class_notes || null;
+
+          console.log("📚 CREATE CLASS ASSIGNMENT:", {
+            catechist_id: catechistId,
+            class_id: cleanClassId,
+            role: assignmentRole,
+            status: assignmentStatus,
+            assigned_date: assignmentDate,
+            notes: assignmentNotes,
+            appointment_read: 0,
+          });
+
+          await connection.query(
+            `
+            INSERT INTO catechist_classes (
+              catechist_id,
+              class_id,
+              role,
+              appointment_read,
+              status,
+              assigned_date,
+              notes
+            )
+            VALUES (?, ?, ?, 0, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+              role = VALUES(role),
+              appointment_read = 0,
+              status = VALUES(status),
+              assigned_date = VALUES(assigned_date),
+              notes = VALUES(notes)
+            `,
+            [
+              catechistId,
+              cleanClassId,
+              assignmentRole,
+              assignmentStatus,
+              assignmentDate,
+              assignmentNotes,
+            ],
+          );
+
+          assignment = {
+            class_id: cleanClassId,
+            class_code: classInfo.code,
+            class_name: classInfo.name,
+            role: assignmentRole,
+            status: assignmentStatus,
+            assigned_date: assignmentDate,
+            notes: assignmentNotes,
+            appointment_read: 0,
+          };
+
+          console.log("✅ CLASS ASSIGNMENT CREATED");
+        } else {
+          console.log("ℹ️ Không phân lớp khi tạo GLV");
+        }
+
+        // ===================================================
+        // 17. COMMIT
         // ===================================================
 
         await connection.commit();
 
-        console.log("🎉 CREATE CATECHIST + ACCOUNT SUCCESS");
+        console.log("🎉 CREATE CATECHIST + ACCOUNT + CLASS SUCCESS");
 
         // ===================================================
-        // WRITE LOG
-        //
-        // Log sau commit.
-        // Nếu log lỗi thì KHÔNG rollback dữ liệu.
+        // 18. WRITE LOG
         // ===================================================
 
         try {
           await writeLog({
             admin_id: req.user?.id || null,
+
             action: "CREATE",
+
             target_type: "catechist",
+
             target_id: catechistId,
+
             description:
               `Thêm Giáo lý viên "${cleanFullName}" ` +
               `- mã ${catechistCode}, ` +
-              `tạo tài khoản đăng nhập ${cleanEmail}, ` +
-              `username ${username}`,
+              `tạo tài khoản ${cleanEmail}, ` +
+              `username ${username}` +
+              (assignment ? `, phân lớp "${assignment.class_name}"` : ""),
+
             ip_address: req.ip,
           });
         } catch (logError) {
@@ -654,48 +856,40 @@ exports.createCatechist = async (req, res) => {
         }
 
         // ===================================================
-        // RESPONSE
+        // 19. RESPONSE
         // ===================================================
 
         return res.status(201).json({
           success: true,
 
-          message: "Thêm Giáo lý viên và tài khoản đăng nhập thành công",
+          message: assignment
+            ? "Thêm Giáo lý viên, tài khoản và phân lớp thành công"
+            : "Thêm Giáo lý viên và tài khoản đăng nhập thành công",
 
           data: {
             catechist: {
               id: catechistId,
               church_id: churchId,
-
-              // CODE THỰC TẾ
               catechist_code: catechistCode,
-
               full_name: cleanFullName,
             },
 
             account: {
               id: adminId,
               church_id: churchId,
-
-              // LUÔN GIỐNG catechist_code
-              username: username,
-
+              username,
               email: cleanEmail,
-
               role: "teacher",
               account_type: "member",
             },
 
-            // Mật khẩu ban đầu
+            assignment,
+
             initial_password: accountPassword,
           },
         });
       } catch (error) {
         lastError = error;
-
-        // ===================================================
-        // ROLLBACK
-        // ===================================================
 
         try {
           await connection.rollback();
@@ -704,27 +898,11 @@ exports.createCatechist = async (req, res) => {
         console.error(`❌ CREATE ATTEMPT ${attempt} ERROR`);
 
         console.error("Message:", error.message);
-
         console.error("Code:", error.code);
-
         console.error("SQL Message:", error.sqlMessage);
 
         // ===================================================
         // DUPLICATE
-        //
-        // Có thể xảy ra khi:
-        //
-        // 2 người cùng lúc tạo:
-        //
-        // A → GLV20260050
-        // B → GLV20260050
-        //
-        // A commit trước.
-        // B bị ER_DUP_ENTRY.
-        //
-        // B retry:
-        // GLV20260050 tồn tại
-        // → GLV20260050_1
         // ===================================================
 
         if (error.code === "ER_DUP_ENTRY") {
@@ -741,10 +919,6 @@ exports.createCatechist = async (req, res) => {
             errorCode: error.code,
           });
         }
-
-        // ===================================================
-        // LỖI KHÁC
-        // ===================================================
 
         throw error;
       }
@@ -773,18 +947,10 @@ exports.createCatechist = async (req, res) => {
     }
 
     console.error("❌ CREATE CATECHIST ERROR");
-
     console.error("Message:", error.message);
-
     console.error("Code:", error.code);
-
     console.error("SQL Message:", error.sqlMessage);
-
     console.error("Stack:", error.stack);
-
-    // =====================================================
-    // DUPLICATE
-    // =====================================================
 
     if (error.code === "ER_DUP_ENTRY") {
       return res.status(409).json({
@@ -794,9 +960,14 @@ exports.createCatechist = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // RESPONSE ERROR
-    // =====================================================
+    if (error.code === "ER_BAD_FIELD_ERROR") {
+      return res.status(500).json({
+        success: false,
+        message: "Tên cột trong câu SQL không tồn tại",
+        errorCode: error.code,
+        error: error.message,
+      });
+    }
 
     return res.status(500).json({
       success: false,
@@ -804,10 +975,6 @@ exports.createCatechist = async (req, res) => {
       errorCode: error.code,
     });
   } finally {
-    // =====================================================
-    // RELEASE CONNECTION
-    // =====================================================
-
     if (connection) {
       connection.release();
     }
@@ -823,6 +990,7 @@ exports.updateCatechist = async (req, res) => {
 
   try {
     const { id } = req.params;
+
     const churchId = getChurchId(req);
 
     console.log("========== UPDATE CATECHIST ==========");
@@ -831,7 +999,7 @@ exports.updateCatechist = async (req, res) => {
     console.log("📥 BODY:", req.body);
 
     // =====================================================
-    // 0. KIỂM TRA CHURCH
+    // 1. CHECK CHURCH
     // =====================================================
 
     if (!churchId) {
@@ -841,10 +1009,14 @@ exports.updateCatechist = async (req, res) => {
       });
     }
 
+    // =====================================================
+    // 2. BEGIN TRANSACTION
+    // =====================================================
+
     await connection.beginTransaction();
 
     // =====================================================
-    // 1. LẤY GIÁO LÝ VIÊN CŨ
+    // 3. LẤY GLV HIỆN TẠI
     // =====================================================
 
     const [catechistRows] = await connection.query(
@@ -870,9 +1042,7 @@ exports.updateCatechist = async (req, res) => {
     const oldCatechist = catechistRows[0];
 
     // =====================================================
-    // CATECHIST CODE LÀ MÃ CỐ ĐỊNH
-    //
-    // KHÔNG CHO PHÉP THAY ĐỔI
+    // 4. CATECHIST CODE CỐ ĐỊNH
     // =====================================================
 
     const oldCatechistCode = oldCatechist.catechist_code;
@@ -887,7 +1057,7 @@ exports.updateCatechist = async (req, res) => {
     });
 
     // =====================================================
-    // 2. COPY DATA
+    // 5. COPY BODY
     // =====================================================
 
     const updateData = {
@@ -895,7 +1065,23 @@ exports.updateCatechist = async (req, res) => {
     };
 
     // =====================================================
-    // 3. TÁCH PASSWORD
+    // 6. TÁCH CÁC FIELD KHÔNG THUỘC CATECHISTS
+    // =====================================================
+
+    const classIdFromBody = updateData.class_id;
+    const assignmentRole = updateData.role || "Giáo lý viên";
+    const assignmentStatus = updateData.class_status || "teaching";
+    const assignmentDate = updateData.assigned_date || new Date();
+    const assignmentNotes = updateData.class_notes || null;
+
+    delete updateData.class_id;
+    delete updateData.role;
+    delete updateData.class_status;
+    delete updateData.assigned_date;
+    delete updateData.class_notes;
+
+    // =====================================================
+    // 7. PASSWORD
     // =====================================================
 
     const newPassword = updateData.password;
@@ -904,9 +1090,7 @@ exports.updateCatechist = async (req, res) => {
     delete updateData.password_confirm;
 
     // =====================================================
-    // 4. KHÔNG CHO SỬA CATECHIST CODE
-    //
-    // Nếu frontend gửi catechist_code lên thì bỏ qua
+    // 8. KHÔNG CHO SỬA CATECHIST CODE
     // =====================================================
 
     if (updateData.catechist_code !== undefined) {
@@ -921,7 +1105,7 @@ exports.updateCatechist = async (req, res) => {
     delete updateData.catechist_code;
 
     // =====================================================
-    // 5. XÓA FIELD HỆ THỐNG
+    // 9. KHÔNG CHO SỬA FIELD HỆ THỐNG
     // =====================================================
 
     delete updateData.id;
@@ -930,7 +1114,7 @@ exports.updateCatechist = async (req, res) => {
     delete updateData.updated_at;
 
     // =====================================================
-    // 6. CHUẨN HÓA HỌ TÊN
+    // 10. CHUẨN HÓA HỌ TÊN
     // =====================================================
 
     if (updateData.full_name !== undefined) {
@@ -947,7 +1131,7 @@ exports.updateCatechist = async (req, res) => {
     }
 
     // =====================================================
-    // 7. CHUẨN HÓA EMAIL
+    // 11. CHUẨN HÓA EMAIL
     // =====================================================
 
     let newCatechistEmail = updateData.email;
@@ -965,26 +1149,23 @@ exports.updateCatechist = async (req, res) => {
     }
 
     console.log("📧 OLD EMAIL:", oldCatechistEmail);
-    console.log("📧 NEW EMAIL:", newCatechistEmail);
 
-    // =====================================================
-    // 8. KIỂM TRA EMAIL CÓ THAY ĐỔI KHÔNG
-    // =====================================================
+    console.log("📧 NEW EMAIL:", newCatechistEmail);
 
     const isEmailChanged = newCatechistEmail !== oldCatechistEmail;
 
     console.log("🔄 EMAIL CHANGED:", isEmailChanged);
 
     // =====================================================
-    // 9. CHECK EMAIL TRÙNG TRONG ADMINS
-    //
-    // Chỉ kiểm tra khi email thay đổi
+    // 12. CHECK EMAIL ADMINS
     // =====================================================
 
     if (isEmailChanged && newCatechistEmail) {
       const [duplicateAdminEmailRows] = await connection.query(
         `
-          SELECT id, username
+          SELECT
+            id,
+            username
           FROM admins
           WHERE email = ?
             AND church_id = ?
@@ -1007,13 +1188,15 @@ exports.updateCatechist = async (req, res) => {
     }
 
     // =====================================================
-    // 10. CHECK EMAIL TRÙNG TRONG CATECHISTS
+    // 13. CHECK EMAIL CATECHISTS
     // =====================================================
 
     if (isEmailChanged && newCatechistEmail) {
       const [duplicateCatechistEmailRows] = await connection.query(
         `
-          SELECT id, catechist_code
+          SELECT
+            id,
+            catechist_code
           FROM catechists
           WHERE email = ?
             AND church_id = ?
@@ -1036,33 +1219,27 @@ exports.updateCatechist = async (req, res) => {
     }
 
     // =====================================================
-    // 11. UPDATE CATECHIST
-    //
-    // LƯU Ý:
-    // updateData ĐÃ BỊ XÓA catechist_code
-    // nên KHÔNG BAO GIỜ update mã GLV
+    // 14. UPDATE CATECHIST
     // =====================================================
 
     if (Object.keys(updateData).length > 0) {
       const [result] = await connection.query(
         `
-        UPDATE catechists
-        SET ?
-        WHERE id = ?
-          AND church_id = ?
-        `,
+          UPDATE catechists
+          SET ?
+          WHERE id = ?
+            AND church_id = ?
+          `,
         [updateData, id, churchId],
       );
 
       console.log("📊 UPDATE CATECHIST RESULT:", result);
+    } else {
+      console.log("ℹ️ Không có thông tin hồ sơ cần cập nhật");
     }
 
     // =====================================================
-    // 12. USERNAME ADMIN CỐ ĐỊNH
-    //
-    // username = catechist_code
-    //
-    // KHÔNG ĐƯỢC ĐỔI
+    // 15. ADMIN USERNAME CỐ ĐỊNH
     // =====================================================
 
     const adminUsername = oldCatechistCode;
@@ -1070,11 +1247,7 @@ exports.updateCatechist = async (req, res) => {
     console.log("🔐 ADMIN USERNAME FIXED:", adminUsername);
 
     // =====================================================
-    // 13. UPDATE EMAIL ADMINS
-    //
-    // CHỈ ĐỒNG BỘ EMAIL
-    //
-    // KHÔNG UPDATE USERNAME
+    // 16. UPDATE EMAIL ADMIN
     // =====================================================
 
     if (isEmailChanged) {
@@ -1093,31 +1266,20 @@ exports.updateCatechist = async (req, res) => {
       console.log("🔐 UPDATE ADMIN EMAIL RESULT:", adminResult);
 
       if (adminResult.affectedRows === 0) {
-        console.warn(
-          "⚠️ Không tìm thấy admin tương ứng với catechist_code:",
-          adminUsername,
-        );
+        console.warn("⚠️ Không tìm thấy admin tương ứng:", adminUsername);
       } else {
         console.log("✅ ADMIN EMAIL SYNC SUCCESS");
-
-        console.log(`   EMAIL: ${oldCatechistEmail} → ${newCatechistEmail}`);
       }
     } else {
       console.log("ℹ️ Email không thay đổi");
     }
 
     // =====================================================
-    // 14. UPDATE PASSWORD
-    //
-    // Password nằm trong admins
+    // 17. UPDATE PASSWORD
     // =====================================================
 
     if (newPassword !== undefined && newPassword !== null) {
       const password = String(newPassword).trim();
-
-      // ---------------------------------------------------
-      // Nếu người dùng nhập password mới
-      // ---------------------------------------------------
 
       if (password) {
         if (password.length < 6) {
@@ -1146,28 +1308,199 @@ exports.updateCatechist = async (req, res) => {
         console.log("🔐 UPDATE ADMIN PASSWORD RESULT:", passwordResult);
 
         if (passwordResult.affectedRows === 0) {
-          console.warn(
-            "⚠️ Không tìm thấy tài khoản admin tương ứng:",
-            adminUsername,
-          );
+          console.warn("⚠️ Không tìm thấy tài khoản admin:", adminUsername);
         } else {
           console.log("✅ PASSWORD UPDATED");
         }
       } else {
-        console.log("ℹ️ Không nhập password mới → giữ nguyên password cũ");
+        console.log("ℹ️ Không nhập password mới → giữ password cũ");
       }
     }
 
     // =====================================================
-    // 15. COMMIT
+    // 18. PHÂN LỚP
+    //
+    // CHỈ XỬ LÝ KHI FRONTEND GỬI class_id
+    //
+    // Nếu không gửi class_id:
+    // => KHÔNG đụng vào phân lớp hiện tại.
+    // =====================================================
+
+    let assignment = null;
+
+    const hasClassId =
+      classIdFromBody !== undefined &&
+      classIdFromBody !== null &&
+      String(classIdFromBody).trim() !== "";
+
+    if (hasClassId) {
+      const cleanClassId = Number(classIdFromBody);
+
+      if (!Number.isInteger(cleanClassId) || cleanClassId <= 0) {
+        await connection.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message: "class_id không hợp lệ",
+        });
+      }
+
+      console.log("🏫 UPDATE CLASS ID:", cleanClassId);
+
+      // ===================================================
+      // 18.1 CHECK CLASS
+      // ===================================================
+
+      const [classRows] = await connection.query(
+        `
+          SELECT
+            id,
+            church_id,
+            code,
+            name
+          FROM classes
+          WHERE id = ?
+            AND church_id = ?
+          LIMIT 1
+          `,
+        [cleanClassId, churchId],
+      );
+
+      if (classRows.length === 0) {
+        await connection.rollback();
+
+        return res.status(403).json({
+          success: false,
+          message: "Lớp học không thuộc giáo xứ hiện tại",
+        });
+      }
+
+      const classInfo = classRows[0];
+
+      // ===================================================
+      // 18.2 KIỂM TRA PHÂN LỚP CŨ
+      // ===================================================
+
+      const [oldAssignmentRows] = await connection.query(
+        `
+          SELECT
+            id,
+            class_id,
+            role,
+            status,
+            assigned_date,
+            notes,
+            appointment_read
+          FROM catechist_classes
+          WHERE catechist_id = ?
+            AND class_id = ?
+          LIMIT 1
+          `,
+        [id, cleanClassId],
+      );
+
+      const isExistingAssignment = oldAssignmentRows.length > 0;
+
+      // ===================================================
+      // 18.3 UPSERT PHÂN LỚP
+      // ===================================================
+
+      await connection.query(
+        `
+        INSERT INTO catechist_classes (
+          catechist_id,
+          class_id,
+          role,
+          appointment_read,
+          status,
+          assigned_date,
+          notes
+        )
+        VALUES (?, ?, ?, 0, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          role = VALUES(role),
+          status = VALUES(status),
+          assigned_date = VALUES(assigned_date),
+          notes = VALUES(notes),
+          appointment_read =
+            CASE
+              WHEN
+                catechist_classes.role <> VALUES(role)
+                OR catechist_classes.status <> VALUES(status)
+                OR COALESCE(catechist_classes.notes, '') <>
+                   COALESCE(VALUES(notes), '')
+              THEN 0
+              ELSE catechist_classes.appointment_read
+            END
+        `,
+        [
+          id,
+          cleanClassId,
+          assignmentRole,
+          assignmentStatus,
+          assignmentDate,
+          assignmentNotes,
+        ],
+      );
+
+      // ===================================================
+      // 18.4 LẤY LẠI ASSIGNMENT
+      // ===================================================
+
+      const [assignmentRows] = await connection.query(
+        `
+          SELECT
+            cc.id,
+            cc.catechist_id,
+            cc.class_id,
+            cc.role,
+            cc.status,
+            cc.assigned_date,
+            cc.notes,
+            cc.appointment_read,
+
+            cl.code AS class_code,
+            cl.name AS class_name
+
+          FROM catechist_classes cc
+
+          INNER JOIN classes cl
+            ON cl.id = cc.class_id
+           AND cl.church_id = ?
+
+          WHERE cc.catechist_id = ?
+            AND cc.class_id = ?
+
+          LIMIT 1
+          `,
+        [churchId, id, cleanClassId],
+      );
+
+      if (assignmentRows.length > 0) {
+        assignment = assignmentRows[0];
+      }
+
+      console.log(
+        isExistingAssignment
+          ? "🔄 CLASS ASSIGNMENT UPDATED"
+          : "🆕 CLASS ASSIGNMENT CREATED",
+      );
+
+      console.log("📚 ASSIGNMENT:", assignment);
+    } else {
+      console.log("ℹ️ Không gửi class_id → giữ nguyên phân lớp");
+    }
+
+    // =====================================================
+    // 19. COMMIT
     // =====================================================
 
     await connection.commit();
 
-    console.log("✅ TRANSACTION COMMITTED");
+    console.log("✅ UPDATE TRANSACTION COMMITTED");
 
     // =====================================================
-    // 16. GHI LOG
+    // 20. WRITE LOG
     // =====================================================
 
     try {
@@ -1182,7 +1515,8 @@ exports.updateCatechist = async (req, res) => {
 
         description:
           `Cập nhật Giáo lý viên "${oldCatechist.full_name}" ` +
-          `(${oldCatechistCode || "N/A"})`,
+          `(${oldCatechistCode || "N/A"})` +
+          (assignment ? `, phân lớp "${assignment.class_name}"` : ""),
 
         ip_address: req.ip,
       });
@@ -1191,43 +1525,34 @@ exports.updateCatechist = async (req, res) => {
     }
 
     // =====================================================
-    // 17. RESPONSE
+    // 21. RESPONSE
     // =====================================================
 
     return res.status(200).json({
       success: true,
 
-      message: "Cập nhật Giáo lý viên thành công",
+      message: assignment
+        ? "Cập nhật Giáo lý viên và phân lớp thành công"
+        : "Cập nhật Giáo lý viên thành công",
 
       data: {
         id: Number(id),
 
-        // =================================================
-        // MÃ GLV LUÔN LẤY TỪ DATABASE CŨ
-        // KHÔNG NHẬN TỪ REQUEST
-        // =================================================
-
         catechist_code: oldCatechistCode,
 
         email: newCatechistEmail,
-
-        // =================================================
-        // ADMIN
-        // =================================================
 
         admin_synced: true,
 
         username_synced: false,
 
         email_synced: isEmailChanged,
+
+        assignment,
       },
     });
   } catch (error) {
     console.error("❌ UPDATE CATECHIST ERROR:", error);
-
-    // =====================================================
-    // ROLLBACK
-    // =====================================================
 
     try {
       await connection.rollback();
@@ -1243,6 +1568,7 @@ exports.updateCatechist = async (req, res) => {
       return res.status(409).json({
         success: false,
         message: "Email hoặc tên đăng nhập đã được sử dụng",
+        errorCode: error.code,
       });
     }
 
@@ -1260,13 +1586,25 @@ exports.updateCatechist = async (req, res) => {
     }
 
     // =====================================================
+    // FOREIGN KEY
+    // =====================================================
+
+    if (error.code === "ER_NO_REFERENCED_ROW_2") {
+      return res.status(400).json({
+        success: false,
+        message: "Dữ liệu phân lớp không hợp lệ",
+        errorCode: error.code,
+      });
+    }
+
+    // =====================================================
     // RESPONSE ERROR
     // =====================================================
 
     return res.status(500).json({
       success: false,
 
-      message: "Lỗi máy chủ",
+      message: "Không thể cập nhật Giáo lý viên",
 
       errorCode: error.code,
 
@@ -1274,6 +1612,197 @@ exports.updateCatechist = async (req, res) => {
     });
   } finally {
     connection.release();
+  }
+};
+/**
+ * ================================
+ * PHÂN LỚP CHO GIÁO LÝ VIÊN
+ * ================================
+ */
+/**
+ * ================================
+ * PHÂN LỚP CHO GIÁO LÝ VIÊN
+ * ================================
+ */
+exports.assignClass = async (req, res) => {
+  try {
+    const churchId = getChurchId(req);
+
+    const { catechist_id, class_id, role, status, assigned_date, notes } =
+      req.body;
+
+    console.log("========== ASSIGN CLASS ==========");
+    console.log("👤 CATECHIST ID:", catechist_id);
+    console.log("🏫 CLASS ID:", class_id);
+    console.log("⛪ CHURCH ID:", churchId);
+    console.log("📥 BODY:", req.body);
+
+    // =====================================================
+    // 1. CHECK CHURCH
+    // =====================================================
+
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được gán giáo xứ",
+      });
+    }
+
+    // =====================================================
+    // 2. VALIDATE
+    // =====================================================
+
+    if (!catechist_id || !class_id) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu catechist_id hoặc class_id",
+      });
+    }
+
+    // =====================================================
+    // 3. KIỂM TRA GIÁO LÝ VIÊN
+    // =====================================================
+
+    const [catechists] = await db.query(
+      `
+      SELECT
+        id,
+        church_id,
+        catechist_code,
+        full_name
+      FROM catechists
+      WHERE id = ?
+        AND church_id = ?
+      LIMIT 1
+      `,
+      [catechist_id, churchId],
+    );
+
+    if (catechists.length === 0) {
+      return res.status(403).json({
+        success: false,
+        message: "Giáo lý viên không thuộc giáo xứ hiện tại",
+      });
+    }
+
+    const catechist = catechists[0];
+
+    console.log("👤 CATECHIST:", {
+      id: catechist.id,
+      code: catechist.catechist_code,
+      name: catechist.full_name,
+    });
+
+    // =====================================================
+    // 4. KIỂM TRA LỚP
+    // =====================================================
+
+    const [classes] = await db.query(
+      `
+      SELECT
+        id,
+        church_id,
+        code,
+        name
+      FROM classes
+      WHERE id = ?
+        AND church_id = ?
+      LIMIT 1
+      `,
+      [class_id, churchId],
+    );
+
+    if (classes.length === 0) {
+      return res.status(403).json({
+        success: false,
+        message: "Lớp học không thuộc giáo xứ hiện tại",
+      });
+    }
+
+    const classInfo = classes[0];
+
+    console.log("🏫 CLASS:", {
+      id: classInfo.id,
+      code: classInfo.code,
+      name: classInfo.name,
+    });
+
+    // =====================================================
+    // 5. PHÂN LỚP
+    //
+    // appointment_read = 0
+    //
+    // => Giáo viên sẽ thấy thư bổ nhiệm khi mở hệ thống.
+    //
+    // Nếu record đã tồn tại:
+    // => cập nhật lại và RESET appointment_read = 0
+    //
+    // =====================================================
+
+    const sql = `
+      INSERT INTO catechist_classes (
+        catechist_id,
+        class_id,
+        role,
+        appointment_read,
+        status,
+        assigned_date,
+        notes
+      )
+      VALUES (?, ?, ?, 0, ?, ?, ?)
+
+      ON DUPLICATE KEY UPDATE
+        role = VALUES(role),
+        appointment_read = 0,
+        status = VALUES(status),
+        assigned_date = VALUES(assigned_date),
+        notes = VALUES(notes)
+    `;
+
+    const [result] = await db.query(sql, [
+      catechist_id,
+      class_id,
+      role || "Giáo lý viên",
+      status || "teaching",
+      assigned_date || new Date(),
+      notes || null,
+    ]);
+
+    console.log("📊 ASSIGN RESULT:", result);
+
+    console.log("✅ PHÂN LỚP THÀNH CÔNG");
+    console.log("📨 appointment_read = 0");
+
+    // =====================================================
+    // 6. RESPONSE
+    // =====================================================
+
+    return res.status(200).json({
+      success: true,
+      message: "Phân lớp thành công",
+
+      data: {
+        catechist_id: Number(catechist_id),
+        catechist_name: catechist.full_name,
+
+        class_id: Number(class_id),
+        class_code: classInfo.code,
+        class_name: classInfo.name,
+
+        role: role || "Giáo lý viên",
+
+        // 0 = chưa đọc thư bổ nhiệm
+        appointment_read: 0,
+      },
+    });
+  } catch (error) {
+    console.error("❌ ASSIGN CLASS ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Không thể phân lớp",
+      errorCode: error.code,
+    });
   }
 };
 /**
@@ -1446,124 +1975,7 @@ exports.deleteCatechist = async (req, res) => {
     }
   }
 };
-/**
- * ================================
- * PHÂN LỚP CHO GIÁO LÝ VIÊN
- * ================================
- */
-exports.assignClass = async (req, res) => {
-  try {
-    const churchId = getChurchId(req);
 
-    const { catechist_id, class_id, role, status, assigned_date, notes } =
-      req.body;
-
-    console.log("========== ASSIGN CLASS ==========");
-    console.log("👤 CATECHIST ID:", catechist_id);
-    console.log("🏫 CLASS ID:", class_id);
-    console.log("⛪ CHURCH ID:", churchId);
-
-    if (!churchId) {
-      return res.status(403).json({
-        success: false,
-        message: "Tài khoản chưa được gán giáo xứ",
-      });
-    }
-
-    if (!catechist_id || !class_id) {
-      return res.status(400).json({
-        success: false,
-        message: "Thiếu catechist_id hoặc class_id",
-      });
-    }
-
-    /**
-     * Kiểm tra GLV thuộc giáo xứ hiện tại
-     */
-    const [catechists] = await db.query(
-      `
-      SELECT id, church_id
-      FROM catechists
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
-      `,
-      [catechist_id, churchId],
-    );
-
-    if (catechists.length === 0) {
-      return res.status(403).json({
-        success: false,
-        message: "Giáo lý viên không thuộc giáo xứ hiện tại",
-      });
-    }
-
-    /**
-     * Kiểm tra lớp thuộc giáo xứ hiện tại
-     */
-    const [classes] = await db.query(
-      `
-      SELECT id, church_id, name
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
-      `,
-      [class_id, churchId],
-    );
-
-    if (classes.length === 0) {
-      return res.status(403).json({
-        success: false,
-        message: "Lớp học không thuộc giáo xứ hiện tại",
-      });
-    }
-
-    /**
-     * Phân lớp
-     */
-    const sql = `
-      INSERT INTO catechist_classes (
-        catechist_id,
-        class_id,
-        role,
-        status,
-        assigned_date,
-        notes
-      )
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE
-        role = VALUES(role),
-        status = VALUES(status),
-        assigned_date = VALUES(assigned_date),
-        notes = VALUES(notes)
-    `;
-
-    await db.query(sql, [
-      catechist_id,
-      class_id,
-      role || "Trưởng lớp",
-      status || "teaching",
-      assigned_date || new Date(),
-      notes || null,
-    ]);
-
-    console.log("✅ Phân lớp thành công");
-
-    res.status(200).json({
-      success: true,
-      message: "Phân lớp thành công",
-    });
-  } catch (error) {
-    console.error("❌ ASSIGN CLASS ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      message: error.message,
-      errorCode: error.code,
-    });
-  }
-};
 exports.removeClass = async (req, res) => {
   try {
     const churchId = getChurchId(req);

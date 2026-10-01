@@ -27,6 +27,12 @@ router.get("/:id", catechistController.getCatechistById);
 router.post("/", catechistController.createCatechist);
 router.post("/assign-class", catechistController.assignClass);
 
+// Lấy các thư bổ nhiệm chưa đọc
+router.get("/appointments/pending", catechistController.getPendingAppointments);
+
+// Xác nhận đã đọc thư bổ nhiệm
+router.patch("/appointments/:id/read", catechistController.readAppointment);
+
 // Cập nhật Giáo lý viên
 router.put("/:id", catechistController.updateCatechist);
 router.delete("/remove-class", catechistController.removeClass);

@@ -243,6 +243,8 @@ exports.getPendingAppointments = async (req, res) => {
         c.catechist_code,
         c.full_name,
         c.holy_name
+        c.holy_name
+        c.avatar
 
       FROM catechist_classes cc
 

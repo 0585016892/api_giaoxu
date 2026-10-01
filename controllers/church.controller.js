@@ -2413,15 +2413,30 @@ exports.activateLicense = async (req, res) => {
     if (req.user.role !== "admin") {
       return res.status(403).json({
         success: false,
-
         code: "LICENSE_ACTIVATION_FORBIDDEN",
-
         message: "Chỉ quản trị hệ thống mới có quyền kích hoạt FaithEdu",
       });
     }
 
     // ==================================================
-    // 4. GET CHURCH
+    // 4. GET LICENSE TYPE
+    // ==================================================
+
+    const { license_type } = req.body;
+
+    const allowedLicenseTypes = ["yearly", "lifetime"];
+
+    if (!allowedLicenseTypes.includes(license_type)) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_LICENSE_TYPE",
+        message: "Gói FaithEdu không hợp lệ",
+        allowed: allowedLicenseTypes,
+      });
+    }
+
+    // ==================================================
+    // 5. GET CHURCH
     // ==================================================
 
     const [rows] = await db.query(
@@ -2435,6 +2450,9 @@ exports.activateLicense = async (req, res) => {
           deanery_id,
 
           license_status,
+          license_type,
+          license_expires_at,
+
           trial_started_at,
           trial_expires_at,
           activated_at
@@ -2444,7 +2462,7 @@ exports.activateLicense = async (req, res) => {
         WHERE id = ?
 
         LIMIT 1
-        `,
+      `,
       [churchId],
     );
 
@@ -2458,7 +2476,7 @@ exports.activateLicense = async (req, res) => {
     const church = rows[0];
 
     // ==================================================
-    // 5. ALREADY ACTIVE
+    // 6. ALREADY ACTIVE
     // ==================================================
 
     if (church.license_status === "active") {
@@ -2470,7 +2488,11 @@ exports.activateLicense = async (req, res) => {
         message: "FaithEdu của giáo xứ này đã được kích hoạt trước đó",
 
         license: {
-          status: "active",
+          status: church.license_status,
+
+          type: church.license_type,
+
+          expires_at: church.license_expires_at,
 
           activated_at: church.activated_at,
 
@@ -2496,28 +2518,57 @@ exports.activateLicense = async (req, res) => {
     }
 
     // ==================================================
-    // 6. ACTIVATE
+    // 7. CALCULATE LICENSE
+    // ==================================================
+
+    let licenseExpiresAt = null;
+
+    /**
+     * yearly
+     * ----------------------------------------------
+     * Kích hoạt 1 năm kể từ thời điểm hiện tại
+     */
+    if (license_type === "yearly") {
+      licenseExpiresAt = new Date();
+
+      licenseExpiresAt.setFullYear(licenseExpiresAt.getFullYear() + 1);
+    }
+
+    /**
+     * lifetime
+     * ----------------------------------------------
+     * Không có ngày hết hạn
+     */
+    if (license_type === "lifetime") {
+      licenseExpiresAt = null;
+    }
+
+    // ==================================================
+    // 8. ACTIVATE
     // ==================================================
 
     await db.query(
       `
-      UPDATE churches
+        UPDATE churches
 
-      SET
-        license_status = 'active',
+        SET
+          license_status = 'active',
 
-        activated_at = NOW(),
+          license_type = ?,
 
-        updated_at =
-          CURRENT_TIMESTAMP
+          license_expires_at = ?,
 
-      WHERE id = ?
+          activated_at = NOW(),
+
+          updated_at = CURRENT_TIMESTAMP
+
+        WHERE id = ?
       `,
-      [churchId],
+      [license_type, licenseExpiresAt, churchId],
     );
 
     // ==================================================
-    // 7. GET UPDATED
+    // 9. GET UPDATED
     // ==================================================
 
     const [updatedRows] = await db.query(
@@ -2531,6 +2582,9 @@ exports.activateLicense = async (req, res) => {
           deanery_id,
 
           license_status,
+          license_type,
+          license_expires_at,
+
           trial_started_at,
           trial_expires_at,
           activated_at
@@ -2540,14 +2594,36 @@ exports.activateLicense = async (req, res) => {
         WHERE id = ?
 
         LIMIT 1
-        `,
+      `,
       [churchId],
     );
 
     const updatedChurch = updatedRows[0];
 
     // ==================================================
-    // 8. ACTIVITY LOG
+    // 10. CALCULATE DAYS REMAINING
+    // ==================================================
+
+    let daysRemaining = null;
+    let isExpired = false;
+
+    if (
+      updatedChurch.license_type === "yearly" &&
+      updatedChurch.license_expires_at
+    ) {
+      const now = new Date();
+
+      const expiresAt = new Date(updatedChurch.license_expires_at);
+
+      const diff = expiresAt.getTime() - now.getTime();
+
+      daysRemaining = Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+
+      isExpired = diff <= 0;
+    }
+
+    // ==================================================
+    // 11. ACTIVITY LOG
     // ==================================================
 
     try {
@@ -2561,7 +2637,9 @@ exports.activateLicense = async (req, res) => {
 
           target_id: churchId,
 
-          description: `Kích hoạt FaithEdu cho giáo xứ: ${church.name} (ID: ${churchId})`,
+          description: `Kích hoạt FaithEdu gói ${
+            license_type === "yearly" ? "1 năm" : "vĩnh viễn"
+          } cho giáo xứ: ${church.name} (ID: ${churchId})`,
 
           ip_address: req.ip,
         });
@@ -2574,16 +2652,23 @@ exports.activateLicense = async (req, res) => {
     }
 
     // ==================================================
-    // 9. RESPONSE
+    // 12. RESPONSE
     // ==================================================
 
     return res.status(200).json({
       success: true,
 
-      message: "Kích hoạt FaithEdu thành công",
+      already_active: false,
+
+      message:
+        license_type === "yearly"
+          ? "Kích hoạt FaithEdu gói 1 năm thành công"
+          : "Kích hoạt FaithEdu gói vĩnh viễn thành công",
 
       license: {
         status: updatedChurch.license_status,
+
+        type: updatedChurch.license_type,
 
         trial_started_at: updatedChurch.trial_started_at,
 
@@ -2591,13 +2676,17 @@ exports.activateLicense = async (req, res) => {
 
         activated_at: updatedChurch.activated_at,
 
-        days_remaining: null,
+        expires_at: updatedChurch.license_expires_at,
 
-        is_expired: false,
+        days_remaining: daysRemaining,
+
+        is_expired: isExpired,
 
         is_trial: false,
 
-        is_active: true,
+        is_lifetime: updatedChurch.license_type === "lifetime",
+
+        is_active: !isExpired,
       },
 
       church: {
@@ -2620,19 +2709,12 @@ exports.activateLicense = async (req, res) => {
     });
   } catch (err) {
     console.error("==========================================");
-
     console.error("❌ ACTIVATE LICENSE ERROR");
-
     console.error("Message:", err.message);
-
     console.error("Code:", err.code);
-
     console.error("SQL State:", err.sqlState);
-
     console.error("SQL Message:", err.sqlMessage);
-
     console.error("Stack:", err.stack);
-
     console.error("==========================================");
 
     return res.status(500).json({

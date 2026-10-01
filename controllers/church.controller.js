@@ -2380,74 +2380,249 @@ exports.searchMap = async (req, res) => {
 // CHỈ ADMIN HỆ THỐNG
 // ======================================================
 exports.activateLicense = async (req, res) => {
+  const requestId = `LIC-${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 8)
+    .toUpperCase()}`;
+
+  const startedAt = Date.now();
+
+  let connection = null;
+
+  const log = {
+    info: (...args) => {
+      console.log(`[${requestId}]`, ...args);
+    },
+
+    warn: (...args) => {
+      console.warn(`[${requestId}] ⚠️`, ...args);
+    },
+
+    error: (...args) => {
+      console.error(`[${requestId}] ❌`, ...args);
+    },
+  };
+
+  /**
+   * ============================================================
+   * HELPER
+   * ============================================================
+   */
+
+  const getCalendarDate = (value) => {
+    if (!value) return null;
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      return null;
+    }
+
+    return {
+      year: date.getFullYear(),
+      month: date.getMonth(),
+      day: date.getDate(),
+    };
+  };
+
+  /**
+   * Tính số ngày còn lại theo NGÀY LỊCH.
+   *
+   * Ví dụ:
+   *
+   * 01/10/2026 -> 01/10/2027
+   *
+   * = 365 ngày
+   *
+   * Không tính theo millisecond để tránh lỗi timezone.
+   */
+  const calculateDaysRemaining = (expiresAt) => {
+    if (!expiresAt) {
+      return null;
+    }
+
+    const expires = getCalendarDate(expiresAt);
+
+    if (!expires) {
+      return null;
+    }
+
+    const now = new Date();
+
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    const expiryDate = new Date(expires.year, expires.month, expires.day);
+
+    const diffMs = expiryDate.getTime() - today.getTime();
+
+    const days = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+    return Math.max(0, days);
+  };
+
+  const isDateExpired = (expiresAt) => {
+    if (!expiresAt) {
+      return false;
+    }
+
+    const daysRemaining = calculateDaysRemaining(expiresAt);
+
+    return daysRemaining <= 0;
+  };
+
+  const buildLicenseInfo = (church) => {
+    const isLifetime = church.license_type === "lifetime";
+
+    const isYearly = church.license_type === "yearly";
+
+    const isActive = church.license_status === "active";
+
+    const isExpired =
+      isYearly &&
+      !!church.license_expires_at &&
+      isDateExpired(church.license_expires_at);
+
+    const daysRemaining =
+      isYearly && church.license_expires_at
+        ? calculateDaysRemaining(church.license_expires_at)
+        : null;
+
+    return {
+      status: isExpired ? "expired" : church.license_status,
+
+      type: church.license_type,
+
+      trial_started_at: church.trial_started_at || null,
+
+      trial_expires_at: church.trial_expires_at || null,
+
+      activated_at: church.activated_at || null,
+
+      expires_at: isLifetime ? null : church.license_expires_at || null,
+
+      days_remaining: daysRemaining,
+
+      is_expired: isExpired,
+
+      is_trial:
+        church.license_type === "trial" || church.license_status === "trial",
+
+      is_yearly: isYearly,
+
+      is_lifetime: isLifetime,
+
+      is_active: isActive && !isExpired,
+
+      can_upgrade_to_lifetime: isActive && isYearly && !isExpired,
+    };
+  };
+
   try {
-    const churchId = Number(req.params.id);
+    // ==========================================================
+    // 1. REQUEST START
+    // ==========================================================
 
-    // ==================================================
-    // 1. ID
-    // ==================================================
+    log.info("==================================================");
+    log.info("ACTIVATE / UPGRADE FAITHEDU LICENSE");
+    log.info("Started:", new Date().toISOString());
+    log.info("Method:", req.method);
+    log.info("URL:", req.originalUrl);
+    log.info("IP:", req.ip);
+    log.info("==================================================");
 
-    if (!churchId || Number.isNaN(churchId)) {
+    // ==========================================================
+    // 2. VALIDATE CHURCH ID
+    // ==========================================================
+
+    const rawChurchId = req.params?.id;
+
+    const churchId = Number(rawChurchId);
+
+    if (!rawChurchId || !Number.isInteger(churchId) || churchId <= 0) {
+      log.warn("Invalid church ID:", rawChurchId);
+
       return res.status(400).json({
         success: false,
+        code: "INVALID_CHURCH_ID",
         message: "ID giáo xứ không hợp lệ",
+        request_id: requestId,
       });
     }
 
-    // ==================================================
-    // 2. LOGIN
-    // ==================================================
+    log.info("Church ID:", churchId);
+
+    // ==========================================================
+    // 3. LOGIN
+    // ==========================================================
 
     if (!req.user) {
+      log.warn("Unauthorized request");
+
       return res.status(401).json({
         success: false,
+        code: "UNAUTHORIZED",
         message: "Chưa đăng nhập",
+        request_id: requestId,
       });
     }
 
-    // ==================================================
-    // 3. SYSTEM ADMIN
-    // ==================================================
+    log.info("User:", {
+      id: req.user.id,
+      username: req.user.username,
+      role: req.user.role,
+    });
+
+    // ==========================================================
+    // 4. SYSTEM ADMIN
+    // ==========================================================
 
     if (req.user.role !== "admin") {
+      log.warn("Forbidden role:", req.user.role);
+
       return res.status(403).json({
         success: false,
         code: "LICENSE_ACTIVATION_FORBIDDEN",
-        message: "Chỉ quản trị hệ thống mới có quyền kích hoạt FaithEdu",
+        message: "Chỉ quản trị hệ thống mới có quyền quản lý license FaithEdu",
+        request_id: requestId,
       });
     }
 
-    // ==================================================
-    // 4. GET LICENSE TYPE
-    // ==================================================
+    // ==========================================================
+    // 5. REQUEST BODY
+    // ==========================================================
 
-    // req.body có thể undefined nếu frontend không gửi body
-    const licenseType = String(req.body?.license_type || "")
+    const body = req.body || {};
+
+    const licenseType = String(body.license_type || "")
       .trim()
       .toLowerCase();
 
-    console.log("==========================================");
-    console.log("ACTIVATE LICENSE");
-    console.log("Church ID:", churchId);
-    console.log("Request body:", req.body);
-    console.log("License type:", licenseType);
-    console.log("Admin:", req.user.username || req.user.id);
-    console.log("==========================================");
+    log.info("Request body:", body);
+    log.info("Requested license type:", licenseType);
+
+    // ==========================================================
+    // 6. VALIDATE LICENSE TYPE
+    // ==========================================================
 
     const allowedLicenseTypes = ["yearly", "lifetime"];
 
     if (!allowedLicenseTypes.includes(licenseType)) {
+      log.warn("Invalid license type:", licenseType);
+
       return res.status(400).json({
         success: false,
         code: "INVALID_LICENSE_TYPE",
         message: "Gói FaithEdu không hợp lệ",
         allowed: allowedLicenseTypes,
+        request_id: requestId,
       });
     }
 
-    // ==================================================
-    // 5. GET CHURCH
-    // ==================================================
+    // ==========================================================
+    // 7. GET CHURCH
+    // ==========================================================
+
+    log.info("Loading church...");
 
     const [rows] = await db.query(
       `
@@ -2477,88 +2652,128 @@ exports.activateLicense = async (req, res) => {
     );
 
     if (!rows.length) {
+      log.warn("Church not found:", churchId);
+
       return res.status(404).json({
         success: false,
+        code: "CHURCH_NOT_FOUND",
         message: "Không tìm thấy giáo xứ",
+        request_id: requestId,
       });
     }
 
-    const church = rows[0];
+    let church = rows[0];
 
-    // ==================================================
-    // 6. KIỂM TRA LICENSE HIỆN TẠI
-    // ==================================================
+    log.info("Current church:", {
+      id: church.id,
+      name: church.name,
+      code: church.code,
+      license_status: church.license_status,
+      license_type: church.license_type,
+      license_expires_at: church.license_expires_at,
+      activated_at: church.activated_at,
+    });
+
+    // ==========================================================
+    // 8. NORMALIZE OLD / NULL LICENSE TYPE
+    // ==========================================================
 
     /**
-     * Nếu đang active + yearly nhưng đã hết hạn
-     * thì chuyển trạng thái thành expired trước.
+     * Một số dữ liệu cũ có thể:
+     *
+     * license_status = active
+     * license_type = NULL
+     *
+     * Không được tự ý coi là lifetime.
      */
+
+    if (!church.license_type && church.license_status === "active") {
+      log.warn("Active church nhưng license_type NULL");
+
+      return res.status(409).json({
+        success: false,
+        code: "LICENSE_TYPE_MISSING",
+        message:
+          "License của giáo xứ chưa xác định được loại gói. Vui lòng kiểm tra dữ liệu.",
+        request_id: requestId,
+      });
+    }
+
+    // ==========================================================
+    // 9. CHECK YEARLY EXPIRATION
+    // ==========================================================
+
     if (
       church.license_status === "active" &&
       church.license_type === "yearly" &&
       church.license_expires_at
     ) {
-      const now = new Date();
-      const expiresAt = new Date(church.license_expires_at);
+      const expired = isDateExpired(church.license_expires_at);
 
-      if (expiresAt.getTime() <= now.getTime()) {
+      log.info("Yearly expiration check:", {
+        expires_at: church.license_expires_at,
+        expired,
+        days_remaining: calculateDaysRemaining(church.license_expires_at),
+      });
+
+      if (expired) {
+        log.warn("Yearly license expired -> updating status to expired");
+
         await db.query(
           `
             UPDATE churches
+
             SET
               license_status = 'expired',
-              updated_at = CURRENT_TIMESTAMP
+
+              updated_at =
+                CURRENT_TIMESTAMP
+
             WHERE id = ?
+
+              AND license_status = 'active'
+
+              AND license_type = 'yearly'
           `,
           [churchId],
         );
 
         church.license_status = "expired";
 
-        console.log(
-          `License yearly của church ${churchId} đã hết hạn -> expired`,
-        );
+        log.info("License status changed to expired");
       }
     }
 
-    // ==================================================
-    // 7. ALREADY ACTIVE
-    // ==================================================
+    // ==========================================================
+    // 10. DETERMINE OPERATION
+    // ==========================================================
+
+    const currentStatus = church.license_status;
+
+    const currentType = church.license_type;
+
+    let operation = "activation";
 
     /**
-     * Lifetime thì luôn active.
+     * ACTIVE + LIFETIME
      *
-     * Yearly nếu chưa hết hạn cũng không được
-     * kích hoạt lại trực tiếp.
+     * Không cho mua lại / downgrade.
      */
-    if (church.license_status === "active") {
+    if (currentStatus === "active" && currentType === "lifetime") {
+      log.warn("Church already has lifetime license");
+
       return res.status(409).json({
         success: false,
 
-        code: "LICENSE_ALREADY_ACTIVE",
+        code: "LICENSE_ALREADY_LIFETIME",
 
-        message:
-          church.license_type === "lifetime"
-            ? "FaithEdu của giáo xứ này đang sử dụng gói vĩnh viễn."
-            : "FaithEdu của giáo xứ này vẫn đang còn thời hạn sử dụng.",
+        message: "Cơ sở này đã sử dụng gói FaithEdu vĩnh viễn.",
 
         already_active: true,
 
-        license: {
-          status: church.license_status,
+        operation: "none",
 
-          type: church.license_type,
-
-          expires_at: church.license_expires_at,
-
-          activated_at: church.activated_at,
-
-          is_expired: false,
-
-          is_active: true,
-
-          is_lifetime: church.license_type === "lifetime",
-        },
+        license: buildLicenseInfo(church),
 
         church: {
           id: Number(church.id),
@@ -2573,186 +2788,427 @@ exports.activateLicense = async (req, res) => {
           deanery_id:
             church.deanery_id !== null ? Number(church.deanery_id) : null,
         },
+
+        request_id: requestId,
       });
     }
 
-    // ==================================================
-    // 8. CALCULATE LICENSE
-    // ==================================================
+    /**
+     * ACTIVE + YEARLY
+     *
+     * Chỉ cho:
+     *
+     * yearly -> lifetime
+     */
+    if (currentStatus === "active" && currentType === "yearly") {
+      if (licenseType !== "lifetime") {
+        log.warn(
+          "Yearly license is still active. Cannot renew yearly before expiration.",
+          {
+            expires_at: church.license_expires_at,
+            days_remaining: calculateDaysRemaining(church.license_expires_at),
+          },
+        );
+
+        return res.status(409).json({
+          success: false,
+
+          code: "LICENSE_ALREADY_ACTIVE",
+
+          message:
+            "Gói 1 năm hiện tại vẫn đang hoạt động. Bạn chỉ có thể nâng cấp lên gói vĩnh viễn.",
+
+          already_active: true,
+
+          operation: "none",
+
+          can_upgrade_to_lifetime: true,
+
+          license: buildLicenseInfo(church),
+
+          church: {
+            id: Number(church.id),
+
+            name: church.name,
+
+            code: church.code,
+
+            diocese_id:
+              church.diocese_id !== null ? Number(church.diocese_id) : null,
+
+            deanery_id:
+              church.deanery_id !== null ? Number(church.deanery_id) : null,
+          },
+
+          request_id: requestId,
+        });
+      }
+
+      operation = "upgrade_yearly_to_lifetime";
+
+      log.info("Operation: YEARLY -> LIFETIME");
+    }
+
+    /**
+     * EXPIRED / TRIAL / OTHER
+     *
+     * Cho phép kích hoạt gói mới.
+     */
+    if (currentStatus !== "active") {
+      operation = "activation";
+
+      log.info("Operation: NEW / RENEW ACTIVATION", {
+        current_status: currentStatus,
+        current_type: currentType,
+        requested_type: licenseType,
+      });
+    }
+
+    // ==========================================================
+    // 11. TRANSACTION
+    // ==========================================================
+
+    log.info("Getting database connection...");
+
+    connection = await db.getConnection();
+
+    await connection.beginTransaction();
+
+    log.info("Transaction started");
+
+    // ==========================================================
+    // 12. RE-CHECK CHURCH INSIDE TRANSACTION
+    // ==========================================================
+
+    const [lockedRows] = await connection.query(
+      `
+          SELECT
+            id,
+            name,
+            code,
+
+            diocese_id,
+            deanery_id,
+
+            license_status,
+            license_type,
+            license_expires_at,
+
+            trial_started_at,
+            trial_expires_at,
+            activated_at
+
+          FROM churches
+
+          WHERE id = ?
+
+          LIMIT 1
+
+          FOR UPDATE
+        `,
+      [churchId],
+    );
+
+    if (!lockedRows.length) {
+      await connection.rollback();
+
+      log.warn("Church disappeared during transaction");
+
+      return res.status(404).json({
+        success: false,
+        code: "CHURCH_NOT_FOUND",
+        message: "Không tìm thấy giáo xứ",
+        request_id: requestId,
+      });
+    }
+
+    church = lockedRows[0];
+
+    log.info("Locked church state:", {
+      license_status: church.license_status,
+      license_type: church.license_type,
+      license_expires_at: church.license_expires_at,
+    });
+
+    // ==========================================================
+    // 13. RE-CHECK LICENSE AFTER LOCK
+    // ==========================================================
+
+    if (
+      church.license_status === "active" &&
+      church.license_type === "lifetime"
+    ) {
+      await connection.rollback();
+
+      log.warn("Race condition prevented: license became lifetime");
+
+      return res.status(409).json({
+        success: false,
+        code: "LICENSE_ALREADY_LIFETIME",
+        message: "Cơ sở này đã sử dụng gói FaithEdu vĩnh viễn.",
+        request_id: requestId,
+      });
+    }
+
+    if (
+      church.license_status === "active" &&
+      church.license_type === "yearly"
+    ) {
+      const yearlyExpired = isDateExpired(church.license_expires_at);
+
+      if (!yearlyExpired) {
+        if (licenseType !== "lifetime") {
+          await connection.rollback();
+
+          log.warn("Concurrent request: yearly still active");
+
+          return res.status(409).json({
+            success: false,
+            code: "LICENSE_ALREADY_ACTIVE",
+            message:
+              "Gói 1 năm hiện tại vẫn đang hoạt động. Bạn chỉ có thể nâng cấp lên gói vĩnh viễn.",
+            request_id: requestId,
+          });
+        }
+
+        operation = "upgrade_yearly_to_lifetime";
+      } else {
+        /**
+         * Đã hết hạn trong lúc transaction.
+         */
+        await connection.query(
+          `
+            UPDATE churches
+
+            SET
+              license_status = 'expired',
+
+              updated_at =
+                CURRENT_TIMESTAMP
+
+            WHERE id = ?
+          `,
+          [churchId],
+        );
+
+        church.license_status = "expired";
+
+        operation = "activation";
+
+        log.info("Yearly expired while transaction locked -> expired");
+      }
+    }
+
+    // ==========================================================
+    // 14. CALCULATE NEW LICENSE
+    // ==========================================================
 
     let licenseExpiresAt = null;
 
-    /**
-     * GÓI 1 NĂM
-     */
     if (licenseType === "yearly") {
+      /**
+       * Dùng Date hiện tại + 1 năm.
+       *
+       * Ví dụ:
+       * 01/10/2026 -> 01/10/2027
+       */
       licenseExpiresAt = new Date();
 
       licenseExpiresAt.setFullYear(licenseExpiresAt.getFullYear() + 1);
+
+      log.info("Calculated yearly expiration:", licenseExpiresAt.toISOString());
     }
 
-    /**
-     * GÓI VĨNH VIỄN
-     */
     if (licenseType === "lifetime") {
       licenseExpiresAt = null;
+
+      log.info("Lifetime license -> expires_at = NULL");
     }
 
-    console.log("License type:", licenseType);
-    console.log("License expires:", licenseExpiresAt);
+    // ==========================================================
+    // 15. UPDATE LICENSE
+    // ==========================================================
 
-    // ==================================================
-    // 9. ACTIVATE
-    // ==================================================
+    log.info("Updating church license...");
 
-    await db.query(
+    const [updateResult] = await connection.query(
       `
-        UPDATE churches
+          UPDATE churches
 
-        SET
-          license_status = 'active',
+          SET
+            license_status = 'active',
 
-          license_type = ?,
+            license_type = ?,
 
-          license_expires_at = ?,
+            license_expires_at = ?,
 
-          activated_at = NOW(),
+            activated_at = NOW(),
 
-          updated_at = CURRENT_TIMESTAMP
+            updated_at =
+              CURRENT_TIMESTAMP
 
-        WHERE id = ?
-      `,
+          WHERE id = ?
+        `,
       [licenseType, licenseExpiresAt, churchId],
     );
 
-    // ==================================================
-    // 10. GET UPDATED CHURCH
-    // ==================================================
+    log.info("Update result:", {
+      affectedRows: updateResult.affectedRows,
+      changedRows: updateResult.changedRows,
+    });
 
-    const [updatedRows] = await db.query(
+    if (updateResult.affectedRows !== 1) {
+      throw new Error("Không cập nhật được license giáo xứ");
+    }
+
+    // ==========================================================
+    // 16. GET UPDATED LICENSE
+    // ==========================================================
+
+    const [updatedRows] = await connection.query(
       `
-        SELECT
-          id,
-          name,
-          code,
+          SELECT
+            id,
+            name,
+            code,
 
-          diocese_id,
-          deanery_id,
+            diocese_id,
+            deanery_id,
 
-          license_status,
-          license_type,
-          license_expires_at,
+            license_status,
+            license_type,
+            license_expires_at,
 
-          trial_started_at,
-          trial_expires_at,
-          activated_at
+            trial_started_at,
+            trial_expires_at,
+            activated_at
 
-        FROM churches
+          FROM churches
 
-        WHERE id = ?
+          WHERE id = ?
 
-        LIMIT 1
-      `,
+          LIMIT 1
+        `,
       [churchId],
     );
 
     if (!updatedRows.length) {
-      return res.status(500).json({
-        success: false,
-        message: "Không thể đọc dữ liệu license sau khi kích hoạt",
-      });
+      throw new Error("Không thể đọc dữ liệu license sau khi cập nhật");
     }
 
     const updatedChurch = updatedRows[0];
 
-    // ==================================================
-    // 11. CALCULATE DAYS REMAINING
-    // ==================================================
+    // ==========================================================
+    // 17. CALCULATE RESULT
+    // ==========================================================
 
-    let daysRemaining = null;
-    let isExpired = false;
+    const updatedLicense = buildLicenseInfo(updatedChurch);
 
-    if (
-      updatedChurch.license_type === "yearly" &&
-      updatedChurch.license_expires_at
-    ) {
-      const now = new Date();
+    log.info("Updated license:", {
+      status: updatedLicense.status,
+      type: updatedLicense.type,
+      activated_at: updatedLicense.activated_at,
+      expires_at: updatedLicense.expires_at,
+      days_remaining: updatedLicense.days_remaining,
+      is_active: updatedLicense.is_active,
+      is_lifetime: updatedLicense.is_lifetime,
+    });
 
-      const expiresAt = new Date(updatedChurch.license_expires_at);
+    // ==========================================================
+    // 18. COMMIT
+    // ==========================================================
 
-      const diff = expiresAt.getTime() - now.getTime();
+    await connection.commit();
 
-      daysRemaining = Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+    log.info("Transaction committed successfully");
 
-      isExpired = diff <= 0;
-    }
-
-    // ==================================================
-    // 12. ACTIVITY LOG
-    // ==================================================
+    // ==========================================================
+    // 19. ACTIVITY LOG
+    // ==========================================================
 
     try {
       if (typeof writeLog === "function") {
+        const action =
+          operation === "upgrade_yearly_to_lifetime"
+            ? "UPGRADE_FAITHEDU_LICENSE"
+            : "ACTIVATE_FAITHEDU_LICENSE";
+
+        const description =
+          operation === "upgrade_yearly_to_lifetime"
+            ? `Nâng cấp FaithEdu từ gói 1 năm lên gói vĩnh viễn cho giáo xứ: ${updatedChurch.name} (ID: ${churchId})`
+            : `Kích hoạt FaithEdu gói ${
+                licenseType === "yearly" ? "1 năm" : "vĩnh viễn"
+              } cho giáo xứ: ${updatedChurch.name} (ID: ${churchId})`;
+
         await writeLog({
           admin_id: req.user.id,
 
-          action: "ACTIVATE_FAITHEDU_LICENSE",
+          action,
 
           target_type: "churches",
 
           target_id: churchId,
 
-          description: `Kích hoạt FaithEdu gói ${
-            licenseType === "yearly" ? "1 năm" : "vĩnh viễn"
-          } cho giáo xứ: ${updatedChurch.name} (ID: ${churchId})`,
+          description,
 
           ip_address: req.ip,
         });
+
+        log.info("Activity log written:", action);
       }
     } catch (logErr) {
-      console.error(
-        "Lỗi ghi activity log khi kích hoạt license:",
-        logErr.message,
-      );
+      /**
+       * Activity log lỗi KHÔNG rollback license.
+       */
+      log.error("Activity log error:", logErr.message);
     }
 
-    // ==================================================
-    // 13. RESPONSE
-    // ==================================================
+    // ==========================================================
+    // 20. RESPONSE MESSAGE
+    // ==========================================================
+
+    let responseMessage;
+
+    if (operation === "upgrade_yearly_to_lifetime") {
+      responseMessage = "Nâng cấp FaithEdu lên gói vĩnh viễn thành công";
+    } else if (licenseType === "yearly") {
+      responseMessage = "Kích hoạt FaithEdu gói 1 năm thành công";
+    } else {
+      responseMessage = "Kích hoạt FaithEdu gói vĩnh viễn thành công";
+    }
+
+    // ==========================================================
+    // 21. SUCCESS RESPONSE
+    // ==========================================================
+
+    const duration = Date.now() - startedAt;
+
+    log.info("SUCCESS", {
+      operation,
+      duration_ms: duration,
+      church_id: churchId,
+      license_type: updatedChurch.license_type,
+      expires_at: updatedChurch.license_expires_at,
+      days_remaining: updatedLicense.days_remaining,
+    });
+
+    log.info("==================================================");
 
     return res.status(200).json({
       success: true,
 
+      code:
+        operation === "upgrade_yearly_to_lifetime"
+          ? "LICENSE_UPGRADED"
+          : "LICENSE_ACTIVATED",
+
       already_active: false,
 
-      message:
-        licenseType === "yearly"
-          ? "Kích hoạt FaithEdu gói 1 năm thành công"
-          : "Kích hoạt FaithEdu gói vĩnh viễn thành công",
+      operation,
 
-      license: {
-        status: updatedChurch.license_status,
+      message: responseMessage,
 
-        type: updatedChurch.license_type,
-
-        trial_started_at: updatedChurch.trial_started_at,
-
-        trial_expires_at: updatedChurch.trial_expires_at,
-
-        activated_at: updatedChurch.activated_at,
-
-        expires_at: updatedChurch.license_expires_at,
-
-        days_remaining: daysRemaining,
-
-        is_expired: isExpired,
-
-        is_trial: false,
-
-        is_lifetime: updatedChurch.license_type === "lifetime",
-
-        is_active: !isExpired && updatedChurch.license_status === "active",
-      },
+      license: updatedLicense,
 
       church: {
         id: Number(updatedChurch.id),
@@ -2771,24 +3227,69 @@ exports.activateLicense = async (req, res) => {
             ? Number(updatedChurch.deanery_id)
             : null,
       },
+
+      request_id: requestId,
     });
   } catch (err) {
-    console.error("==========================================");
-    console.error("❌ ACTIVATE LICENSE ERROR");
-    console.error("Message:", err.message);
-    console.error("Code:", err.code);
-    console.error("SQL State:", err.sqlState);
-    console.error("SQL Message:", err.sqlMessage);
-    console.error("Stack:", err.stack);
-    console.error("==========================================");
+    // ==========================================================
+    // ROLLBACK
+    // ==========================================================
+
+    if (connection) {
+      try {
+        await connection.rollback();
+
+        log.warn("Transaction rolled back");
+      } catch (rollbackErr) {
+        log.error("Rollback error:", rollbackErr.message);
+      }
+    }
+
+    // ==========================================================
+    // DATABASE ERROR
+    // ==========================================================
+
+    log.error("==================================================");
+
+    log.error("ACTIVATE LICENSE ERROR");
+
+    log.error("Message:", err.message);
+
+    log.error("Code:", err.code);
+
+    log.error("SQL State:", err.sqlState);
+
+    log.error("SQL Message:", err.sqlMessage);
+
+    log.error("Stack:", err.stack);
+
+    log.error("==================================================");
 
     return res.status(500).json({
       success: false,
 
-      message: "Lỗi server khi kích hoạt FaithEdu",
+      code: "LICENSE_ACTIVATION_ERROR",
+
+      message: "Lỗi server khi quản lý license FaithEdu",
+
+      request_id: requestId,
 
       error: process.env.NODE_ENV === "development" ? err.message : undefined,
     });
+  } finally {
+    // ==========================================================
+    // RELEASE CONNECTION
+    // ==========================================================
+
+    if (connection) {
+      try {
+        connection.release();
+
+        log.info("Database connection released");
+      } catch (releaseErr) {
+        log.error("Connection release error:", releaseErr.message);
+      }
+    }
   }
 };
 // GET /api/dioceses/archdioceses

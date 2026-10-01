@@ -236,15 +236,17 @@ exports.getPendingAppointments = async (req, res) => {
         cc.status,
         cc.assigned_date,
         cc.notes,
+        cc.appointment_read,
 
         cl.code AS class_code,
         cl.name AS class_name,
 
         c.catechist_code,
         c.full_name,
-        c.holy_name
-        c.holy_name
-        c.avatar
+        c.holy_name,
+
+        -- Avatar lấy từ bảng admins
+        a.avatar AS avatar
 
       FROM catechist_classes cc
 
@@ -256,6 +258,10 @@ exports.getPendingAppointments = async (req, res) => {
         ON cl.id = cc.class_id
        AND cl.church_id = ?
 
+      LEFT JOIN admins a
+        ON a.username = c.catechist_code
+       AND a.church_id = ?
+
       WHERE c.catechist_code = ?
         AND cc.status = 'teaching'
         AND cc.appointment_read = 0
@@ -264,12 +270,19 @@ exports.getPendingAppointments = async (req, res) => {
         cc.assigned_date DESC,
         cc.id DESC
       `,
-      [churchId, churchId, username],
+      [churchId, churchId, churchId, username],
     );
 
     console.log("📨 PENDING APPOINTMENTS:", {
       username,
+      churchId,
       count: rows.length,
+      data: rows.map((item) => ({
+        id: item.id,
+        catechist_code: item.catechist_code,
+        full_name: item.full_name,
+        avatar: item.avatar,
+      })),
     });
 
     return res.status(200).json({

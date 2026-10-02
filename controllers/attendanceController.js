@@ -3836,34 +3836,18 @@ const exportAttendanceExcel = async (req, res) => {
     // 3. VALIDATE DATE
     // =====================================================
 
-    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+    const normalizedDate = typeof date === "string" ? date.trim() : "";
+
+    if (!isValidDate(normalizedDate)) {
       log("VALIDATION_FAILED", {
         field: "date",
         value: date,
+        reason: "Ngày không hợp lệ",
       });
 
       return res.status(400).json({
         success: false,
         message: "Ngày điểm danh không hợp lệ",
-      });
-    }
-
-    // Kiểm tra ngày thực tế, tránh trường hợp 2026-99-99
-    const parsedDate = new Date(`${date}T00:00:00`);
-
-    if (
-      Number.isNaN(parsedDate.getTime()) ||
-      parsedDate.toISOString().slice(0, 10) !== date
-    ) {
-      log("VALIDATION_FAILED", {
-        field: "date",
-        value: date,
-        reason: "Ngày không tồn tại",
-      });
-
-      return res.status(400).json({
-        success: false,
-        message: "Ngày điểm danh không tồn tại",
       });
     }
 
@@ -3905,7 +3889,35 @@ const exportAttendanceExcel = async (req, res) => {
         });
       }
     }
+    // =====================================================
+    // TEACHER PERMISSION
+    // =====================================================
 
+    if (attendance_type === "catechism" && isTeacher(req)) {
+      const assignedClasses = await getTeacherAssignedClasses(
+        db,
+        req,
+        churchId,
+      );
+
+      const canAccess = assignedClasses.some(
+        (item) => Number(item.id) === classId,
+      );
+
+      if (!canAccess) {
+        log("PERMISSION_DENIED", {
+          churchId,
+          classId,
+          teacherId: getTeacherId(req),
+        });
+
+        return res.status(403).json({
+          success: false,
+          message:
+            "Bạn không được phân công lớp này nên không có quyền xuất Excel",
+        });
+      }
+    }
     log("CLASS_VALIDATED", {
       attendance_type,
       classId,
@@ -3939,13 +3951,17 @@ const exportAttendanceExcel = async (req, res) => {
     // 7. BUILD SQL
     // =====================================================
 
+    // =====================================================
+    // 7. BUILD SQL
+    // =====================================================
+
     const where = [
       "a.church_id = ?",
       "a.attendance_date = ?",
       "a.attendance_type = ?",
     ];
 
-    const values = [churchId, date, attendance_type];
+    const values = [churchId, normalizedDate, attendance_type];
 
     if (attendance_type === "catechism") {
       where.push("a.class_id = ?");
@@ -3957,62 +3973,63 @@ const exportAttendanceExcel = async (req, res) => {
       values.push(finalStatus);
     }
 
-    if (String(search).trim()) {
+    const keyword = String(search || "").trim();
+
+    if (keyword) {
       where.push(`(
-        s.full_name LIKE ?
-        OR s.student_code LIKE ?
-        OR s.qr_code LIKE ?
-      )`);
+    s.name LIKE ?
+    OR s.code LIKE ?
+    OR s.qr_token LIKE ?
+  )`);
 
-      const keyword = `%${String(search).trim()}%`;
-
-      values.push(keyword, keyword, keyword);
+      const searchValue = `%${keyword}%`;
+      values.push(searchValue, searchValue, searchValue);
     }
 
     const sql = `
-      SELECT
-        a.id,
-        a.student_id,
-        a.class_id,
-        a.attendance_date,
-        a.attendance_type,
-        a.status,
-        a.check_in_time,
-        a.note,
+  SELECT
+    a.id,
+    a.student_id,
+    a.class_id,
+    a.attendance_date,
+    a.attendance_type,
+    a.status,
+    a.check_in_time,
+    a.note,
 
-        s.student_code,
-        s.full_name,
+    s.code AS student_code,
+    s.name AS full_name,
 
-        c.name AS class_name
+    c.name AS class_name
 
-      FROM attendances a
+  FROM attendances a
 
-      INNER JOIN students s
-        ON s.id = a.student_id
-        AND s.church_id = a.church_id
+  INNER JOIN students s
+    ON s.id = a.student_id
+    AND s.church_id = a.church_id
 
-      LEFT JOIN classes c
-        ON c.id = a.class_id
-        AND c.church_id = a.church_id
+  LEFT JOIN classes c
+    ON c.id = a.class_id
+    AND c.church_id = a.church_id
 
-      WHERE ${where.join(" AND ")}
+  WHERE ${where.join(" AND ")}
 
-      ORDER BY
-        c.name ASC,
-        s.full_name ASC,
-        s.id ASC
-    `;
+  ORDER BY
+    c.name ASC,
+    s.name ASC,
+    s.id ASC
+`;
 
     log("SQL_READY", {
       sql,
       values,
       filters: {
         churchId,
-        date,
+        date: normalizedDate,
         attendance_type,
         classId,
         status: finalStatus,
-        hasSearch: Boolean(String(search).trim()),
+        hasSearch: Boolean(keyword),
       },
     });
 

@@ -3754,15 +3754,67 @@ const getClassStatistics = async (req, res) => {
 };
 
 const exportAttendanceExcel = async (req, res) => {
+  const startedAt = Date.now();
+  const requestId = `EXPORT-${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 7)}`;
+
+  const log = (step, data = {}) => {
+    console.log(`[${requestId}] ${step}`, {
+      time: new Date().toISOString(),
+      ...data,
+    });
+  };
+
+  const logError = (step, error, data = {}) => {
+    console.error(`[${requestId}] ${step}`, {
+      time: new Date().toISOString(),
+      message: error?.message,
+      code: error?.code,
+      errno: error?.errno,
+      sqlState: error?.sqlState,
+      stack: error?.stack,
+      ...data,
+    });
+  };
+
+  log("START", {
+    method: req.method,
+    path: req.originalUrl,
+    userId: req.user?.id || req.user?.admin_id || null,
+    query: req.query,
+  });
+
   try {
-    const churchId = getChurchId(req);
+    // =====================================================
+    // 1. AUTH / CHURCH
+    // =====================================================
+
+    let churchId;
+
+    try {
+      churchId = getChurchId(req);
+    } catch (error) {
+      logError("GET_CHURCH_ID_ERROR", error);
+      throw error;
+    }
+
+    log("CHURCH_RESOLVED", { churchId });
 
     if (!churchId) {
+      log("VALIDATION_FAILED", {
+        reason: "Không xác định được giáo xứ",
+      });
+
       return res.status(403).json({
         success: false,
         message: "Không xác định được giáo xứ",
       });
     }
+
+    // =====================================================
+    // 2. QUERY PARAMS
+    // =====================================================
 
     const {
       date,
@@ -3772,23 +3824,68 @@ const exportAttendanceExcel = async (req, res) => {
       status = "all",
     } = req.query;
 
-    // -----------------------------------------------------
-    // VALIDATE
-    // -----------------------------------------------------
+    log("QUERY_RECEIVED", {
+      date,
+      attendance_type,
+      class_id,
+      search,
+      status,
+    });
+
+    // =====================================================
+    // 3. VALIDATE DATE
+    // =====================================================
 
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+      log("VALIDATION_FAILED", {
+        field: "date",
+        value: date,
+      });
+
       return res.status(400).json({
         success: false,
         message: "Ngày điểm danh không hợp lệ",
       });
     }
 
+    // Kiểm tra ngày thực tế, tránh trường hợp 2026-99-99
+    const parsedDate = new Date(`${date}T00:00:00`);
+
+    if (
+      Number.isNaN(parsedDate.getTime()) ||
+      parsedDate.toISOString().slice(0, 10) !== date
+    ) {
+      log("VALIDATION_FAILED", {
+        field: "date",
+        value: date,
+        reason: "Ngày không tồn tại",
+      });
+
+      return res.status(400).json({
+        success: false,
+        message: "Ngày điểm danh không tồn tại",
+      });
+    }
+
+    // =====================================================
+    // 4. VALIDATE TYPE
+    // =====================================================
+
     if (!["mass", "catechism"].includes(attendance_type)) {
+      log("VALIDATION_FAILED", {
+        field: "attendance_type",
+        value: attendance_type,
+      });
+
       return res.status(400).json({
         success: false,
         message: "Loại điểm danh không hợp lệ",
       });
     }
+
+    // =====================================================
+    // 5. VALIDATE CLASS
+    // =====================================================
 
     let classId = null;
 
@@ -3796,6 +3893,12 @@ const exportAttendanceExcel = async (req, res) => {
       classId = Number(class_id);
 
       if (!Number.isInteger(classId) || classId <= 0) {
+        log("VALIDATION_FAILED", {
+          field: "class_id",
+          value: class_id,
+          attendance_type,
+        });
+
         return res.status(400).json({
           success: false,
           message: "Vui lòng chọn lớp giáo lý",
@@ -3803,20 +3906,38 @@ const exportAttendanceExcel = async (req, res) => {
       }
     }
 
+    log("CLASS_VALIDATED", {
+      attendance_type,
+      classId,
+      classIdRequired: attendance_type === "catechism",
+    });
+
+    // =====================================================
+    // 6. VALIDATE STATUS
+    // =====================================================
+
     const allowedStatuses = ["all", "present", "absent", "late", "excused"];
 
-    const finalStatus = String(status || "all").toLowerCase();
+    const finalStatus = String(status || "all")
+      .trim()
+      .toLowerCase();
 
     if (!allowedStatuses.includes(finalStatus)) {
+      log("VALIDATION_FAILED", {
+        field: "status",
+        value: status,
+        normalized: finalStatus,
+      });
+
       return res.status(400).json({
         success: false,
         message: "Trạng thái điểm danh không hợp lệ",
       });
     }
 
-    // -----------------------------------------------------
-    // SQL CONDITIONS
-    // -----------------------------------------------------
+    // =====================================================
+    // 7. BUILD SQL
+    // =====================================================
 
     const where = [
       "a.church_id = ?",
@@ -3847,14 +3968,6 @@ const exportAttendanceExcel = async (req, res) => {
 
       values.push(keyword, keyword, keyword);
     }
-
-    // -----------------------------------------------------
-    // QUERY
-    //
-    // Lưu ý:
-    // Nếu bảng students của bạn dùng tên cột khác
-    // (ví dụ name thay cho full_name), chỉnh tại đây.
-    // -----------------------------------------------------
 
     const sql = `
       SELECT
@@ -3890,11 +4003,62 @@ const exportAttendanceExcel = async (req, res) => {
         s.id ASC
     `;
 
-    const [rows] = await db.execute(sql, values);
+    log("SQL_READY", {
+      sql,
+      values,
+      filters: {
+        churchId,
+        date,
+        attendance_type,
+        classId,
+        status: finalStatus,
+        hasSearch: Boolean(String(search).trim()),
+      },
+    });
 
-    // -----------------------------------------------------
-    // EXCEL WORKBOOK
-    // -----------------------------------------------------
+    // =====================================================
+    // 8. EXECUTE SQL
+    // =====================================================
+
+    const queryStartedAt = Date.now();
+
+    let rows;
+
+    try {
+      const [result] = await db.execute(sql, values);
+      rows = result;
+
+      log("SQL_SUCCESS", {
+        rowCount: rows.length,
+        durationMs: Date.now() - queryStartedAt,
+      });
+    } catch (error) {
+      logError("SQL_ERROR", error, {
+        sql,
+        values,
+      });
+
+      throw error;
+    }
+
+    if (!rows.length) {
+      log("SQL_EMPTY_RESULT", {
+        churchId,
+        date,
+        attendance_type,
+        classId,
+        status: finalStatus,
+        search: String(search).trim(),
+      });
+    }
+
+    // =====================================================
+    // 9. CREATE WORKBOOK
+    // =====================================================
+
+    log("EXCEL_CREATE_START", {
+      rowCount: rows.length,
+    });
 
     const workbook = new ExcelJS.Workbook();
 
@@ -3918,9 +4082,9 @@ const exportAttendanceExcel = async (req, res) => {
       { key: "note", width: 35 },
     ];
 
-    // -----------------------------------------------------
-    // TITLE
-    // -----------------------------------------------------
+    // =====================================================
+    // 10. TITLE
+    // =====================================================
 
     worksheet.mergeCells("A1:I1");
 
@@ -3945,9 +4109,9 @@ const exportAttendanceExcel = async (req, res) => {
 
     worksheet.getRow(1).height = 32;
 
-    // -----------------------------------------------------
-    // INFORMATION
-    // -----------------------------------------------------
+    // =====================================================
+    // 11. INFORMATION
+    // =====================================================
 
     worksheet.mergeCells("A2:I2");
 
@@ -3986,13 +4150,11 @@ const exportAttendanceExcel = async (req, res) => {
     };
 
     worksheet.getRow(3).height = 22;
-
-    // Dòng trống
     worksheet.getRow(4).height = 8;
 
-    // -----------------------------------------------------
-    // TABLE HEADER
-    // -----------------------------------------------------
+    // =====================================================
+    // 12. HEADER
+    // =====================================================
 
     const headerRow = worksheet.getRow(5);
 
@@ -4038,15 +4200,22 @@ const exportAttendanceExcel = async (req, res) => {
       };
     });
 
-    // -----------------------------------------------------
-    // DATA
-    // -----------------------------------------------------
+    // =====================================================
+    // 13. DATA
+    // =====================================================
 
     const statusLabels = {
       present: "Có mặt",
       absent: "Vắng",
       late: "Đi muộn",
       excused: "Có phép",
+    };
+
+    const statusColors = {
+      present: "FFE8F5E9",
+      absent: "FFFFEBEE",
+      late: "FFFFF3E0",
+      excused: "FFE3F2FD",
     };
 
     rows.forEach((item, index) => {
@@ -4085,37 +4254,15 @@ const exportAttendanceExcel = async (req, res) => {
         };
       });
 
-      row.getCell(1).alignment = {
-        horizontal: "center",
-        vertical: "middle",
-      };
-
-      row.getCell(5).alignment = {
-        horizontal: "center",
-        vertical: "middle",
-      };
-
-      row.getCell(7).alignment = {
-        horizontal: "center",
-        vertical: "middle",
-      };
-
-      row.getCell(8).alignment = {
-        horizontal: "center",
-        vertical: "middle",
-      };
-
-      const statusCell = row.getCell(7);
-
-      const statusColors = {
-        present: "FFE8F5E9",
-        absent: "FFFFEBEE",
-        late: "FFFFF3E0",
-        excused: "FFE3F2FD",
-      };
+      [1, 5, 7, 8].forEach((column) => {
+        row.getCell(column).alignment = {
+          horizontal: "center",
+          vertical: "middle",
+        };
+      });
 
       if (statusColors[item.status]) {
-        statusCell.fill = {
+        row.getCell(7).fill = {
           type: "pattern",
           pattern: "solid",
           fgColor: { argb: statusColors[item.status] },
@@ -4123,9 +4270,14 @@ const exportAttendanceExcel = async (req, res) => {
       }
     });
 
-    // -----------------------------------------------------
-    // PRINT SETTINGS
-    // -----------------------------------------------------
+    log("EXCEL_DATA_WRITTEN", {
+      rowCount: rows.length,
+      worksheetRowCount: worksheet.rowCount,
+    });
+
+    // =====================================================
+    // 14. PRINT SETTINGS
+    // =====================================================
 
     worksheet.autoFilter = {
       from: "A5",
@@ -4148,11 +4300,28 @@ const exportAttendanceExcel = async (req, res) => {
       },
     };
 
-    // -----------------------------------------------------
-    // RESPONSE
-    // -----------------------------------------------------
+    // =====================================================
+    // 15. GENERATE BUFFER
+    // =====================================================
+
+    const excelStartedAt = Date.now();
+
+    log("EXCEL_BUFFER_START");
 
     const buffer = await workbook.xlsx.writeBuffer();
+
+    log("EXCEL_BUFFER_SUCCESS", {
+      bufferSize: buffer.length,
+      durationMs: Date.now() - excelStartedAt,
+    });
+
+    if (!buffer || buffer.length === 0) {
+      throw new Error("ExcelJS tạo file rỗng");
+    }
+
+    // =====================================================
+    // 16. SEND RESPONSE
+    // =====================================================
 
     const filename = `diem-danh-${attendance_type}-${date}.xlsx`;
 
@@ -4168,11 +4337,23 @@ const exportAttendanceExcel = async (req, res) => {
 
     res.setHeader("Content-Length", buffer.length);
 
+    log("RESPONSE_READY", {
+      filename,
+      contentLength: buffer.length,
+      rowCount: rows.length,
+      durationMs: Date.now() - startedAt,
+    });
+
     return res.status(200).send(Buffer.from(buffer));
   } catch (error) {
-    console.error("[exportAttendanceExcel] ERROR:", error);
+    logError("EXPORT_FAILED", error, {
+      durationMs: Date.now() - startedAt,
+      query: req.query,
+      userId: req.user?.id || req.user?.admin_id || null,
+    });
 
     if (res.headersSent) {
+      log("RESPONSE_ALREADY_SENT");
       return;
     }
 
@@ -4180,6 +4361,7 @@ const exportAttendanceExcel = async (req, res) => {
       success: false,
       message: "Không thể xuất Excel điểm danh",
       error: error.message,
+      requestId,
     });
   }
 };

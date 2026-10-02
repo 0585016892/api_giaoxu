@@ -625,6 +625,185 @@ const syncStudentParents = async ({
  * =========================================================
  */
 
+/**
+ * =========================================================
+ * AVATAR HELPER
+ * =========================================================
+ *
+ * Mục đích:
+ *
+ * DB hiện tại có thể đang lưu:
+ *
+ * 1. Windows absolute path:
+ *    C:\Users\HungML\Downloads\giaoxu\api_giaoxu\uploads\students\a.png
+ *
+ * 2. Unix path:
+ *    /var/www/api_giaoxu/uploads/students/a.png
+ *
+ * 3. Relative:
+ *    uploads/students/a.png
+ *
+ * 4. Relative:
+ *    /uploads/students/a.png
+ *
+ * 5. Chỉ tên file:
+ *    a.png
+ *
+ * 6. URL:
+ *    https://api.amsacviet.online/uploads/students/a.png
+ *
+ * API sẽ chuẩn hóa tất cả thành:
+ *
+ * https://api.amsacviet.online/uploads/students/a.png
+ * =========================================================
+ */
+
+const getPublicAvatarUrl = (avatar) => {
+  // =====================================================
+  // KHÔNG CÓ AVATAR
+  // =====================================================
+
+  if (avatar === null || avatar === undefined || String(avatar).trim() === "") {
+    return null;
+  }
+
+  // =====================================================
+  // API PUBLIC URL
+  // =====================================================
+
+  const API_PUBLIC_URL = (
+    process.env.API_PUBLIC_URL || "https://api.amsacviet.online"
+  ).replace(/\/+$/, "");
+
+  // =====================================================
+  // STRING
+  // =====================================================
+
+  let value = String(avatar).trim();
+
+  // =====================================================
+  // NẾU ĐÃ LÀ URL
+  // =====================================================
+
+  if (/^https?:\/\//i.test(value)) {
+    return value;
+  }
+
+  // =====================================================
+  // WINDOWS PATH
+  //
+  // C:\Users\...\uploads\students\a.png
+  //
+  // =>
+  //
+  // C:/Users/.../uploads/students/a.png
+  // =====================================================
+
+  value = value.replace(/\\/g, "/");
+
+  const lowerValue = value.toLowerCase();
+
+  // =====================================================
+  // TÌM /uploads/
+  //
+  // Ví dụ:
+  //
+  // C:/Users/HungML/Downloads/giaoxu/api_giaoxu/uploads/students/a.png
+  //
+  // => /uploads/students/a.png
+  // =====================================================
+
+  const uploadIndex = lowerValue.indexOf("/uploads/");
+
+  if (uploadIndex !== -1) {
+    const relativePath = value.substring(uploadIndex);
+
+    return `${API_PUBLIC_URL}${relativePath}`;
+  }
+
+  // =====================================================
+  // uploads/students/a.png
+  // =====================================================
+
+  if (lowerValue.startsWith("uploads/")) {
+    return `${API_PUBLIC_URL}/${value}`;
+  }
+
+  // =====================================================
+  // /uploads/students/a.png
+  // =====================================================
+
+  if (lowerValue.startsWith("/uploads/")) {
+    return `${API_PUBLIC_URL}${value}`;
+  }
+
+  // =====================================================
+  // students/a.png
+  // =====================================================
+
+  if (lowerValue.startsWith("students/")) {
+    return `${API_PUBLIC_URL}/uploads/${value}`;
+  }
+
+  // =====================================================
+  // /students/a.png
+  // =====================================================
+
+  if (lowerValue.startsWith("/students/")) {
+    return `${API_PUBLIC_URL}/uploads${value}`;
+  }
+
+  // =====================================================
+  // CHỈ CÒN TÊN FILE
+  //
+  // a.png
+  //
+  // => /uploads/students/a.png
+  // =====================================================
+
+  const fileName = value.split("/").filter(Boolean).pop();
+
+  if (!fileName) {
+    return null;
+  }
+
+  return `${API_PUBLIC_URL}/uploads/students/${encodeURIComponent(fileName)}`;
+};
+
+/**
+ * =========================================================
+ * NORMALIZE STUDENT AVATAR
+ * =========================================================
+ */
+
+const normalizeStudentAvatar = (student) => {
+  if (!student) {
+    return student;
+  }
+
+  return {
+    ...student,
+
+    avatar: getPublicAvatarUrl(student.avatar),
+  };
+};
+
+/**
+ * =========================================================
+ * NORMALIZE STUDENTS
+ * =========================================================
+ */
+
+const normalizeStudentAvatars = (students = []) => {
+  return students.map((student) => normalizeStudentAvatar(student));
+};
+
+/**
+ * =========================================================
+ * GET STUDENTS
+ * =========================================================
+ */
+
 exports.getStudents = async (req, res) => {
   try {
     console.log("");
@@ -791,14 +970,7 @@ exports.getStudents = async (req, res) => {
     console.log("TOTAL STUDENTS:", total);
 
     // =====================================================
-    // DATA
-    //
-    // LƯU Ý:
-    // LIMIT / OFFSET được nối trực tiếp sau khi
-    // đã ép kiểu số nguyên và giới hạn giá trị.
-    //
-    // Không dùng:
-    // LIMIT ? OFFSET ?
+    // DATA SQL
     // =====================================================
 
     const dataSql = `
@@ -853,12 +1025,6 @@ exports.getStudents = async (req, res) => {
 
     // =====================================================
     // DATA PARAMS
-    //
-    // 2 params đầu tiên cho:
-    // c.church_id = ?
-    // c.church_id = ?
-    //
-    // Sau đó mới đến params của WHERE
     // =====================================================
 
     const dataParams = [churchId, churchId, ...params];
@@ -878,13 +1044,32 @@ exports.getStudents = async (req, res) => {
     console.log("ROWS RETURNED:", rows.length);
 
     // =====================================================
+    // NORMALIZE AVATAR
+    // =====================================================
+
+    const students = normalizeStudentAvatars(rows);
+
+    // =====================================================
+    // LOG AVATAR
+    // =====================================================
+
+    console.log(
+      "AVATAR RESULT:",
+      students.map((student) => ({
+        id: student.id,
+        name: student.name,
+        avatar: student.avatar,
+      })),
+    );
+
+    // =====================================================
     // RESPONSE
     // =====================================================
 
     return res.json({
       success: true,
 
-      data: rows,
+      data: students,
 
       pagination: {
         page,
@@ -902,10 +1087,13 @@ exports.getStudents = async (req, res) => {
     // =====================================================
 
     console.error("");
+
     console.error(
       "============================================================",
     );
+
     console.error("                  GET STUDENTS ERROR");
+
     console.error(
       "============================================================",
     );
@@ -930,8 +1118,30 @@ exports.getStudents = async (req, res) => {
 
 exports.getStudentById = async (req, res) => {
   try {
+    console.log("");
+    console.log("============================================================");
+    console.log("                    GET STUDENT BY ID");
+    console.log("============================================================");
+
+    // =====================================================
+    // CHURCH
+    // =====================================================
+
     const churchId = getChurchId(req);
+
+    // =====================================================
+    // STUDENT ID
+    // =====================================================
+
     const studentId = toInt(req.params.id);
+
+    console.log("CHURCH ID:", churchId);
+
+    console.log("STUDENT ID:", studentId);
+
+    // =====================================================
+    // CHECK CHURCH
+    // =====================================================
 
     if (!churchId) {
       return res.status(403).json({
@@ -940,6 +1150,10 @@ exports.getStudentById = async (req, res) => {
       });
     }
 
+    // =====================================================
+    // CHECK ID
+    // =====================================================
+
     if (!isValidId(studentId)) {
       return res.status(400).json({
         success: false,
@@ -947,16 +1161,26 @@ exports.getStudentById = async (req, res) => {
       });
     }
 
+    // =====================================================
+    // GET STUDENT
+    // =====================================================
+
     const [rows] = await db.execute(
       `
-        SELECT *
-        FROM students
-        WHERE id = ?
-          AND church_id = ?
-        LIMIT 1
-      `,
+          SELECT *
+          FROM students
+
+          WHERE id = ?
+            AND church_id = ?
+
+          LIMIT 1
+        `,
       [studentId, churchId],
     );
+
+    // =====================================================
+    // NOT FOUND
+    // =====================================================
 
     if (rows.length === 0) {
       return res.status(404).json({
@@ -965,58 +1189,115 @@ exports.getStudentById = async (req, res) => {
       });
     }
 
-    const student = rows[0];
+    // =====================================================
+    // STUDENT
+    // =====================================================
+
+    const student = normalizeStudentAvatar(rows[0]);
+
+    console.log("STUDENT AVATAR:", student.avatar);
+
+    // =====================================================
+    // GET CLASSES
+    // =====================================================
 
     const [classes] = await db.execute(
       `
-        SELECT
-          c.id,
-          c.name,
-          c.code
-        FROM class_students cs
-        INNER JOIN classes c
-          ON c.id = cs.class_id
-        WHERE cs.student_id = ?
-          AND c.church_id = ?
-        ORDER BY c.name ASC
-      `,
+          SELECT
+            c.id,
+            c.name,
+            c.code
+
+          FROM class_students cs
+
+          INNER JOIN classes c
+            ON c.id = cs.class_id
+
+          WHERE cs.student_id = ?
+
+            AND c.church_id = ?
+
+          ORDER BY
+            c.name ASC
+        `,
       [studentId, churchId],
     );
+
+    console.log("CLASSES:", classes);
+
+    // =====================================================
+    // GET PARENTS
+    // =====================================================
 
     const [parents] = await db.execute(
       `
-        SELECT
-          ps.id,
-          ps.parent_id,
-          ps.relationship,
-          a.username,
-          a.full_name,
-          a.phone,
-          a.is_active
-        FROM parent_students ps
-        INNER JOIN admins a
-          ON a.id = ps.parent_id
-        WHERE ps.student_id = ?
-          AND ps.church_id = ?
-        ORDER BY ps.id ASC
-      `,
+          SELECT
+            ps.id,
+            ps.parent_id,
+            ps.relationship,
+
+            a.username,
+            a.full_name,
+            a.phone,
+            a.is_active
+
+          FROM parent_students ps
+
+          INNER JOIN admins a
+            ON a.id = ps.parent_id
+
+          WHERE ps.student_id = ?
+
+            AND ps.church_id = ?
+
+          ORDER BY
+            ps.id ASC
+        `,
       [studentId, churchId],
     );
 
+    console.log("PARENTS:", parents);
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
+
     return res.json({
       success: true,
+
       data: {
         ...student,
+
         classes,
+
         parents,
       },
     });
   } catch (error) {
-    console.error("❌ GET STUDENT BY ID:", error);
+    // =====================================================
+    // ERROR
+    // =====================================================
+
+    console.error("");
+
+    console.error(
+      "============================================================",
+    );
+
+    console.error("                GET STUDENT BY ID ERROR");
+
+    console.error(
+      "============================================================",
+    );
+
+    console.error("ERROR:", error);
 
     return res.status(500).json({
       success: false,
+
       message: "Không thể lấy thông tin học sinh",
+
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
@@ -1029,8 +1310,30 @@ exports.getStudentById = async (req, res) => {
 
 exports.getStudentsByClass = async (req, res) => {
   try {
+    console.log("");
+    console.log("============================================================");
+    console.log("                  GET STUDENTS BY CLASS");
+    console.log("============================================================");
+
+    // =====================================================
+    // CHURCH
+    // =====================================================
+
     const churchId = getChurchId(req);
+
+    // =====================================================
+    // CLASS ID
+    // =====================================================
+
     const classId = toInt(req.params.id);
+
+    console.log("CHURCH ID:", churchId);
+
+    console.log("CLASS ID:", classId);
+
+    // =====================================================
+    // CHECK CHURCH
+    // =====================================================
 
     if (!churchId) {
       return res.status(403).json({
@@ -1039,6 +1342,10 @@ exports.getStudentsByClass = async (req, res) => {
       });
     }
 
+    // =====================================================
+    // CHECK CLASS ID
+    // =====================================================
+
     if (!isValidId(classId)) {
       return res.status(400).json({
         success: false,
@@ -1046,16 +1353,33 @@ exports.getStudentsByClass = async (req, res) => {
       });
     }
 
+    // =====================================================
+    // CHECK CLASS
+    // =====================================================
+
     const [classRows] = await db.execute(
       `
-        SELECT id, name, code
-        FROM classes
-        WHERE id = ?
-          AND church_id = ?
-        LIMIT 1
-      `,
+          SELECT
+            id,
+            name,
+            code
+
+          FROM classes
+
+          WHERE id = ?
+
+            AND church_id = ?
+
+          LIMIT 1
+        `,
       [classId, churchId],
     );
+
+    console.log("CLASS:", classRows);
+
+    // =====================================================
+    // CLASS NOT FOUND
+    // =====================================================
 
     if (classRows.length === 0) {
       return res.status(404).json({
@@ -1064,36 +1388,93 @@ exports.getStudentsByClass = async (req, res) => {
       });
     }
 
-    const [students] = await db.execute(
+    // =====================================================
+    // GET STUDENTS
+    // =====================================================
+
+    const [studentRows] = await db.execute(
       `
-        SELECT
-          s.*
-        FROM students s
-        INNER JOIN class_students cs
-          ON cs.student_id = s.id
-        WHERE cs.class_id = ?
-          AND s.church_id = ?
-        ORDER BY s.name ASC, s.id ASC
-      `,
+          SELECT
+            s.*
+
+          FROM students s
+
+          INNER JOIN class_students cs
+            ON cs.student_id = s.id
+
+          WHERE cs.class_id = ?
+
+            AND s.church_id = ?
+
+          ORDER BY
+            s.name ASC,
+            s.id ASC
+        `,
       [classId, churchId],
     );
 
+    console.log("STUDENTS FOUND:", studentRows.length);
+
+    // =====================================================
+    // NORMALIZE AVATAR
+    // =====================================================
+
+    const students = normalizeStudentAvatars(studentRows);
+
+    // =====================================================
+    // LOG AVATAR
+    // =====================================================
+
+    console.log(
+      "AVATAR RESULT:",
+      students.map((student) => ({
+        id: student.id,
+        name: student.name,
+        avatar: student.avatar,
+      })),
+    );
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
+
     return res.json({
       success: true,
+
       data: students,
+
       class: classRows[0],
+
       total: students.length,
     });
   } catch (error) {
-    console.error("❌ GET STUDENTS BY CLASS:", error);
+    // =====================================================
+    // ERROR
+    // =====================================================
+
+    console.error("");
+
+    console.error(
+      "============================================================",
+    );
+
+    console.error("              GET STUDENTS BY CLASS ERROR");
+
+    console.error(
+      "============================================================",
+    );
+
+    console.error("ERROR:", error);
 
     return res.status(500).json({
       success: false,
+
       message: "Không thể lấy học sinh trong lớp",
+
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
-
 /**
  * =========================================================
  * GET STUDENTS BY TEACHER

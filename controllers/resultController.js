@@ -1999,26 +1999,23 @@ exports.exportResultsExcel = async (req, res) => {
 
     const [gradingRuleRows] = await db.query(
       `
-        SELECT id, name, status
-        FROM grading_rules
-        WHERE church_id = ?
-        ORDER BY
-          CASE WHEN status = 'active' THEN 0 ELSE 1 END,
-          id DESC
-        LIMIT 1
-      `,
+    SELECT id, status
+    FROM grading_rules
+    WHERE church_id = ?
+    ORDER BY
+      CASE WHEN status = 'active' THEN 0 ELSE 1 END,
+      id DESC
+    LIMIT 1
+  `,
       [churchId],
     );
-
     const gradingRule = gradingRuleRows[0] || null;
 
     log("KẾT QUẢ QUY TẮC CHẤM ĐIỂM", {
       found: Boolean(gradingRule),
       gradingRuleId: gradingRule?.id || null,
-      gradingRuleName: gradingRule?.name || null,
       status: gradingRule?.status || null,
     });
-
     // -------------------------------------------------
     // 5. LẤY CÁC ĐẦU ĐIỂM
     // -------------------------------------------------

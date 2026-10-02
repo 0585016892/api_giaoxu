@@ -1,4 +1,19 @@
 const db = require("../config/db");
+const ExcelJS = require("exceljs");
+
+/**
+ * =========================================================
+ * EXPORT EXCEL ATTENDANCE
+ * GET /attendance/export-excel
+ *
+ * Query:
+ * - date
+ * - attendance_type: mass | catechism
+ * - class_id: bắt buộc với catechism
+ * - search
+ * - status
+ * =========================================================
+ */
 
 /**
  * =========================================================
@@ -3738,6 +3753,437 @@ const getClassStatistics = async (req, res) => {
   }
 };
 
+const exportAttendanceExcel = async (req, res) => {
+  try {
+    const churchId = getChurchId(req);
+
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ",
+      });
+    }
+
+    const {
+      date,
+      attendance_type = "catechism",
+      class_id,
+      search = "",
+      status = "all",
+    } = req.query;
+
+    // -----------------------------------------------------
+    // VALIDATE
+    // -----------------------------------------------------
+
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+      return res.status(400).json({
+        success: false,
+        message: "Ngày điểm danh không hợp lệ",
+      });
+    }
+
+    if (!["mass", "catechism"].includes(attendance_type)) {
+      return res.status(400).json({
+        success: false,
+        message: "Loại điểm danh không hợp lệ",
+      });
+    }
+
+    let classId = null;
+
+    if (attendance_type === "catechism") {
+      classId = Number(class_id);
+
+      if (!Number.isInteger(classId) || classId <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Vui lòng chọn lớp giáo lý",
+        });
+      }
+    }
+
+    const allowedStatuses = ["all", "present", "absent", "late", "excused"];
+
+    const finalStatus = String(status || "all").toLowerCase();
+
+    if (!allowedStatuses.includes(finalStatus)) {
+      return res.status(400).json({
+        success: false,
+        message: "Trạng thái điểm danh không hợp lệ",
+      });
+    }
+
+    // -----------------------------------------------------
+    // SQL CONDITIONS
+    // -----------------------------------------------------
+
+    const where = [
+      "a.church_id = ?",
+      "a.attendance_date = ?",
+      "a.attendance_type = ?",
+    ];
+
+    const values = [churchId, date, attendance_type];
+
+    if (attendance_type === "catechism") {
+      where.push("a.class_id = ?");
+      values.push(classId);
+    }
+
+    if (finalStatus !== "all") {
+      where.push("a.status = ?");
+      values.push(finalStatus);
+    }
+
+    if (String(search).trim()) {
+      where.push(`(
+        s.full_name LIKE ?
+        OR s.student_code LIKE ?
+        OR s.qr_code LIKE ?
+      )`);
+
+      const keyword = `%${String(search).trim()}%`;
+
+      values.push(keyword, keyword, keyword);
+    }
+
+    // -----------------------------------------------------
+    // QUERY
+    //
+    // Lưu ý:
+    // Nếu bảng students của bạn dùng tên cột khác
+    // (ví dụ name thay cho full_name), chỉnh tại đây.
+    // -----------------------------------------------------
+
+    const sql = `
+      SELECT
+        a.id,
+        a.student_id,
+        a.class_id,
+        a.attendance_date,
+        a.attendance_type,
+        a.status,
+        a.check_in_time,
+        a.note,
+
+        s.student_code,
+        s.full_name,
+
+        c.name AS class_name
+
+      FROM attendances a
+
+      INNER JOIN students s
+        ON s.id = a.student_id
+        AND s.church_id = a.church_id
+
+      LEFT JOIN classes c
+        ON c.id = a.class_id
+        AND c.church_id = a.church_id
+
+      WHERE ${where.join(" AND ")}
+
+      ORDER BY
+        c.name ASC,
+        s.full_name ASC,
+        s.id ASC
+    `;
+
+    const [rows] = await db.execute(sql, values);
+
+    // -----------------------------------------------------
+    // EXCEL WORKBOOK
+    // -----------------------------------------------------
+
+    const workbook = new ExcelJS.Workbook();
+
+    workbook.creator = "FaithEdu";
+    workbook.created = new Date();
+    workbook.modified = new Date();
+
+    const worksheet = workbook.addWorksheet("Diem danh", {
+      views: [{ state: "frozen", ySplit: 5 }],
+    });
+
+    worksheet.columns = [
+      { key: "index", width: 8 },
+      { key: "student_code", width: 18 },
+      { key: "full_name", width: 30 },
+      { key: "class_name", width: 24 },
+      { key: "attendance_date", width: 16 },
+      { key: "attendance_type", width: 20 },
+      { key: "status", width: 18 },
+      { key: "check_in_time", width: 20 },
+      { key: "note", width: 35 },
+    ];
+
+    // -----------------------------------------------------
+    // TITLE
+    // -----------------------------------------------------
+
+    worksheet.mergeCells("A1:I1");
+
+    const titleCell = worksheet.getCell("A1");
+
+    titleCell.value = "DANH SÁCH ĐIỂM DANH";
+    titleCell.font = {
+      name: "Arial",
+      size: 16,
+      bold: true,
+      color: { argb: "FFFFFFFF" },
+    };
+    titleCell.alignment = {
+      horizontal: "center",
+      vertical: "middle",
+    };
+    titleCell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF173B5E" },
+    };
+
+    worksheet.getRow(1).height = 32;
+
+    // -----------------------------------------------------
+    // INFORMATION
+    // -----------------------------------------------------
+
+    worksheet.mergeCells("A2:I2");
+
+    worksheet.getCell("A2").value = `Ngày: ${date} | Loại: ${
+      attendance_type === "mass" ? "Thánh lễ" : "Học Giáo lý"
+    }`;
+
+    worksheet.getCell("A2").font = {
+      name: "Arial",
+      size: 11,
+      italic: true,
+      color: { argb: "FF475569" },
+    };
+
+    worksheet.getCell("A2").alignment = {
+      horizontal: "center",
+      vertical: "middle",
+    };
+
+    worksheet.getRow(2).height = 24;
+
+    worksheet.mergeCells("A3:I3");
+
+    worksheet.getCell("A3").value = `Tổng số: ${rows.length} học sinh`;
+
+    worksheet.getCell("A3").font = {
+      name: "Arial",
+      size: 11,
+      bold: true,
+      color: { argb: "FF173B5E" },
+    };
+
+    worksheet.getCell("A3").alignment = {
+      horizontal: "center",
+      vertical: "middle",
+    };
+
+    worksheet.getRow(3).height = 22;
+
+    // Dòng trống
+    worksheet.getRow(4).height = 8;
+
+    // -----------------------------------------------------
+    // TABLE HEADER
+    // -----------------------------------------------------
+
+    const headerRow = worksheet.getRow(5);
+
+    headerRow.values = [
+      "STT",
+      "Mã học sinh",
+      "Họ và tên",
+      "Lớp",
+      "Ngày điểm danh",
+      "Loại điểm danh",
+      "Trạng thái",
+      "Giờ điểm danh",
+      "Ghi chú",
+    ];
+
+    headerRow.height = 28;
+
+    headerRow.eachCell((cell) => {
+      cell.font = {
+        name: "Arial",
+        size: 10,
+        bold: true,
+        color: { argb: "FFFFFFFF" },
+      };
+
+      cell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+        wrapText: true,
+      };
+
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFD9A441" },
+      };
+
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFE2E8F0" } },
+        bottom: { style: "thin", color: { argb: "FFE2E8F0" } },
+        left: { style: "thin", color: { argb: "FFE2E8F0" } },
+        right: { style: "thin", color: { argb: "FFE2E8F0" } },
+      };
+    });
+
+    // -----------------------------------------------------
+    // DATA
+    // -----------------------------------------------------
+
+    const statusLabels = {
+      present: "Có mặt",
+      absent: "Vắng",
+      late: "Đi muộn",
+      excused: "Có phép",
+    };
+
+    rows.forEach((item, index) => {
+      const row = worksheet.addRow([
+        index + 1,
+        item.student_code || "",
+        item.full_name || "",
+        item.class_name || "",
+        item.attendance_date ? String(item.attendance_date).slice(0, 10) : "",
+        item.attendance_type === "mass" ? "Thánh lễ" : "Học Giáo lý",
+        statusLabels[item.status] || item.status || "",
+        item.check_in_time || "",
+        item.note || "",
+      ]);
+
+      row.height = 24;
+
+      row.eachCell((cell) => {
+        cell.font = {
+          name: "Arial",
+          size: 10,
+          color: { argb: "FF334155" },
+        };
+
+        cell.alignment = {
+          vertical: "middle",
+          horizontal: "left",
+          wrapText: true,
+        };
+
+        cell.border = {
+          top: { style: "thin", color: { argb: "FFE2E8F0" } },
+          bottom: { style: "thin", color: { argb: "FFE2E8F0" } },
+          left: { style: "thin", color: { argb: "FFE2E8F0" } },
+          right: { style: "thin", color: { argb: "FFE2E8F0" } },
+        };
+      });
+
+      row.getCell(1).alignment = {
+        horizontal: "center",
+        vertical: "middle",
+      };
+
+      row.getCell(5).alignment = {
+        horizontal: "center",
+        vertical: "middle",
+      };
+
+      row.getCell(7).alignment = {
+        horizontal: "center",
+        vertical: "middle",
+      };
+
+      row.getCell(8).alignment = {
+        horizontal: "center",
+        vertical: "middle",
+      };
+
+      const statusCell = row.getCell(7);
+
+      const statusColors = {
+        present: "FFE8F5E9",
+        absent: "FFFFEBEE",
+        late: "FFFFF3E0",
+        excused: "FFE3F2FD",
+      };
+
+      if (statusColors[item.status]) {
+        statusCell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: statusColors[item.status] },
+        };
+      }
+    });
+
+    // -----------------------------------------------------
+    // PRINT SETTINGS
+    // -----------------------------------------------------
+
+    worksheet.autoFilter = {
+      from: "A5",
+      to: "I5",
+    };
+
+    worksheet.pageSetup = {
+      paperSize: worksheet.PAPER_A4,
+      orientation: "landscape",
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 0,
+      margins: {
+        left: 0.25,
+        right: 0.25,
+        top: 0.5,
+        bottom: 0.5,
+        header: 0.2,
+        footer: 0.2,
+      },
+    };
+
+    // -----------------------------------------------------
+    // RESPONSE
+    // -----------------------------------------------------
+
+    const buffer = await workbook.xlsx.writeBuffer();
+
+    const filename = `diem-danh-${attendance_type}-${date}.xlsx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    );
+
+    res.setHeader("Content-Length", buffer.length);
+
+    return res.status(200).send(Buffer.from(buffer));
+  } catch (error) {
+    console.error("[exportAttendanceExcel] ERROR:", error);
+
+    if (res.headersSent) {
+      return;
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể xuất Excel điểm danh",
+      error: error.message,
+    });
+  }
+};
+
 /**
  * =========================================================
  * EXPORT
@@ -3753,4 +4199,5 @@ module.exports = {
   getClassStatistics,
   scanQRCode,
   finishAttendance,
+  exportAttendanceExcel,
 };

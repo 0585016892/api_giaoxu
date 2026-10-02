@@ -20,7 +20,11 @@ const { verifyToken } = require("../middleware/authMiddleware");
  * /api/attendance?class_id=17&date=2026-09-01
  */
 router.get("/", verifyToken, attendanceController.getAttendance);
-
+router.get(
+  "/export-excel",
+  verifyToken,
+  attendanceController.exportAttendanceExcel,
+);
 /**
  * Lưu điểm danh cả lớp
  *

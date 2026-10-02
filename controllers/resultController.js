@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const ExcelJS = require("exceljs");
 
 // =========================================================
 // HELPERS
@@ -541,11 +542,6 @@ exports.getStudentStatistics = async (req, res) => {
 // GRADING RULE
 // =========================================================
 
-/**
- * GET /api/results/rule/:ruleId
- *
- * Lấy các kết quả thuộc một grading rule
- */
 exports.getResultsByRule = async (req, res) => {
   try {
     const churchId = getChurchId(req);
@@ -632,11 +628,6 @@ exports.getResultsByRule = async (req, res) => {
   }
 };
 
-/**
- * GET /api/results/rule-item/:ruleItemId
- *
- * Lấy kết quả của một đầu điểm
- */
 exports.getResultsByRuleItem = async (req, res) => {
   try {
     const churchId = getChurchId(req);
@@ -723,20 +714,6 @@ exports.getResultsByRuleItem = async (req, res) => {
 // GET ALL
 // =========================================================
 
-/**
- * GET /api/results
- *
- * Danh sách kết quả
- *
- * Query:
- * ?page=1
- * &limit=20
- * &student_id=1
- * &grading_rule_id=1
- * &grading_rule_item_id=2
- * &class_id=3
- * &exam_type=paper
- */
 exports.getResults = async (req, res) => {
   try {
     const churchId = getChurchId(req);
@@ -1890,6 +1867,527 @@ exports.getClassLeaderboard = async (req, res) => {
       success: false,
       message: "Không thể lấy bảng thành tích của lớp",
       error: error.message,
+    });
+  }
+};
+// =========================================================
+// EXPORT EXCEL BY CLASS
+// GET /api/results/export-excel/:classId
+// =========================================================
+
+exports.exportResultsExcel = async (req, res) => {
+  try {
+    // =====================================================
+    // 1. LẤY DỮ LIỆU
+    // =====================================================
+    // Giữ nguyên phần truy vấn giáo xứ, lớp, quy tắc chấm điểm,
+    // học sinh và kết quả từ API gốc của m tại đây.
+    //
+    // Các biến cần có:
+    // church, classInfo, gradingRules, gradingItems,
+    // students, results
+
+    // Ví dụ cấu trúc:
+    // const { churchId, classId } = req.params;
+    // ... truy vấn database hiện có của m ...
+
+    if (
+      typeof church === "undefined" ||
+      typeof classInfo === "undefined" ||
+      typeof students === "undefined" ||
+      typeof results === "undefined"
+    ) {
+      return res.status(500).json({
+        success: false,
+        message: "Chưa cấu hình phần truy vấn dữ liệu theo API gốc.",
+      });
+    }
+
+    // =====================================================
+    // 2. BẢNG MÀU
+    // =====================================================
+    const COLORS = {
+      navy: "17365D",
+      navyLight: "24476B",
+      gold: "F2C94C",
+      goldLight: "FFF2CC",
+      blueLight: "D9EAF7",
+      bluePale: "F2F7FC",
+      green: "548235",
+      greenLight: "E2F0D9",
+      orangeLight: "FCE4D6",
+      purpleLight: "E4DFEC",
+      pinkLight: "F4CCCC",
+      white: "FFFFFF",
+      text: "243247",
+      muted: "667085",
+      border: "D6DEE8",
+      grayLight: "F2F4F7",
+    };
+
+    const workbook = new ExcelJS.Workbook();
+
+    workbook.creator = "FaithEdu";
+    workbook.lastModifiedBy = "FaithEdu";
+    workbook.created = new Date();
+    workbook.modified = new Date();
+    workbook.subject = "Bảng điểm học sinh";
+    workbook.title = "Bảng điểm FaithEdu";
+    workbook.company = "FaithEdu";
+
+    workbook.views = [
+      {
+        x: 0,
+        y: 0,
+        width: 18000,
+        height: 10000,
+        firstSheet: 0,
+        activeTab: 0,
+        visibility: "visible",
+      },
+    ];
+
+    // =====================================================
+    // 3. SHEET BẢNG ĐIỂM
+    // =====================================================
+    const worksheet = workbook.addWorksheet("Bang diem", {
+      properties: {
+        tabColor: { argb: COLORS.gold },
+        defaultRowHeight: 24,
+      },
+      views: [{ state: "frozen", xSplit: 2, ySplit: 5 }],
+    });
+
+    worksheet.columns = [
+      { header: "STT", key: "stt", width: 8 },
+      { header: "Họ và tên", key: "fullName", width: 30 },
+      { header: "Ngày sinh", key: "birthday", width: 16 },
+      { header: "Giới tính", key: "gender", width: 14 },
+      { header: "Mã học sinh", key: "studentCode", width: 18 },
+      { header: "Điểm", key: "score", width: 14 },
+      { header: "Xếp loại", key: "rank", width: 18 },
+      { header: "Ghi chú", key: "note", width: 28 },
+    ];
+
+    // Tiêu đề
+    worksheet.mergeCells("A1:H1");
+
+    const titleCell = worksheet.getCell("A1");
+    titleCell.value = "BẢNG TỔNG HỢP KẾT QUẢ HỌC TẬP";
+
+    titleCell.font = {
+      name: "Arial",
+      size: 18,
+      bold: true,
+      color: { argb: COLORS.white },
+    };
+
+    titleCell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: COLORS.navy },
+    };
+
+    titleCell.alignment = {
+      horizontal: "center",
+      vertical: "middle",
+    };
+
+    worksheet.getRow(1).height = 42;
+
+    // Thông tin lớp học
+    worksheet.mergeCells("A2:H2");
+    worksheet.getCell("A2").value = `Giáo xứ: ${church.name || ""}`;
+
+    worksheet.mergeCells("A3:H3");
+    worksheet.getCell("A3").value = `Lớp: ${classInfo.name || ""}`;
+
+    worksheet.mergeCells("A4:H4");
+    worksheet.getCell("A4").value =
+      `Ngày xuất báo cáo: ${new Date().toLocaleDateString("vi-VN")}`;
+
+    [2, 3, 4].forEach((rowNumber) => {
+      const row = worksheet.getRow(rowNumber);
+
+      row.height = 25;
+
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.font = {
+          name: "Arial",
+          size: 11,
+          bold: rowNumber !== 4,
+          color: { argb: COLORS.text },
+        };
+
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: {
+            argb: rowNumber === 4 ? COLORS.grayLight : COLORS.goldLight,
+          },
+        };
+
+        cell.alignment = {
+          vertical: "middle",
+          horizontal: "left",
+          indent: 1,
+        };
+      });
+    });
+
+    // Header ở hàng 5
+    const headerRow = worksheet.getRow(5);
+    headerRow.values = [
+      "STT",
+      "Họ và tên",
+      "Ngày sinh",
+      "Giới tính",
+      "Mã học sinh",
+      "Điểm",
+      "Xếp loại",
+      "Ghi chú",
+    ];
+
+    headerRow.height = 34;
+
+    headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      cell.font = {
+        name: "Arial",
+        size: 11,
+        bold: true,
+        color: {
+          argb: colNumber === 6 ? COLORS.navy : COLORS.white,
+        },
+      };
+
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: {
+          argb: colNumber === 6 ? COLORS.gold : COLORS.navyLight,
+        },
+      };
+
+      cell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+        wrapText: true,
+      };
+
+      cell.border = {
+        top: { style: "medium", color: COLORS.gold },
+        bottom: { style: "medium", color: COLORS.gold },
+        left: { style: "thin", color: COLORS.border },
+        right: { style: "thin", color: COLORS.border },
+      };
+    });
+
+    // =====================================================
+    // 4. THÊM DỮ LIỆU HỌC SINH
+    // =====================================================
+    students.forEach((student, index) => {
+      const studentResult = results.find(
+        (item) =>
+          String(item.student_id ?? item.studentId) === String(student.id),
+      );
+
+      const row = worksheet.addRow({
+        stt: index + 1,
+        fullName: student.full_name || student.fullName || student.name || "",
+        birthday: student.birthday ? new Date(student.birthday) : "",
+        gender: student.gender || "",
+        studentCode: student.student_code || student.studentCode || "",
+        score: studentResult?.score ?? studentResult?.total_score ?? "",
+        rank: studentResult?.rank || studentResult?.classification || "",
+        note: studentResult?.note || "",
+      });
+
+      row.height = 27;
+
+      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        cell.font = {
+          name: "Arial",
+          size: 10,
+          color: { argb: COLORS.text },
+        };
+
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: {
+            argb: index % 2 === 0 ? COLORS.white : COLORS.bluePale,
+          },
+        };
+
+        cell.border = {
+          top: { style: "thin", color: COLORS.border },
+          bottom: { style: "thin", color: COLORS.border },
+          left: { style: "thin", color: COLORS.border },
+          right: { style: "thin", color: COLORS.border },
+        };
+
+        cell.alignment = {
+          vertical: "middle",
+          horizontal: [1, 3, 4, 5, 6, 7].includes(colNumber)
+            ? "center"
+            : "left",
+          wrapText: true,
+        };
+      });
+
+      const scoreCell = row.getCell(6);
+
+      if (scoreCell.value !== "" && scoreCell.value != null) {
+        scoreCell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: COLORS.greenLight },
+        };
+
+        scoreCell.font = {
+          name: "Arial",
+          size: 11,
+          bold: true,
+          color: { argb: COLORS.green },
+        };
+      } else {
+        scoreCell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: COLORS.goldLight },
+        };
+      }
+
+      if (row.getCell(3).value instanceof Date) {
+        row.getCell(3).numFmt = "dd/mm/yyyy";
+      }
+    });
+
+    // =====================================================
+    // 5. SHEET CHI TIẾT ĐIỂM
+    // =====================================================
+    const detailSheet = workbook.addWorksheet("Chi tiet diem", {
+      properties: {
+        tabColor: { argb: COLORS.green },
+        defaultRowHeight: 24,
+      },
+      views: [{ state: "frozen", ySplit: 1 }],
+    });
+
+    detailSheet.columns = [
+      { header: "STT", key: "stt", width: 8 },
+      { header: "Họ và tên", key: "fullName", width: 28 },
+      { header: "Mã học sinh", key: "studentCode", width: 18 },
+      { header: "Nội dung", key: "itemName", width: 32 },
+      { header: "Điểm", key: "score", width: 14 },
+      { header: "Ngày kiểm tra", key: "examDate", width: 18 },
+      { header: "Ghi chú", key: "note", width: 28 },
+    ];
+
+    detailSheet.mergeCells("A1:G1");
+    detailSheet.getCell("A1").value = "CHI TIẾT KẾT QUẢ HỌC TẬP";
+
+    detailSheet.getCell("A1").font = {
+      name: "Arial",
+      size: 16,
+      bold: true,
+      color: { argb: COLORS.white },
+    };
+
+    detailSheet.getCell("A1").fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: COLORS.green },
+    };
+
+    detailSheet.getCell("A1").alignment = {
+      horizontal: "center",
+      vertical: "middle",
+    };
+
+    detailSheet.getRow(1).height = 38;
+
+    const detailHeader = detailSheet.getRow(2);
+
+    detailHeader.values = [
+      "STT",
+      "Họ và tên",
+      "Mã học sinh",
+      "Nội dung",
+      "Điểm",
+      "Ngày kiểm tra",
+      "Ghi chú",
+    ];
+
+    detailHeader.height = 32;
+
+    detailHeader.eachCell({ includeEmpty: true }, (cell) => {
+      cell.font = {
+        name: "Arial",
+        size: 11,
+        bold: true,
+        color: { argb: COLORS.white },
+      };
+
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: COLORS.green },
+      };
+
+      cell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+        wrapText: true,
+      };
+
+      cell.border = {
+        top: { style: "medium", color: COLORS.gold },
+        bottom: { style: "medium", color: COLORS.gold },
+        left: { style: "thin", color: COLORS.border },
+        right: { style: "thin", color: COLORS.border },
+      };
+    });
+
+    // Đổi `results` và các tên trường bên dưới theo cấu trúc
+    // dữ liệu chi tiết điểm thực tế trong API gốc.
+    results.forEach((result, index) => {
+      const student = students.find(
+        (item) =>
+          String(item.id) === String(result.student_id ?? result.studentId),
+      );
+
+      const row = detailSheet.addRow({
+        stt: index + 1,
+        fullName:
+          student?.full_name || student?.fullName || student?.name || "",
+        studentCode: student?.student_code || student?.studentCode || "",
+        itemName:
+          result.item_name ||
+          result.itemName ||
+          result.exam_name ||
+          result.examName ||
+          "Kết quả học tập",
+        score: result.score ?? result.total_score ?? "",
+        examDate: result.exam_date ? new Date(result.exam_date) : "",
+        note: result.note || "",
+      });
+
+      row.height = 25;
+
+      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        cell.font = {
+          name: "Arial",
+          size: 10,
+          color: { argb: COLORS.text },
+        };
+
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: {
+            argb: index % 2 === 0 ? COLORS.white : COLORS.greenLight,
+          },
+        };
+
+        cell.border = {
+          top: { style: "thin", color: COLORS.border },
+          bottom: { style: "thin", color: COLORS.border },
+          left: { style: "thin", color: COLORS.border },
+          right: { style: "thin", color: COLORS.border },
+        };
+
+        cell.alignment = {
+          vertical: "middle",
+          horizontal: [1, 3, 5, 6].includes(colNumber) ? "center" : "left",
+          wrapText: true,
+        };
+      });
+
+      const scoreCell = row.getCell(5);
+
+      if (scoreCell.value !== "" && scoreCell.value != null) {
+        scoreCell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: COLORS.goldLight },
+        };
+
+        scoreCell.font = {
+          name: "Arial",
+          size: 11,
+          bold: true,
+          color: { argb: COLORS.navy },
+        };
+      }
+
+      if (row.getCell(6).value instanceof Date) {
+        row.getCell(6).numFmt = "dd/mm/yyyy";
+      }
+    });
+
+    // =====================================================
+    // 6. CẤU HÌNH IN VÀ TRANG
+    // =====================================================
+    [worksheet, detailSheet].forEach((sheet) => {
+      sheet.pageSetup = {
+        paperSize: 9, // A4
+        orientation: "landscape",
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 0,
+        margins: {
+          left: 0.25,
+          right: 0.25,
+          top: 0.5,
+          bottom: 0.5,
+          header: 0.2,
+          footer: 0.2,
+        },
+      };
+
+      sheet.headerFooter.oddFooter = "&LFaithEdu&CTrang &P / &N&RNgày in: &D";
+
+      sheet.properties.defaultRowHeight = 24;
+    });
+
+    worksheet.pageSetup.printTitlesRow = "1:5";
+    detailSheet.pageSetup.printTitlesRow = "1:2";
+
+    worksheet.autoFilter = {
+      from: "A5",
+      to: "H5",
+    };
+
+    detailSheet.autoFilter = {
+      from: "A2",
+      to: "G2",
+    };
+
+    // =====================================================
+    // 7. XUẤT FILE EXCEL
+    // =====================================================
+    const buffer = await workbook.xlsx.writeBuffer();
+
+    const fileName = `Bang_diem_FaithEdu_${Date.now()}.xlsx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+
+    res.setHeader("Content-Length", buffer.length);
+
+    return res.status(200).send(Buffer.from(buffer));
+  } catch (error) {
+    console.error("Lỗi exportResultsExcel:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể xuất file Excel.",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };

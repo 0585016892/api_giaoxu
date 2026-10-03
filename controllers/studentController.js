@@ -4710,578 +4710,135 @@ exports.deleteStudentsBulk = async (req, res) => {
  * =========================================================
  */
 
-exports.importStudentsExcel = async (req, res) => {
-  const connection = await db.getConnection();
-
-  let transactionStarted = false;
-
-  try {
-    const churchId = getChurchId(req);
-
-    if (!churchId) {
-      return res.status(403).json({
-        success: false,
-        message: "Không xác định được giáo xứ",
-      });
-    }
-
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        message: "Vui lòng chọn file Excel",
-      });
-    }
-
-    const fileName = String(req.file.originalname || "").toLowerCase();
-
-    if (!fileName.endsWith(".xlsx") && !fileName.endsWith(".xls")) {
-      return res.status(400).json({
-        success: false,
-        message: "Chỉ hỗ trợ file Excel .xlsx hoặc .xls",
-      });
-    }
-
-    /**
-     * -------------------------------------------------------
-     * READ EXCEL
-     * -------------------------------------------------------
-     */
-
-    const workbook = XLSX.read(req.file.buffer, {
-      type: "buffer",
-      cellDates: true,
-    });
-
-    const sheetName = workbook.SheetNames[0];
-
-    if (!sheetName) {
-      return res.status(400).json({
-        success: false,
-        message: "File Excel không có sheet",
-      });
-    }
-
-    const worksheet = workbook.Sheets[sheetName];
-
-    const rows = XLSX.utils.sheet_to_json(worksheet, {
-      defval: null,
-      raw: true,
-    });
-
-    if (!rows.length) {
-      return res.status(400).json({
-        success: false,
-        message: "File Excel không có dữ liệu",
-      });
-    }
-
-    if (rows.length > 1000) {
-      return res.status(400).json({
-        success: false,
-        message: "Mỗi lần chỉ được import tối đa 1000 học sinh",
-      });
-    }
-
-    /**
-     * -------------------------------------------------------
-     * CHECK HEADER NAME
-     * -------------------------------------------------------
-     */
-
-    const firstRow = rows[0];
-
-    const normalizedHeaders = Object.keys(firstRow).map((key) =>
-      String(key).trim().toLowerCase(),
-    );
-
-    if (!normalizedHeaders.includes("name")) {
-      return res.status(400).json({
-        success: false,
-        message: "File Excel bắt buộc phải có cột name",
-      });
-    }
-
-    /**
-     * -------------------------------------------------------
-     * TRANSACTION
-     * -------------------------------------------------------
-     */
-
-    await connection.beginTransaction();
-
-    transactionStarted = true;
-
-    /**
-     * Cache class
-     */
-    const classCache = new Map();
-
-    /**
-     * Lấy ID cuối
-     */
-    const [lastStudentRows] = await connection.execute(
-      `
-          SELECT id
-          FROM students
-          ORDER BY id DESC
-          LIMIT 1
-          FOR UPDATE
-        `,
-    );
-
-    let nextId =
-      lastStudentRows.length > 0 ? Number(lastStudentRows[0].id) + 1 : 1;
-
-    const successRows = [];
-    const errorRows = [];
-
-    /**
-     * -------------------------------------------------------
-     * LOOP
-     * -------------------------------------------------------
-     */
-
-    for (let index = 0; index < rows.length; index++) {
-      const row = rows[index];
-
-      const excelRow = index + 2;
-
-      try {
-        /**
-         * NAME
-         */
-        const name = normalizeValue(row.name);
-
-        if (!name) {
-          throw new Error("Thiếu tên học sinh");
-        }
-
-        /**
-         * GENDER
-         */
-        const gender = normalizeValue(row.gender);
-
-        if (gender && !VALID_GENDERS.includes(gender)) {
-          throw new Error(`gender không hợp lệ: ${gender}`);
-        }
-
-        /**
-         * STATUS
-         */
-        const status = normalizeValue(row.status) || "active";
-
-        if (!VALID_STUDENT_STATUS.includes(status)) {
-          throw new Error(`status không hợp lệ: ${status}`);
-        }
-
-        /**
-         * CATECHISM STATUS
-         */
-        const catechismStatus = normalizeValue(row.catechism_status) || "new";
-
-        if (!VALID_CATECHISM_STATUS.includes(catechismStatus)) {
-          throw new Error(`catechism_status không hợp lệ: ${catechismStatus}`);
-        }
-
-        /**
-         * DATES
-         */
-        const dateOfBirth = normalizeDate(row.date_of_birth);
-
-        const baptismDate = normalizeDate(row.baptism_date);
-
-        const firstCommunionDate = normalizeDate(row.first_communion_date);
-
-        const confirmationDate = normalizeDate(row.confirmation_date);
-
-        const enrollmentDate = normalizeDate(row.enrollment_date);
-
-        const dates = [
-          {
-            name: "date_of_birth",
-            value: dateOfBirth,
-          },
-          {
-            name: "baptism_date",
-            value: baptismDate,
-          },
-          {
-            name: "first_communion_date",
-            value: firstCommunionDate,
-          },
-          {
-            name: "confirmation_date",
-            value: confirmationDate,
-          },
-          {
-            name: "enrollment_date",
-            value: enrollmentDate,
-          },
-        ];
-
-        for (const date of dates) {
-          if (!isValidDateString(date.value)) {
-            throw new Error(`${date.name} không hợp lệ`);
-          }
-        }
-
-        /**
-         * ---------------------------------------------------
-         * CLASS
-         * ---------------------------------------------------
-         */
-
-        const rawClassId =
-          row.class_id !== undefined &&
-          row.class_id !== null &&
-          row.class_id !== ""
-            ? Number(row.class_id)
-            : null;
-
-        let classId = null;
-
-        if (rawClassId !== null) {
-          if (!Number.isInteger(rawClassId)) {
-            throw new Error(`class_id không hợp lệ: ${row.class_id}`);
-          }
-
-          if (classCache.has(rawClassId)) {
-            classId = classCache.get(rawClassId);
-          } else {
-            const validClassId = await checkClassBelongsToChurch(
-              connection,
-              rawClassId,
-              churchId,
-            );
-
-            if (!validClassId) {
-              throw new Error(
-                `Lớp ${rawClassId} không tồn tại hoặc không thuộc giáo xứ`,
-              );
-            }
-
-            classId = validClassId;
-
-            classCache.set(rawClassId, validClassId);
-          }
-        }
-
-        /**
-         * ---------------------------------------------------
-         * CODE
-         * ---------------------------------------------------
-         */
-
-        let code = normalizeValue(row.code);
-
-        if (!code) {
-          code = `HS${String(nextId).padStart(6, "0")}`;
-        }
-
-        /**
-         * CHECK CODE
-         */
-        const [codeRows] = await connection.execute(
-          `
-              SELECT id
-              FROM students
-              WHERE code = ?
-              LIMIT 1
-              FOR UPDATE
-            `,
-          [code],
-        );
-
-        if (codeRows.length > 0) {
-          throw new Error(`Mã học sinh ${code} đã tồn tại`);
-        }
-
-        /**
-         * QR
-         */
-        const qrToken = `${churchId}-${Date.now()}-${index}-${Math.random()
-          .toString(36)
-          .substring(2, 10)}`;
-
-        /**
-         * ---------------------------------------------------
-         * INSERT
-         * ---------------------------------------------------
-         */
-
-        const [result] = await connection.execute(
-          `
-              INSERT INTO students (
-                church_id,
-                code,
-                qr_token,
-                name,
-                gender,
-                date_of_birth,
-                birth_place,
-                nationality,
-                phone,
-                email,
-                address,
-                parish,
-
-                father_name,
-                father_phone,
-
-                mother_name,
-                mother_phone,
-
-                guardian_name,
-                guardian_phone,
-                guardian_relationship,
-
-                baptism_name,
-                baptism_date,
-                baptism_place,
-                baptism_parish,
-                baptism_certificate_no,
-
-                saint_name,
-
-                first_communion_date,
-                first_communion_place,
-
-                confirmation_date,
-                confirmation_place,
-                confirmation_saint_name,
-
-                catechism_level,
-                catechism_status,
-                enrollment_date,
-
-                note,
-                avatar,
-                status
-              )
-              VALUES (
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-
-                ?,
-                ?,
-
-                ?,
-                ?,
-
-                ?,
-                ?,
-                ?,
-
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-
-                ?,
-
-                ?,
-                ?,
-
-                ?,
-                ?,
-                ?,
-
-                ?,
-                ?,
-                ?,
-
-                ?,
-                ?,
-                ?
-              )
-            `,
-          [
-            churchId,
-            code,
-            qrToken,
-            name,
-            gender,
-            dateOfBirth,
-            normalizeValue(row.birth_place),
-            normalizeValue(row.nationality) || "Việt Nam",
-            normalizeValue(row.phone),
-            normalizeValue(row.email),
-            normalizeValue(row.address),
-            normalizeValue(row.parish),
-
-            normalizeValue(row.father_name),
-            normalizeParentPhone(row.father_phone),
-
-            normalizeValue(row.mother_name),
-            normalizeParentPhone(row.mother_phone),
-
-            normalizeValue(row.guardian_name),
-            normalizeParentPhone(row.guardian_phone),
-            normalizeValue(row.guardian_relationship),
-
-            normalizeValue(row.baptism_name),
-            baptismDate,
-            normalizeValue(row.baptism_place),
-            normalizeValue(row.baptism_parish),
-            normalizeValue(row.baptism_certificate_no),
-
-            normalizeValue(row.saint_name),
-
-            firstCommunionDate,
-            normalizeValue(row.first_communion_place),
-
-            confirmationDate,
-            normalizeValue(row.confirmation_place),
-            normalizeValue(row.confirmation_saint_name),
-
-            normalizeValue(row.catechism_level),
-            catechismStatus,
-            enrollmentDate,
-
-            normalizeValue(row.note),
-            normalizeValue(row.avatar),
-            status,
-          ],
-        );
-
-        const studentId = Number(result.insertId);
-
-        /**
-         * ---------------------------------------------------
-         * CLASS
-         * ---------------------------------------------------
-         */
-
-        if (classId) {
-          await connection.execute(
-            `
-              INSERT INTO class_students (
-                class_id,
-                student_id
-              )
-              VALUES (?, ?)
-            `,
-            [classId, studentId],
-          );
-        }
-
-        /**
-         * ---------------------------------------------------
-         * PARENT
-         * ---------------------------------------------------
-         */
-
-        const parentAccounts = await syncStudentParents({
-          connection,
-          churchId,
-          studentId,
-
-          fatherName: normalizeValue(row.father_name),
-          fatherPhone: normalizeParentPhone(row.father_phone),
-
-          motherName: normalizeValue(row.mother_name),
-          motherPhone: normalizeParentPhone(row.mother_phone),
-
-          guardianName: normalizeValue(row.guardian_name),
-          guardianPhone: normalizeParentPhone(row.guardian_phone),
-          guardianRelationship: normalizeValue(row.guardian_relationship),
-        });
-
-        successRows.push({
-          row: excelRow,
-          student_id: studentId,
-          code,
-          name,
-          parent_count: parentAccounts.length,
-        });
-
-        nextId++;
-      } catch (rowError) {
-        console.error(`❌ IMPORT ROW ${excelRow}:`, rowError);
-
-        errorRows.push({
-          row: excelRow,
-          name: normalizeValue(row.name) || null,
-          error: rowError.message,
-        });
-      }
-    }
-
-    /**
-     * -------------------------------------------------------
-     * NẾU CÓ BẤT KỲ ROW LỖI
-     * -> ROLLBACK TOÀN BỘ
-     * -------------------------------------------------------
-     */
-
-    if (errorRows.length > 0) {
-      await connection.rollback();
-
-      transactionStarted = false;
-
-      return res.status(400).json({
-        success: false,
-        message: "Import thất bại. Dữ liệu đã được rollback toàn bộ.",
-        data: {
-          total_rows: rows.length,
-          success_count: 0,
-          error_count: errorRows.length,
-          errors: errorRows,
-        },
-      });
-    }
-
-    /**
-     * -------------------------------------------------------
-     * COMMIT
-     * -------------------------------------------------------
-     */
-
-    await connection.commit();
-
-    transactionStarted = false;
-
-    return res.status(201).json({
-      success: true,
-      message: `Import thành công ${successRows.length} học sinh`,
-      data: {
-        total_rows: rows.length,
-        success_count: successRows.length,
-        error_count: 0,
-        students: successRows,
-      },
-    });
-  } catch (error) {
-    console.error("❌ IMPORT STUDENTS EXCEL:", error);
-
-    if (transactionStarted) {
-      try {
-        await connection.rollback();
-      } catch (rollbackError) {
-        console.error("❌ ROLLBACK IMPORT:", rollbackError);
-      }
-    }
-
-    return res.status(500).json({
-      success: false,
-      message: error.message || "Không thể import học sinh",
-    });
-  } finally {
-    connection.release();
-  }
+// =====================================================
+// MAP HEADER TIẾNG VIỆT -> FIELD BACKEND
+// =====================================================
+
+const HEADER_MAP = {
+  "họ và tên": "name",
+  "ho va ten": "name",
+  "tên thánh": "saint_name",
+  "ten thanh": "saint_name",
+
+  "giới tính": "gender",
+  "gioi tinh": "gender",
+  "ngày sinh": "date_of_birth",
+  "ngay sinh": "date_of_birth",
+  "nơi sinh": "birth_place",
+  "noi sinh": "birth_place",
+  "quốc tịch": "nationality",
+  "quoc tich": "nationality",
+
+  "số điện thoại": "phone",
+  "so dien thoai": "phone",
+  "điện thoại": "phone",
+  "dien thoai": "phone",
+  email: "email",
+  "địa chỉ": "address",
+  "dia chi": "address",
+  "giáo xứ": "parish",
+  "giao xu": "parish",
+
+  "họ tên cha": "father_name",
+  "ho ten cha": "father_name",
+  "sđt cha": "father_phone",
+  "sdt cha": "father_phone",
+  "số điện thoại cha": "father_phone",
+
+  "họ tên mẹ": "mother_name",
+  "ho ten me": "mother_name",
+  "sđt mẹ": "mother_phone",
+  "sdt me": "mother_phone",
+  "số điện thoại mẹ": "mother_phone",
+
+  "họ tên người giám hộ": "guardian_name",
+  "ho ten nguoi giam ho": "guardian_name",
+  "sđt người giám hộ": "guardian_phone",
+  "sdt nguoi giam ho": "guardian_phone",
+  "quan hệ người giám hộ": "guardian_relationship",
+  "quan he nguoi giam ho": "guardian_relationship",
+
+  "tên thánh rửa tội": "baptism_name",
+  "ten thanh rua toi": "baptism_name",
+  "ngày rửa tội": "baptism_date",
+  "ngay rua toi": "baptism_date",
+  "nơi rửa tội": "baptism_place",
+  "noi rua toi": "baptism_place",
+  "giáo xứ rửa tội": "baptism_parish",
+  "giao xu rua toi": "baptism_parish",
+  "số chứng nhận rửa tội": "baptism_certificate_no",
+  "so chung nhan rua toi": "baptism_certificate_no",
+
+  "ngày rước lễ lần đầu": "first_communion_date",
+  "ngay ruoc le lan dau": "first_communion_date",
+  "nơi rước lễ lần đầu": "first_communion_place",
+  "noi ruoc le lan dau": "first_communion_place",
+
+  "ngày thêm sức": "confirmation_date",
+  "ngay them suc": "confirmation_date",
+  "nơi thêm sức": "confirmation_place",
+  "noi them suc": "confirmation_place",
+  "tên thánh thêm sức": "confirmation_saint_name",
+  "ten thanh them suc": "confirmation_saint_name",
+
+  "khối giáo lý": "catechism_level",
+  "khoi giao ly": "catechism_level",
+  "tình trạng giáo lý": "catechism_status",
+  "tinh trang giao ly": "catechism_status",
+  "ngày nhập học": "enrollment_date",
+  "ngay nhap hoc": "enrollment_date",
+
+  "ghi chú": "note",
+  "ghi chu": "note",
+  "lớp id": "class_id",
+  "lop id": "class_id",
+  "mã học sinh": "code",
+  "ma hoc sinh": "code",
+  "tình trạng": "status",
+  "tinh trang": "status",
 };
 
+// Chuẩn hóa header: bỏ khoảng trắng thừa, không phân biệt hoa thường
+const normalizeHeader = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+
+// Ánh xạ từng dòng Excel sang field backend
+const rows = rawRows.map((rawRow) => {
+  const normalizedRow = {};
+
+  for (const [excelHeader, value] of Object.entries(rawRow)) {
+    const header = normalizeHeader(excelHeader);
+    const field = HEADER_MAP[header];
+
+    if (field) {
+      normalizedRow[field] = value;
+    }
+  }
+
+  return normalizedRow;
+});
+
+// Kiểm tra cột Họ và tên
+if (!rows[0].name && !Object.values(rawRows[0]).some((value) => value)) {
+  return res.status(400).json({
+    success: false,
+    message: "File Excel không có dữ liệu",
+  });
+}
+
+const hasNameColumn = Object.keys(rawRows[0]).some((header) => {
+  return HEADER_MAP[normalizeHeader(header)] === "name";
+});
+
+if (!hasNameColumn) {
+  return res.status(400).json({
+    success: false,
+    message: "File Excel bắt buộc phải có cột Họ và tên",
+  });
+}
 /**
  * =========================================================
  * EXPORT STUDENTS EXCEL

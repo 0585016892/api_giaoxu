@@ -9,6 +9,7 @@ const {
   getAttendanceStatistics,
   getCatechistStatistics,
   getStudentAttendanceStatistics,
+  exportAttendanceReport,
 } = require("../controllers/statisticsController");
 
 const { verifyToken } = require("../middleware/authMiddleware");
@@ -54,7 +55,7 @@ router.get("/classes", getClassStatistics);
  * GET /api/statistics/attendance
  * =========================================================
  */
-
+router.get("/attendance/export", exportAttendanceReport);
 router.get("/attendance", getAttendanceStatistics);
 // Chi tiết chuyên cần từng học sinh
 router.get("/attendance/students", getStudentAttendanceStatistics);

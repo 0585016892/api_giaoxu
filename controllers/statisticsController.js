@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const XLSX = require("xlsx");
 
 /**
  * =========================================================
@@ -1763,6 +1764,796 @@ const getStudentAttendanceStatistics = async (req, res) => {
  * =========================================================
  */
 
+const exportAttendanceReport = async (req, res) => {
+  try {
+    console.log("");
+    console.log("============================================================");
+    console.log("              EXPORT ATTENDANCE REPORT");
+    console.log("============================================================");
+
+    const churchId = getChurchId(req);
+
+    console.log("CHURCH ID:", churchId);
+
+    if (!churchId) {
+      return res.status(401).json({
+        success: false,
+        message: "Không xác định được giáo xứ.",
+      });
+    }
+
+    const {
+      month: monthQuery,
+      year: yearQuery,
+      from,
+      to,
+      date,
+      class_id: classIdQuery,
+      attendance_type: attendanceType,
+    } = req.query;
+
+    const month = monthQuery !== undefined ? toInt(monthQuery) : null;
+
+    const year = yearQuery !== undefined ? toInt(yearQuery) : null;
+
+    const classId = classIdQuery !== undefined ? toInt(classIdQuery) : null;
+
+    console.log("MONTH:", month);
+    console.log("YEAR:", year);
+    console.log("FROM:", from);
+    console.log("TO:", to);
+    console.log("DATE:", date);
+    console.log("CLASS ID:", classId);
+    console.log("ATTENDANCE TYPE:", attendanceType);
+
+    // =====================================================
+    // VALIDATE ATTENDANCE TYPE
+    // =====================================================
+
+    const finalAttendanceType = attendanceType || "catechism";
+
+    if (!["catechism", "mass"].includes(finalAttendanceType)) {
+      return res.status(400).json({
+        success: false,
+        message: "attendance_type không hợp lệ. Chỉ nhận catechism hoặc mass.",
+      });
+    }
+
+    // =====================================================
+    // VALIDATE MONTH
+    // =====================================================
+
+    if (monthQuery !== undefined) {
+      if (!isValidMonth(month)) {
+        return res.status(400).json({
+          success: false,
+          message: "Tháng không hợp lệ. Tháng phải từ 1 đến 12.",
+        });
+      }
+    }
+
+    // =====================================================
+    // VALIDATE YEAR
+    // =====================================================
+
+    if (yearQuery !== undefined) {
+      if (!isValidYear(year)) {
+        return res.status(400).json({
+          success: false,
+          message: "Năm không hợp lệ.",
+        });
+      }
+    }
+
+    // =====================================================
+    // MONTH + YEAR
+    // =====================================================
+
+    if (
+      (month !== null && year === null) ||
+      (month === null && year !== null)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Khi xuất theo tháng phải truyền cả month và year.",
+      });
+    }
+
+    // =====================================================
+    // VALIDATE DATE
+    // =====================================================
+
+    if (date && !isValidDate(date)) {
+      return res.status(400).json({
+        success: false,
+        message: "Ngày không hợp lệ. Định dạng phải là YYYY-MM-DD.",
+      });
+    }
+
+    // =====================================================
+    // VALIDATE FROM
+    // =====================================================
+
+    if (from && !isValidDate(from)) {
+      return res.status(400).json({
+        success: false,
+        message: "Ngày bắt đầu không hợp lệ. Định dạng phải là YYYY-MM-DD.",
+      });
+    }
+
+    // =====================================================
+    // VALIDATE TO
+    // =====================================================
+
+    if (to && !isValidDate(to)) {
+      return res.status(400).json({
+        success: false,
+        message: "Ngày kết thúc không hợp lệ. Định dạng phải là YYYY-MM-DD.",
+      });
+    }
+
+    // =====================================================
+    // FROM <= TO
+    // =====================================================
+
+    if (from && to && from > to) {
+      return res.status(400).json({
+        success: false,
+        message: "Ngày bắt đầu không được lớn hơn ngày kết thúc.",
+      });
+    }
+
+    // =====================================================
+    // CHỈ ĐƯỢC CHỌN 1 KIỂU THỜI GIAN
+    // =====================================================
+
+    const hasMonthFilter = month !== null || year !== null;
+
+    const hasRangeFilter = !!from || !!to;
+
+    const hasDateFilter = !!date;
+
+    const filterCount =
+      Number(hasMonthFilter) + Number(hasRangeFilter) + Number(hasDateFilter);
+
+    if (filterCount > 1) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Chỉ được chọn một trong: tháng/năm, từ ngày/đến ngày hoặc ngày cụ thể.",
+      });
+    }
+
+    // =====================================================
+    // CLASS ID
+    // =====================================================
+
+    if (classIdQuery !== undefined) {
+      if (!classId || classId <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "class_id không hợp lệ.",
+        });
+      }
+
+      /**
+       * Thánh lễ không bắt buộc class_id.
+       * Nhưng nếu FE truyền class_id cho mass thì vẫn
+       * cho phép lọc theo lớp nếu dữ liệu cũ có class_id.
+       */
+      const [[classExists]] = await db.query(
+        `
+        SELECT
+          id,
+          name,
+          code
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
+        `,
+        [classId, churchId],
+      );
+
+      if (!classExists) {
+        return res.status(404).json({
+          success: false,
+          message: "Không tìm thấy lớp trong giáo xứ.",
+        });
+      }
+    }
+
+    // =====================================================
+    // BUILD DATE CONDITION
+    // =====================================================
+
+    let dateWhere = "";
+    const dateParams = [];
+
+    // -----------------------------------------------------
+    // THEO THÁNG
+    // -----------------------------------------------------
+
+    if (month !== null && year !== null) {
+      dateWhere += `
+        AND MONTH(a.attendance_date) = ?
+        AND YEAR(a.attendance_date) = ?
+      `;
+
+      dateParams.push(month, year);
+    }
+
+    // -----------------------------------------------------
+    // THEO NGÀY
+    // -----------------------------------------------------
+
+    if (date) {
+      dateWhere += `
+        AND a.attendance_date = ?
+      `;
+
+      dateParams.push(date);
+    }
+
+    // -----------------------------------------------------
+    // THEO KHOẢNG
+    // -----------------------------------------------------
+
+    if (from) {
+      dateWhere += `
+        AND a.attendance_date >= ?
+      `;
+
+      dateParams.push(from);
+    }
+
+    if (to) {
+      dateWhere += `
+        AND a.attendance_date <= ?
+      `;
+
+      dateParams.push(to);
+    }
+
+    // =====================================================
+    // CLASS CONDITION
+    // =====================================================
+
+    let classWhere = "";
+    const classParams = [];
+
+    if (classId !== null) {
+      classWhere = `
+        AND a.class_id = ?
+      `;
+
+      classParams.push(classId);
+    }
+
+    // =====================================================
+    // LẤY DANH SÁCH LỚP
+    // =====================================================
+
+    let classes = [];
+
+    if (classId !== null) {
+      const [classRows] = await db.query(
+        `
+        SELECT
+          id,
+          name,
+          code
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
+        `,
+        [classId, churchId],
+      );
+
+      classes = classRows;
+    } else if (finalAttendanceType === "catechism") {
+      const [classRows] = await db.query(
+        `
+        SELECT
+          id,
+          name,
+          code
+        FROM classes
+        WHERE church_id = ?
+          AND status != 'cancelled'
+        ORDER BY name ASC
+        `,
+        [churchId],
+      );
+
+      classes = classRows;
+    }
+
+    console.log("TOTAL CLASSES:", classes.length);
+
+    // =====================================================
+    // LẤY THÔNG TIN GIÁO XỨ
+    // =====================================================
+
+    const [[church]] = await db.query(
+      `
+      SELECT
+        id,
+        name,
+        code
+      FROM churches
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [churchId],
+    );
+
+    const workbook = XLSX.utils.book_new();
+
+    // =====================================================
+    // HELPER TẠO SHEET
+    // =====================================================
+
+    const createAttendanceSheet = (sheetName, title, classInfo, rows) => {
+      const data = [];
+
+      // ---------------------------------------------------
+      // TITLE
+      // ---------------------------------------------------
+
+      data.push([title]);
+
+      data.push(["Giáo xứ", church?.name || ""]);
+
+      if (classInfo) {
+        data.push(["Lớp", classInfo.name || ""]);
+
+        data.push(["Mã lớp", classInfo.code || ""]);
+      }
+
+      data.push([
+        "Loại điểm danh",
+        finalAttendanceType === "mass" ? "Thánh lễ" : "Học giáo lý",
+      ]);
+
+      // ---------------------------------------------------
+      // THỜI GIAN
+      // ---------------------------------------------------
+
+      let periodText = "Tất cả";
+
+      if (month !== null && year !== null) {
+        periodText = `Tháng ${month}/${year}`;
+      }
+
+      if (date) {
+        periodText = date;
+      }
+
+      if (from || to) {
+        periodText = `${from || "..."} đến ${to || "..."}`;
+      }
+
+      data.push(["Thời gian", periodText]);
+
+      data.push([]);
+
+      // ---------------------------------------------------
+      // HEADER
+      // ---------------------------------------------------
+
+      data.push([
+        "STT",
+        "Mã học sinh",
+        "Họ và tên",
+        "Giới tính",
+        "Ngày sinh",
+        "Tổng",
+        "Có mặt",
+        "Vắng",
+        "Trễ",
+        "Có phép",
+        "Tỷ lệ",
+      ]);
+
+      // ---------------------------------------------------
+      // DATA
+      // ---------------------------------------------------
+
+      rows.forEach((item, index) => {
+        data.push([
+          index + 1,
+          item.student_code || "",
+          item.student_name || "",
+          item.gender || "",
+          item.birth_date || "",
+          Number(item.total || 0),
+          Number(item.present || 0),
+          Number(item.absent || 0),
+          Number(item.late || 0),
+          Number(item.excused || 0),
+          `${calculateRate(item.present, item.total)}%`,
+        ]);
+      });
+
+      // ---------------------------------------------------
+      // TOTAL
+      // ---------------------------------------------------
+
+      const total = rows.reduce(
+        (sum, item) => sum + Number(item.total || 0),
+        0,
+      );
+
+      const present = rows.reduce(
+        (sum, item) => sum + Number(item.present || 0),
+        0,
+      );
+
+      const absent = rows.reduce(
+        (sum, item) => sum + Number(item.absent || 0),
+        0,
+      );
+
+      const late = rows.reduce((sum, item) => sum + Number(item.late || 0), 0);
+
+      const excused = rows.reduce(
+        (sum, item) => sum + Number(item.excused || 0),
+        0,
+      );
+
+      data.push([]);
+
+      data.push([
+        "",
+        "",
+        "TỔNG",
+        "",
+        "",
+        total,
+        present,
+        absent,
+        late,
+        excused,
+        `${calculateRate(present, total)}%`,
+      ]);
+
+      const worksheet = XLSX.utils.aoa_to_sheet(data);
+
+      // ---------------------------------------------------
+      // COLUMN WIDTH
+      // ---------------------------------------------------
+
+      worksheet["!cols"] = [
+        { wch: 6 },
+        { wch: 16 },
+        { wch: 28 },
+        { wch: 12 },
+        { wch: 15 },
+        { wch: 10 },
+        { wch: 10 },
+        { wch: 10 },
+        { wch: 10 },
+        { wch: 10 },
+        { wch: 12 },
+      ];
+
+      XLSX.utils.book_append_sheet(
+        workbook,
+        worksheet,
+        sheetName.substring(0, 31),
+      );
+    };
+
+    // =====================================================
+    // CATECHISM
+    // =====================================================
+
+    if (finalAttendanceType === "catechism") {
+      for (const classInfo of classes) {
+        console.log("EXPORT CLASS:", classInfo.id, classInfo.name);
+
+        const [rows] = await db.query(
+          `
+          SELECT
+
+            s.id AS student_id,
+
+            s.code AS student_code,
+
+            s.name AS student_name,
+
+            s.gender,
+
+            s.birth_date,
+
+            COUNT(a.id) AS total,
+
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN a.status = 'present'
+                  THEN 1
+                  ELSE 0
+                END
+              ),
+              0
+            ) AS present,
+
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN a.status = 'absent'
+                  THEN 1
+                  ELSE 0
+                END
+              ),
+              0
+            ) AS absent,
+
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN a.status = 'late'
+                  THEN 1
+                  ELSE 0
+                END
+              ),
+              0
+            ) AS late,
+
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN a.status = 'excused'
+                  THEN 1
+                  ELSE 0
+                END
+              ),
+              0
+            ) AS excused
+
+          FROM attendances a
+
+          INNER JOIN students s
+            ON s.id = a.student_id
+            AND s.church_id = a.church_id
+
+          WHERE a.church_id = ?
+
+            AND a.class_id = ?
+
+            AND a.attendance_type = 'catechism'
+
+            ${dateWhere}
+
+          GROUP BY
+            s.id,
+            s.code,
+            s.name,
+            s.gender,
+            s.birth_date
+
+          ORDER BY
+            s.name ASC
+          `,
+          [churchId, classInfo.id, ...dateParams],
+        );
+
+        /**
+         * Nếu lớp không có dữ liệu điểm danh
+         * vẫn tạo sheet.
+         */
+        const sheetName =
+          `${classInfo.code || ""}-${classInfo.name || classInfo.id}`
+            .replace(/[\\/?*[\]:]/g, "")
+            .substring(0, 31);
+
+        createAttendanceSheet(
+          sheetName || `Lop-${classInfo.id}`,
+          "BÁO CÁO CHUYÊN CẦN HỌC GIÁO LÝ",
+          classInfo,
+          rows,
+        );
+      }
+    }
+
+    // =====================================================
+    // MASS
+    // =====================================================
+
+    if (finalAttendanceType === "mass") {
+      /**
+       * Thánh lễ KHÔNG phụ thuộc lớp.
+       *
+       * Nếu FE không truyền class_id:
+       * lấy toàn bộ học sinh.
+       *
+       * Nếu FE truyền class_id:
+       * chỉ lấy attendance có class_id đó.
+       */
+
+      const [rows] = await db.query(
+        `
+        SELECT
+
+          s.id AS student_id,
+
+          s.code AS student_code,
+
+          s.name AS student_name,
+
+          s.gender,
+
+          s.birth_date,
+
+          COUNT(a.id) AS total,
+
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.status = 'present'
+                THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS present,
+
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.status = 'absent'
+                THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS absent,
+
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.status = 'late'
+                THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS late,
+
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.status = 'excused'
+                THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS excused
+
+        FROM attendances a
+
+        INNER JOIN students s
+          ON s.id = a.student_id
+          AND s.church_id = a.church_id
+
+        WHERE a.church_id = ?
+
+          AND a.attendance_type = 'mass'
+
+          ${dateWhere}
+
+          ${classWhere}
+
+        GROUP BY
+          s.id,
+          s.code,
+          s.name,
+          s.gender,
+          s.birth_date
+
+        ORDER BY
+          s.name ASC
+        `,
+        [churchId, ...dateParams, ...classParams],
+      );
+
+      createAttendanceSheet(
+        "Thanh-le",
+        "BÁO CÁO CHUYÊN CẦN THÁNH LỄ",
+        null,
+        rows,
+      );
+    }
+
+    // =====================================================
+    // KHÔNG CÓ SHEET
+    // =====================================================
+
+    if (workbook.SheetNames.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Không có dữ liệu để xuất báo cáo.",
+      });
+    }
+
+    // =====================================================
+    // FILENAME
+    // =====================================================
+
+    let periodName = "tat-ca";
+
+    if (month !== null && year !== null) {
+      periodName = `thang-${month}-${year}`;
+    }
+
+    if (date) {
+      periodName = `ngay-${date}`;
+    }
+
+    if (from || to) {
+      periodName = `tu-${from || "..."}-den-${to || "..."}`;
+    }
+
+    const typeName =
+      finalAttendanceType === "mass" ? "thanh-le" : "hoc-giao-ly";
+
+    const fileName = `bao-cao-chuyen-can-${typeName}-${periodName}.xlsx`;
+
+    console.log("SHEET NAMES:", workbook.SheetNames);
+    console.log("FILE NAME:", fileName);
+
+    // =====================================================
+    // WRITE BUFFER
+    // =====================================================
+
+    const buffer = XLSX.write(workbook, {
+      type: "buffer",
+      bookType: "xlsx",
+    });
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${encodeURIComponent(fileName)}"`,
+    );
+
+    res.setHeader("Content-Length", buffer.length);
+
+    console.log("EXPORT SUCCESS");
+
+    return res.send(buffer);
+  } catch (error) {
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("EXPORT ATTENDANCE REPORT ERROR");
+    console.error(
+      "============================================================",
+    );
+    console.error(error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi khi xuất báo cáo chuyên cần.",
+      error: error.message,
+      code: error.code,
+      sqlMessage: error.sqlMessage,
+    });
+  }
+};
 module.exports = {
   getOverview,
   getStudentStatistics,
@@ -1770,4 +2561,5 @@ module.exports = {
   getAttendanceStatistics,
   getStudentAttendanceStatistics,
   getCatechistStatistics,
+  exportAttendanceReport,
 };

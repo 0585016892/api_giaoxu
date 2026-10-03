@@ -54,6 +54,8 @@ const licenseRegistrationRoutes = require("./routes/licenseRegistrationRoutes");
 const parentRoutes = require("./routes/parentRoutes");
 const dioceseRoutes = require("./routes/dioceseRoutes");
 const deaneryRoutes = require("./routes/deaneryRoutes");
+const settingChurchRoutes = require("./routes/settingChurchRoutes");
+
 // ===============================
 // APP
 // ===============================
@@ -137,6 +139,7 @@ app.use("/api/license-regis", licenseRegistrationRoutes);
 app.use("/api/parent", parentRoutes);
 app.use("/api/dioceses", dioceseRoutes);
 app.use("/api/deaneries", deaneryRoutes);
+app.use("/api/settings_church", settingChurchRoutes);
 // ===============================
 // CORS MANAGEMENT
 // ===============================

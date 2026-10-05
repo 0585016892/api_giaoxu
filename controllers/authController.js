@@ -1,9 +1,121 @@
 const db = require("../config/db");
+
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+
 const emailService = require("../utils/emailService");
+
 const { writeLog } = require("../utils/activityLogger");
 const { generateCatechistCode } = require("../utils/generateCode");
+
+// ============================================================
+// CONFIG
+// ============================================================
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const OTP_EXPIRES_MINUTES = 5;
+const OTP_EXPIRES_SECONDS = OTP_EXPIRES_MINUTES * 60;
+
+const PENDING_REGISTRATION_EXPIRES_MINUTES = 15;
+
+const MAX_OTP_ATTEMPTS = 5;
+
+const MAX_REGISTER_RETRY = 5;
+
+const BCRYPT_PASSWORD_ROUNDS = 12;
+const BCRYPT_OTP_ROUNDS = 10;
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+const normalizeString = (value) => {
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  return String(value).trim();
+};
+
+const normalizeNullableString = (value) => {
+  const result = normalizeString(value);
+
+  return result || null;
+};
+
+const normalizeEmail = (value) => {
+  return normalizeString(value).toLowerCase();
+};
+
+// ============================================================
+// SECURE OTP
+// ============================================================
+
+const generateOtp = () => {
+  return String(crypto.randomInt(100000, 1000000));
+};
+
+// ============================================================
+// JWT
+// ============================================================
+
+const createJwtToken = ({
+  id,
+  email,
+  full_name,
+  username,
+  avatar = null,
+  role,
+  church_id = null,
+  account_type = "member",
+  catechist_id = null,
+  teacher_id = null,
+  parent_id = null,
+}) => {
+  if (!process.env.JWT_SECRET) {
+    throw new Error("JWT_SECRET_NOT_CONFIGURED");
+  }
+
+  return jwt.sign(
+    {
+      id: Number(id),
+      email: email || null,
+      full_name: full_name || username || null,
+      username: username || null,
+      avatar: avatar || null,
+      role: role || null,
+      church_id: church_id ? Number(church_id) : null,
+      account_type: account_type || "member",
+      catechist_id: catechist_id ? Number(catechist_id) : null,
+      teacher_id: teacher_id ? Number(teacher_id) : null,
+      parent_id: parent_id ? Number(parent_id) : null,
+    },
+    process.env.JWT_SECRET,
+    {
+      expiresIn: process.env.JWT_EXPIRES_IN || "1d",
+    },
+  );
+};
+
+// ============================================================
+// SAFE ERROR LOG
+// ============================================================
+
+const logDbError = (prefix, error) => {
+  console.error(prefix);
+  console.error("Message:", error?.message);
+  console.error("Code:", error?.code);
+  console.error("Errno:", error?.errno);
+  console.error("SQL Message:", error?.sqlMessage);
+  console.error("SQL State:", error?.sqlState);
+};
+
+// ============================================================
+// LOGIN
+// ============================================================
+
 exports.login = async (req, res) => {
   console.log("");
   console.log("============================================================");
@@ -11,15 +123,18 @@ exports.login = async (req, res) => {
   console.log("============================================================");
 
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
 
-    // =====================================================
+    // ========================================================
     // 1. VALIDATE
-    // =====================================================
+    // ========================================================
 
-    const loginValue = typeof email === "string" ? email.trim() : "";
+    const loginValue =
+      typeof email === "string" ? email.trim().toLowerCase() : "";
 
-    if (!loginValue || !password) {
+    const cleanPassword = typeof password === "string" ? password : "";
+
+    if (!loginValue || !cleanPassword) {
       console.log("❌ LOGIN VALIDATION FAILED");
 
       return res.status(400).json({
@@ -28,22 +143,11 @@ exports.login = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // 2. TÌM ACCOUNT
-    //
-    // Có thể đăng nhập bằng:
-    //
-    // - email
-    // - username
-    //
-    // Parent:
-    // username = số điện thoại
-    //
-    // GLV:
-    // username = catechist_code
-    // =====================================================
-
     console.log("🔐 LOGIN VALUE:", loginValue);
+
+    // ========================================================
+    // 2. FIND ACCOUNT
+    // ========================================================
 
     const [rows] = await db.query(
       `
@@ -62,7 +166,7 @@ exports.login = async (req, res) => {
           AND c.church_id = a.church_id
 
         WHERE
-          a.email = ?
+          LOWER(a.email) = ?
           OR a.username = ?
 
         LIMIT 1
@@ -70,12 +174,12 @@ exports.login = async (req, res) => {
       [loginValue, loginValue],
     );
 
-    // =====================================================
+    // ========================================================
     // 3. ACCOUNT NOT FOUND
-    // =====================================================
+    // ========================================================
 
     if (rows.length === 0) {
-      console.log("❌ ACCOUNT NOT FOUND:", loginValue);
+      console.log("❌ ACCOUNT NOT FOUND");
 
       return res.status(401).json({
         success: false,
@@ -85,15 +189,14 @@ exports.login = async (req, res) => {
 
     const admin = rows[0];
 
-    // =====================================================
-    // 4. DEBUG ACCOUNT
-    // =====================================================
+    // ========================================================
+    // 4. DEBUG SAFE ACCOUNT INFO
+    // ========================================================
 
     console.log("");
     console.log("------------------------------------------------------------");
     console.log("LOGIN USER");
     console.log("------------------------------------------------------------");
-
     console.log("Admin ID       :", admin.id);
     console.log("Email          :", admin.email);
     console.log("Username       :", admin.username);
@@ -101,16 +204,14 @@ exports.login = async (req, res) => {
     console.log("Church ID      :", admin.church_id);
     console.log("Account Type   :", admin.account_type);
     console.log("Active         :", admin.is_active);
-
     console.log("Catechist ID   :", admin.catechist_id);
     console.log("Catechist Code :", admin.catechist_code);
     console.log("Teacher ID     :", admin.catechist_teacher_id);
-
     console.log("------------------------------------------------------------");
 
-    // =====================================================
-    // 5. CHECK ACCOUNT ACTIVE
-    // =====================================================
+    // ========================================================
+    // 5. CHECK ACTIVE
+    // ========================================================
 
     if (
       admin.is_active === 0 ||
@@ -125,12 +226,9 @@ exports.login = async (req, res) => {
       });
     }
 
-    // =====================================================
+    // ========================================================
     // 6. CHECK CHURCH
-    //
-    // Tài khoản hệ thống có thể không có church_id
-    // nhưng parent bắt buộc phải có church_id.
-    // =====================================================
+    // ========================================================
 
     if (admin.role === "parent" && !admin.church_id) {
       console.log("❌ PARENT WITHOUT CHURCH:", admin.id);
@@ -141,9 +239,9 @@ exports.login = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // 7. CHECK PASSWORD
-    // =====================================================
+    // ========================================================
+    // 7. PASSWORD
+    // ========================================================
 
     if (!admin.password) {
       console.log("❌ ACCOUNT HAS NO PASSWORD:", admin.id);
@@ -154,7 +252,7 @@ exports.login = async (req, res) => {
       });
     }
 
-    const isMatch = await bcrypt.compare(password, admin.password);
+    const isMatch = await bcrypt.compare(cleanPassword, admin.password);
 
     if (!isMatch) {
       console.log("❌ WRONG PASSWORD");
@@ -167,15 +265,9 @@ exports.login = async (req, res) => {
 
     console.log("✅ PASSWORD CORRECT");
 
-    // =====================================================
-    // 8. TEACHER / CATECHIST ID
-    //
-    // Chỉ áp dụng cho các account có catechist.
-    //
-    // Parent:
-    // teacher_id = null
-    // catechist_id = null
-    // =====================================================
+    // ========================================================
+    // 8. TEACHER / CATECHIST
+    // ========================================================
 
     const teacherId = admin.catechist_teacher_id
       ? Number(admin.catechist_teacher_id)
@@ -183,28 +275,27 @@ exports.login = async (req, res) => {
 
     console.log("🎓 TEACHER ID:", teacherId);
 
-    // =====================================================
-    // 9. PARENT CHECK
-    //
-    // Kiểm tra parent có liên kết học sinh hay chưa.
-    //
-    // Không bắt buộc phải có con để đăng nhập.
-    // Chỉ lấy thông tin để FE có thể dùng sau này.
-    // =====================================================
+    // ========================================================
+    // 9. PARENT STUDENT COUNT
+    // ========================================================
 
     let parentStudentCount = 0;
 
     if (admin.role === "parent") {
       const [parentRows] = await db.query(
         `
-            SELECT COUNT(*) AS total
-            FROM parent_students ps
-            INNER JOIN students s
-              ON s.id = ps.student_id
-            WHERE ps.parent_id = ?
-              AND ps.church_id = ?
-              AND s.church_id = ?
-          `,
+          SELECT COUNT(*) AS total
+
+          FROM parent_students ps
+
+          INNER JOIN students s
+            ON s.id = ps.student_id
+
+          WHERE
+            ps.parent_id = ?
+            AND ps.church_id = ?
+            AND s.church_id = ?
+        `,
         [admin.id, admin.church_id, admin.church_id],
       );
 
@@ -213,9 +304,9 @@ exports.login = async (req, res) => {
       console.log("👨‍👩‍👧 PARENT STUDENT COUNT:", parentStudentCount);
     }
 
-    // =====================================================
+    // ========================================================
     // 10. UPDATE LAST LOGIN
-    // =====================================================
+    // ========================================================
 
     await db.query(
       `
@@ -226,56 +317,29 @@ exports.login = async (req, res) => {
       [admin.id],
     );
 
-    // =====================================================
+    // ========================================================
     // 11. CREATE JWT
-    // =====================================================
+    // ========================================================
 
-    const payload = {
-      id: Number(admin.id),
-
-      email: admin.email || null,
-
-      full_name: admin.full_name || admin.username || null,
-
+    const token = createJwtToken({
+      id: admin.id,
+      email: admin.email,
+      full_name: admin.full_name || admin.username,
       username: admin.username,
-
-      avatar: admin.avatar || null,
-
+      avatar: admin.avatar,
       role: admin.role,
-
-      church_id: admin.church_id ? Number(admin.church_id) : null,
-
+      church_id: admin.church_id,
       account_type: admin.account_type || "member",
-
-      // ===================================================
-      // CATECHIST / TEACHER
-      // ===================================================
-
       catechist_id: teacherId,
-
       teacher_id: teacherId,
-
-      // ===================================================
-      // PARENT
-      // ===================================================
-
       parent_id: admin.role === "parent" ? Number(admin.id) : null,
-    };
-
-    console.log("");
-    console.log("------------------------------------------------------------");
-    console.log("JWT PAYLOAD");
-    console.log("------------------------------------------------------------");
-    console.log(payload);
-    console.log("------------------------------------------------------------");
-
-    const token = jwt.sign(payload, process.env.JWT_SECRET, {
-      expiresIn: process.env.JWT_EXPIRES_IN || "1d",
     });
 
-    // =====================================================
-    // 12. WRITE LOGIN LOG
-    // =====================================================
+    console.log("✅ JWT CREATED");
+
+    // ========================================================
+    // 12. LOGIN LOG
+    // ========================================================
 
     try {
       await writeLog({
@@ -287,18 +351,17 @@ exports.login = async (req, res) => {
         ip_address: req.ip,
       });
     } catch (logError) {
-      console.error("⚠️ WRITE LOGIN LOG ERROR:", logError);
+      console.error("⚠️ WRITE LOGIN LOG ERROR:", logError?.message || logError);
     }
 
-    // =====================================================
-    // 13. RESPONSE
-    // =====================================================
+    // ========================================================
+    // 13. SUCCESS
+    // ========================================================
 
     console.log("");
     console.log("============================================================");
     console.log("                     LOGIN SUCCESS");
     console.log("============================================================");
-
     console.log("Admin ID       :", admin.id);
     console.log("Username       :", admin.username);
     console.log("Email          :", admin.email);
@@ -306,21 +369,17 @@ exports.login = async (req, res) => {
     console.log("Church ID      :", admin.church_id);
     console.log("Catechist ID   :", teacherId);
     console.log("Parent Student :", parentStudentCount);
-
     console.log("============================================================");
 
     return res.status(200).json({
       success: true,
-
       message: "Đăng nhập thành công",
 
       token,
 
       admin: {
         id: Number(admin.id),
-
         email: admin.email || null,
-
         role: admin.role,
 
         church_id: admin.church_id ? Number(admin.church_id) : null,
@@ -333,38 +392,22 @@ exports.login = async (req, res) => {
 
         avatar: admin.avatar || null,
 
-        // =================================================
-        // CATECHIST
-        // =================================================
-
         catechist_id: teacherId,
 
         catechist_code: admin.catechist_code || null,
 
         catechist_full_name: admin.catechist_full_name || null,
 
-        // =================================================
-        // TEACHER
-        // =================================================
-
         teacher_id: teacherId,
-
-        // =================================================
-        // PARENT
-        // =================================================
 
         parent_id: admin.role === "parent" ? Number(admin.id) : null,
 
         parent_student_count: parentStudentCount,
 
-        // =================================================
-        // LOGIN
-        // =================================================
-
         last_login: new Date(),
       },
     });
-  } catch (err) {
+  } catch (error) {
     console.error("");
     console.error(
       "============================================================",
@@ -373,7 +416,9 @@ exports.login = async (req, res) => {
     console.error(
       "============================================================",
     );
-    console.error(err);
+
+    logDbError("LOGIN ERROR DETAILS:", error);
+
     console.error(
       "============================================================",
     );
@@ -381,830 +426,25 @@ exports.login = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Server error",
-      error: process.env.NODE_ENV === "development" ? err.message : undefined,
-    });
-  }
-};
-// const { writeLog } = require("../utils/writeLog");
-
-exports.register = async (req, res) => {
-  console.log("");
-  console.log("============================================================");
-  console.log("              FAITHEDU REGISTER REQUEST");
-  console.log("============================================================");
-
-  let connection = null;
-
-  try {
-    // =====================================================
-    // 1. GET BODY
-    // =====================================================
-
-    const {
-      email,
-      password,
-      full_name,
-      phone,
-
-      church_name,
-      church_type,
-      address,
-      district,
-      ward,
-      pastor_name,
-    } = req.body;
-
-    console.log("📥 REGISTER BODY:", {
-      email,
-      full_name,
-      phone,
-      church_name,
-      church_type,
-      address,
-      district,
-      ward,
-      pastor_name,
-      hasPassword: !!password,
-    });
-
-    // =====================================================
-    // 2. VALIDATE REQUIRED
-    // =====================================================
-
-    if (!email || !password || !full_name || !church_name) {
-      return res.status(400).json({
-        success: false,
-        message: "Email, password, họ tên và tên giáo xứ là bắt buộc",
-      });
-    }
-
-    // =====================================================
-    // 3. CLEAN DATA
-    // =====================================================
-
-    const cleanEmail = String(email).trim().toLowerCase();
-
-    const cleanFullName = String(full_name).trim();
-
-    const cleanChurchName = String(church_name).trim();
-
-    const cleanPhone =
-      phone !== undefined && phone !== null && String(phone).trim() !== ""
-        ? String(phone).trim()
-        : null;
-
-    const cleanChurchType =
-      church_type !== undefined &&
-      church_type !== null &&
-      String(church_type).trim() !== ""
-        ? String(church_type).trim()
-        : "GIAO_HO";
-
-    const cleanAddress =
-      address !== undefined && address !== null && String(address).trim() !== ""
-        ? String(address).trim()
-        : null;
-
-    const cleanDistrict =
-      district !== undefined &&
-      district !== null &&
-      String(district).trim() !== ""
-        ? String(district).trim()
-        : null;
-
-    const cleanWard =
-      ward !== undefined && ward !== null && String(ward).trim() !== ""
-        ? String(ward).trim()
-        : null;
-
-    const cleanPastorName =
-      pastor_name !== undefined &&
-      pastor_name !== null &&
-      String(pastor_name).trim() !== ""
-        ? String(pastor_name).trim()
-        : null;
-
-    // =====================================================
-    // 4. VALIDATE CLEAN DATA
-    // =====================================================
-
-    if (!cleanEmail || !cleanFullName || !cleanChurchName) {
-      return res.status(400).json({
-        success: false,
-        message: "Thông tin đăng ký không hợp lệ",
-      });
-    }
-
-    // =====================================================
-    // 5. VALIDATE PASSWORD
-    // =====================================================
-
-    const cleanPassword = String(password);
-
-    if (cleanPassword.length < 6) {
-      return res.status(400).json({
-        success: false,
-        message: "Mật khẩu phải có ít nhất 6 ký tự",
-      });
-    }
-
-    // =====================================================
-    // 6. VALIDATE EMAIL BASIC
-    // =====================================================
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-    if (!emailRegex.test(cleanEmail)) {
-      return res.status(400).json({
-        success: false,
-        message: "Email không hợp lệ",
-      });
-    }
-
-    // =====================================================
-    // 7. CHECK EMAIL TRƯỚC KHI TẠO TRANSACTION
-    // =====================================================
-
-    const [emailRows] = await db.query(
-      `
-      SELECT
-        id,
-        username,
-        email,
-        church_id,
-        role
-      FROM admins
-      WHERE email = ?
-      LIMIT 1
-      `,
-      [cleanEmail],
-    );
-
-    if (emailRows.length > 0) {
-      console.log("⚠️ EMAIL ALREADY EXISTS:", cleanEmail);
-
-      return res.status(409).json({
-        success: false,
-        message: "Email đã được sử dụng",
-      });
-    }
-
-    // =====================================================
-    // 8. HASH PASSWORD
-    // =====================================================
-
-    const hashedPassword = await bcrypt.hash(cleanPassword, 12);
-
-    // =====================================================
-    // 9. GET CONNECTION
-    // =====================================================
-
-    connection = await db.getConnection();
-
-    // =====================================================
-    // 10. GENERATE BASE CATECHIST CODE
-    // =====================================================
-    //
-    // Ví dụ:
-    //
-    // GLV20260001
-    //
-    // Không dùng code này trực tiếp nếu đã tồn tại.
-    // Phần bên dưới sẽ check:
-    //
-    // catechists.catechist_code
-    // admins.username
-    //
-    // rồi tự thêm:
-    //
-    // GLV20260001_1
-    // GLV20260001_2
-    //
-    // =====================================================
-
-    const baseCatechistCode = await generateCatechistCode(connection);
-
-    console.log("🔢 BASE CATECHIST CODE:", baseCatechistCode);
-
-    // =====================================================
-    // 11. RETRY
-    // =====================================================
-
-    const MAX_RETRY = 5;
-
-    let lastError = null;
-
-    // =====================================================
-    // 12. CREATE LOOP
-    // =====================================================
-
-    for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
-      try {
-        console.log("");
-        console.log(`🔄 REGISTER ATTEMPT ${attempt}/${MAX_RETRY}`);
-
-        // =================================================
-        // BEGIN TRANSACTION
-        // =================================================
-
-        await connection.beginTransaction();
-
-        // =================================================
-        // 13. CHECK EMAIL INSIDE TRANSACTION
-        // =================================================
-
-        const [existingAccount] = await connection.query(
-          `
-            SELECT
-              id,
-              username,
-              email,
-              church_id,
-              role
-            FROM admins
-            WHERE email = ?
-            LIMIT 1
-            `,
-          [cleanEmail],
-        );
-
-        if (existingAccount.length > 0) {
-          await connection.rollback();
-
-          return res.status(409).json({
-            success: false,
-            message: `Email "${cleanEmail}" đã được sử dụng`,
-          });
-        }
-
-        // =================================================
-        // 14. FIND AVAILABLE CATECHIST CODE
-        // =================================================
-
-        let catechistCode = baseCatechistCode;
-
-        let codeIndex = 0;
-
-        while (true) {
-          // ===============================================
-          // CHECK CATECHISTS
-          // ===============================================
-
-          const [existingCatechist] = await connection.query(
-            `
-              SELECT id
-              FROM catechists
-              WHERE catechist_code = ?
-              LIMIT 1
-              `,
-            [catechistCode],
-          );
-
-          // ===============================================
-          // CHECK ADMINS
-          // ===============================================
-
-          const [existingAdmin] = await connection.query(
-            `
-              SELECT id
-              FROM admins
-              WHERE username = ?
-              LIMIT 1
-              `,
-            [catechistCode],
-          );
-
-          console.log(`🔍 CHECK CODE "${catechistCode}"`, {
-            catechistExists: existingCatechist.length > 0,
-
-            adminExists: existingAdmin.length > 0,
-          });
-
-          // ===============================================
-          // CODE AVAILABLE
-          // ===============================================
-
-          if (existingCatechist.length === 0 && existingAdmin.length === 0) {
-            break;
-          }
-
-          // ===============================================
-          // CODE EXISTS
-          // ===============================================
-
-          codeIndex++;
-
-          catechistCode = `${baseCatechistCode}_${codeIndex}`;
-        }
-
-        // =================================================
-        // 15. USERNAME = CATECHIST CODE
-        // =================================================
-
-        const username = catechistCode;
-
-        console.log("✅ FINAL CATECHIST CODE:", catechistCode);
-
-        console.log("✅ FINAL USERNAME:", username);
-
-        // =================================================
-        // SAFETY CHECK
-        // =================================================
-
-        if (username !== catechistCode) {
-          throw new Error("Username và catechist_code không đồng nhất");
-        }
-
-        // =================================================
-        // 16. TRIAL 30 DAYS
-        // =================================================
-
-        const trialStartedAt = new Date();
-
-        const trialExpiresAt = new Date(trialStartedAt);
-
-        trialExpiresAt.setDate(trialExpiresAt.getDate() + 30);
-
-        // =================================================
-        // 17. CREATE CHURCH CODE
-        // =================================================
-
-        const churchCode = `FE${Date.now()}${Math.floor(
-          100 + Math.random() * 900,
-        )}`;
-
-        console.log("⛪ CHURCH CODE:", churchCode);
-
-        // =================================================
-        // 18. CREATE CHURCH
-        // =================================================
-
-        const [churchResult] = await connection.query(
-          `
-            INSERT INTO churches (
-              name,
-              type,
-              address,
-              is_active,
-              phone,
-              email,
-              pastor_name,
-              district,
-              ward,
-              code,
-              image,
-              license_status,
-              trial_started_at,
-              trial_expires_at
-            )
-            VALUES (
-              ?,
-              ?,
-              ?,
-              1,
-              ?,
-              ?,
-              ?,
-              ?,
-              ?,
-              ?,
-              ?,
-              'trial',
-              ?,
-              ?
-            )
-            `,
-          [
-            cleanChurchName,
-
-            cleanChurchType,
-
-            cleanAddress,
-
-            cleanPhone,
-
-            cleanEmail,
-
-            cleanPastorName,
-
-            cleanDistrict,
-
-            cleanWard,
-
-            churchCode,
-
-            // churches.image NOT NULL
-            "/uploads/churches/default.jpg",
-
-            trialStartedAt,
-
-            trialExpiresAt,
-          ],
-        );
-
-        const churchId = churchResult.insertId;
-
-        if (!churchId) {
-          throw new Error("Không thể tạo giáo xứ");
-        }
-
-        console.log("✅ CHURCH CREATED:", churchId);
-
-        // =================================================
-        // 19. CREATE ADMIN CATECHIST
-        // =================================================
-        //
-        // QUAN TRỌNG:
-        //
-        // username = catechistCode
-        //
-        // Ví dụ:
-        //
-        // catechist_code = GLV20260049_1
-        // username       = GLV20260049_1
-        //
-        // =================================================
-
-        const [adminResult] = await connection.query(
-          `
-            INSERT INTO admins (
-              church_id,
-              username,
-              password,
-              role,
-              account_type,
-              is_active,
-              full_name,
-              email,
-              phone
-            )
-            VALUES (
-              ?,
-              ?,
-              ?,
-              'catechist',
-              'member',
-              1,
-              ?,
-              ?,
-              ?
-            )
-            `,
-          [
-            churchId,
-
-            // LUÔN BẰNG CATECHIST CODE
-            username,
-
-            hashedPassword,
-
-            cleanFullName,
-
-            cleanEmail,
-
-            cleanPhone,
-          ],
-        );
-
-        const adminId = adminResult.insertId;
-
-        if (!adminId) {
-          throw new Error("Không thể tạo tài khoản quản trị");
-        }
-
-        console.log("✅ ADMIN CREATED:", adminId);
-
-        console.log("Username:", username);
-
-        console.log("Catechist Code:", catechistCode);
-
-        // =================================================
-        // 20. COMMIT
-        // =================================================
-
-        await connection.commit();
-
-        console.log("✅ REGISTER TRANSACTION COMMITTED");
-
-        // =================================================
-        // 21. WRITE LOG
-        // =================================================
-        //
-        // Log SAU commit.
-        //
-        // Nếu log lỗi:
-        // KHÔNG rollback dữ liệu.
-        //
-        // =================================================
-
-        try {
-          await writeLog({
-            admin_id: adminId,
-
-            action: "REGISTER",
-
-            target_type: "catechist",
-
-            target_id: adminId,
-
-            description:
-              `${cleanFullName} đăng ký FaithEdu ` +
-              `- giáo xứ "${cleanChurchName}" ` +
-              `- mã ${catechistCode} ` +
-              `- username ${username}`,
-
-            ip_address: req.ip,
-          });
-        } catch (logError) {
-          console.error("⚠️ WRITE REGISTER LOG ERROR:", logError.message);
-        }
-
-        // =================================================
-        // 22. CREATE JWT
-        // =================================================
-
-        const token = jwt.sign(
-          {
-            id: Number(adminId),
-
-            email: cleanEmail,
-
-            full_name: cleanFullName,
-
-            // username = catechist_code
-            username: username,
-
-            avatar: null,
-
-            role: "catechist",
-
-            church_id: Number(churchId),
-
-            account_type: "member",
-
-            // Chưa có record catechists
-            catechist_id: null,
-
-            teacher_id: null,
-          },
-
-          process.env.JWT_SECRET,
-
-          {
-            expiresIn: process.env.JWT_EXPIRES_IN || "1d",
-          },
-        );
-
-        // =================================================
-        // 23. SUCCESS LOG
-        // =================================================
-
-        console.log("");
-        console.log(
-          "============================================================",
-        );
-        console.log("             FAITHEDU REGISTER SUCCESS");
-        console.log(
-          "============================================================",
-        );
-
-        console.log("Admin ID       :", adminId);
-
-        console.log("Username       :", username);
-
-        console.log("Catechist Code :", catechistCode);
-
-        console.log("Email          :", cleanEmail);
-
-        console.log("Role           :", "catechist");
-
-        console.log("Church ID      :", churchId);
-
-        console.log("Church         :", cleanChurchName);
-
-        console.log("Church Code    :", churchCode);
-
-        console.log("Trial Start    :", trialStartedAt);
-
-        console.log("Trial Expire   :", trialExpiresAt);
-
-        console.log(
-          "============================================================",
-        );
-
-        // =================================================
-        // 24. RESPONSE
-        // =================================================
-
-        return res.status(201).json({
-          success: true,
-
-          message: "Đăng ký FaithEdu thành công",
-
-          token,
-
-          admin: {
-            id: Number(adminId),
-
-            email: cleanEmail,
-
-            role: "catechist",
-
-            church_id: Number(churchId),
-
-            full_name: cleanFullName,
-
-            // username = catechist_code
-            username: username,
-
-            // LUÔN GIỐNG username
-            catechist_code: username,
-
-            account_type: "member",
-
-            avatar: null,
-
-            catechist_id: null,
-
-            catechist_full_name: null,
-
-            teacher_id: null,
-
-            last_login: new Date(),
-          },
-
-          church: {
-            id: Number(churchId),
-
-            name: cleanChurchName,
-
-            code: churchCode,
-
-            license_status: "trial",
-
-            trial_started_at: trialStartedAt,
-
-            trial_expires_at: trialExpiresAt,
-
-            trial_days: 30,
-
-            activated_at: null,
-          },
-        });
-      } catch (error) {
-        lastError = error;
-
-        // =================================================
-        // ROLLBACK ATTEMPT
-        // =================================================
-
-        try {
-          await connection.rollback();
-        } catch (rollbackError) {
-          console.error("⚠️ ATTEMPT ROLLBACK ERROR:", rollbackError.message);
-        }
-
-        console.error("");
-        console.error(`❌ REGISTER ATTEMPT ${attempt}/${MAX_RETRY} ERROR`);
-
-        console.error("Message:", error.message);
-
-        console.error("Code:", error.code);
-
-        console.error("SQL Message:", error.sqlMessage);
-
-        // =================================================
-        // DUPLICATE
-        // =================================================
-
-        if (error.code === "ER_DUP_ENTRY") {
-          if (attempt < MAX_RETRY) {
-            console.log("⚠️ DUPLICATE DETECTED → RETRY");
-
-            continue;
-          }
-
-          return res.status(409).json({
-            success: false,
-
-            message:
-              "Dữ liệu vừa được tạo bởi một yêu cầu khác, vui lòng thử lại",
-
-            errorCode: error.code,
-          });
-        }
-
-        // =================================================
-        // OTHER ERROR
-        // =================================================
-
-        throw error;
-      }
-    }
-
-    // =====================================================
-    // RETRY EXHAUSTED
-    // =====================================================
-
-    console.error("❌ REGISTER FAILED AFTER MAX RETRIES");
-
-    return res.status(500).json({
-      success: false,
-
-      message: "Không thể đăng ký FaithEdu",
-
-      errorCode: lastError?.code || null,
-    });
-  } catch (error) {
-    // =====================================================
-    // OUTER ROLLBACK
-    // =====================================================
-
-    if (connection) {
-      try {
-        await connection.rollback();
-      } catch (rollbackError) {
-        console.error("❌ OUTER ROLLBACK ERROR:", rollbackError.message);
-      }
-    }
-
-    // =====================================================
-    // ERROR LOG
-    // =====================================================
-
-    console.error("");
-    console.error(
-      "============================================================",
-    );
-
-    console.error("             FAITHEDU REGISTER ERROR");
-
-    console.error(
-      "============================================================",
-    );
-
-    console.error("Message:", error.message);
-
-    console.error("Code:", error.code);
-
-    console.error("Errno:", error.errno);
-
-    console.error("SQL Message:", error.sqlMessage);
-
-    console.error("SQL State:", error.sqlState);
-
-    console.error("Stack:", error.stack);
-
-    console.error(
-      "============================================================",
-    );
-
-    // =====================================================
-    // DUPLICATE
-    // =====================================================
-
-    if (error.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({
-        success: false,
-
-        message: "Email, username hoặc mã Giáo lý viên đã tồn tại",
-
-        errorCode: error.code,
-      });
-    }
-
-    // =====================================================
-    // RESPONSE ERROR
-    // =====================================================
-
-    return res.status(500).json({
-      success: false,
-
-      message: "Đăng ký FaithEdu thất bại",
-
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
-
-      errorCode:
-        process.env.NODE_ENV === "development" ? error.code : undefined,
     });
-  } finally {
-    // =====================================================
-    // RELEASE CONNECTION
-    // =====================================================
-
-    if (connection) {
-      connection.release();
-
-      console.log("🔓 REGISTER DB CONNECTION RELEASED");
-    }
   }
 };
-// ============================================================
-// REGISTER REQUEST - GỬI OTP XÁC THỰC EMAIL
-// ============================================================
 
 // ============================================================
-// REGISTER REQUEST - TẠO ĐĂNG KÝ CHỜ + GỬI OTP
+// REGISTER REQUEST
+//
+// POST /api/auth/register
+//
+// 1. Validate
+// 2. Check email
+// 3. Hash password
+// 4. Save pending registration
+// 5. Generate OTP
+// 6. Hash OTP
+// 7. Save OTP
+// 8. Release DB
+// 9. Send email
 // ============================================================
 
 exports.registerRequest = async (req, res) => {
@@ -1213,7 +453,9 @@ exports.registerRequest = async (req, res) => {
   console.log("                  REGISTER REQUEST");
   console.log("============================================================");
 
-  let connection;
+  let connection = null;
+
+  const cleanEmail = normalizeEmail(req.body?.email);
 
   try {
     const {
@@ -1227,43 +469,51 @@ exports.registerRequest = async (req, res) => {
       district,
       ward,
       pastor_name,
-    } = req.body;
+    } = req.body || {};
 
     // ========================================================
     // NORMALIZE
     // ========================================================
 
-    const cleanEmail = String(email || "")
-      .trim()
-      .toLowerCase();
+    const normalizedEmail = normalizeEmail(email);
 
-    const cleanPassword = String(password || "");
+    const cleanPassword = typeof password === "string" ? password : "";
 
-    const cleanFullName = String(full_name || "").trim();
-    const cleanPhone = String(phone || "").trim();
-    const cleanChurchName = String(church_name || "").trim();
-    const cleanChurchType = String(church_type || "").trim();
-    const cleanAddress = String(address || "").trim();
-    const cleanDistrict = String(district || "").trim();
-    const cleanWard = String(ward || "").trim();
-    const cleanPastorName = String(pastor_name || "").trim();
+    const cleanFullName = normalizeString(full_name);
+
+    const cleanPhone = normalizeNullableString(phone);
+
+    const cleanChurchName = normalizeString(church_name);
+
+    const cleanChurchType = normalizeNullableString(church_type) || "GIAO_HO";
+
+    const cleanAddress = normalizeNullableString(address);
+
+    const cleanDistrict = normalizeNullableString(district);
+
+    const cleanWard = normalizeNullableString(ward);
+
+    const cleanPastorName = normalizeNullableString(pastor_name);
 
     // ========================================================
-    // LOG
+    // LOG SAFE DATA
     // ========================================================
 
-    console.log("EMAIL:", cleanEmail);
+    console.log("EMAIL:", normalizedEmail);
     console.log("FULL NAME:", cleanFullName);
     console.log("PHONE:", cleanPhone);
     console.log("CHURCH NAME:", cleanChurchName);
-
-    // KHÔNG BAO GIỜ LOG PASSWORD / OTP
 
     // ========================================================
     // REQUIRED
     // ========================================================
 
-    if (!cleanEmail || !cleanPassword || !cleanFullName || !cleanChurchName) {
+    if (
+      !normalizedEmail ||
+      !cleanPassword ||
+      !cleanFullName ||
+      !cleanChurchName
+    ) {
       return res.status(400).json({
         success: false,
         code: "MISSING_REQUIRED_FIELDS",
@@ -1275,9 +525,7 @@ exports.registerRequest = async (req, res) => {
     // EMAIL
     // ========================================================
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-    if (!emailRegex.test(cleanEmail)) {
+    if (!EMAIL_REGEX.test(normalizedEmail)) {
       return res.status(400).json({
         success: false,
         code: "INVALID_EMAIL",
@@ -1298,27 +546,35 @@ exports.registerRequest = async (req, res) => {
     }
 
     // ========================================================
-    // DB
+    // DB CONNECTION
     // ========================================================
 
     connection = await db.getConnection();
 
     // ========================================================
-    // CHECK EMAIL ĐÃ CÓ TÀI KHOẢN CHƯA
+    // CHECK EXISTING EMAIL
     // ========================================================
 
     const [existingAdmins] = await connection.query(
       `
-      SELECT id
-      FROM admins
-      WHERE LOWER(email) = ?
-      LIMIT 1
-      `,
-      [cleanEmail],
+          SELECT
+            id,
+            username,
+            email,
+            church_id,
+            role
+
+          FROM admins
+
+          WHERE LOWER(email) = ?
+
+          LIMIT 1
+        `,
+      [normalizedEmail],
     );
 
     if (existingAdmins.length > 0) {
-      console.warn(`[REGISTER] EMAIL ALREADY EXISTS: ${cleanEmail}`);
+      console.warn(`[REGISTER] EMAIL ALREADY EXISTS: ${normalizedEmail}`);
 
       return res.status(409).json({
         success: false,
@@ -1332,147 +588,222 @@ exports.registerRequest = async (req, res) => {
     // HASH PASSWORD
     // ========================================================
 
-    const passwordHash = await bcrypt.hash(cleanPassword, 10);
-
-    // ========================================================
-    // THỜI GIAN ĐĂNG KÝ CHỜ
-    // ========================================================
-
-    // Cho phép đăng ký chờ trong 15 phút
-    const registrationExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
-
-    // ========================================================
-    // LƯU / CẬP NHẬT PENDING REGISTRATION
-    // ========================================================
-
-    await connection.query(
-      `
-      INSERT INTO pending_registrations
-      (
-        email,
-        password_hash,
-        full_name,
-        phone,
-        church_name,
-        church_type,
-        address,
-        district,
-        ward,
-        pastor_name,
-        expires_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-
-      ON DUPLICATE KEY UPDATE
-        password_hash = VALUES(password_hash),
-        full_name = VALUES(full_name),
-        phone = VALUES(phone),
-        church_name = VALUES(church_name),
-        church_type = VALUES(church_type),
-        address = VALUES(address),
-        district = VALUES(district),
-        ward = VALUES(ward),
-        pastor_name = VALUES(pastor_name),
-        expires_at = VALUES(expires_at),
-        updated_at = CURRENT_TIMESTAMP
-      `,
-      [
-        cleanEmail,
-        passwordHash,
-        cleanFullName,
-        cleanPhone || null,
-        cleanChurchName,
-        cleanChurchType || null,
-        cleanAddress || null,
-        cleanDistrict || null,
-        cleanWard || null,
-        cleanPastorName || null,
-        registrationExpiresAt,
-      ],
-    );
-
-    console.log("[REGISTER] PENDING REGISTRATION SAVED:", cleanEmail);
-
-    // ========================================================
-    // TẠO OTP
-    // ========================================================
-
-    const otp = String(Math.floor(100000 + Math.random() * 900000));
-
-    // ========================================================
-    // HASH OTP
-    // ========================================================
-
-    const otpHash = await bcrypt.hash(otp, 10);
-
-    // ========================================================
-    // OTP EXPIRE 5 PHÚT
-    // ========================================================
-
-    const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
-
-    // ========================================================
-    // XÓA OTP CŨ
-    // ========================================================
-
-    await connection.query(
-      `
-      DELETE FROM email_verifications
-      WHERE email = ?
-        AND purpose = 'register'
-      `,
-      [cleanEmail],
+    const passwordHash = await bcrypt.hash(
+      cleanPassword,
+      BCRYPT_PASSWORD_ROUNDS,
     );
 
     // ========================================================
-    // INSERT OTP MỚI
+    // GENERATE OTP
     // ========================================================
 
-    await connection.query(
-      `
-      INSERT INTO email_verifications
-      (
-        email,
-        otp_hash,
-        purpose,
-        expires_at,
-        attempts
-      )
-      VALUES (?, ?, 'register', ?, 0)
-      `,
-      [cleanEmail, otpHash, otpExpiresAt],
+    const otp = generateOtp();
+
+    // KHÔNG BAO GIỜ LOG OTP
+
+    const otpHash = await bcrypt.hash(otp, BCRYPT_OTP_ROUNDS);
+
+    // ========================================================
+    // EXPIRES
+    // ========================================================
+
+    const registrationExpiresAt = new Date(
+      Date.now() + PENDING_REGISTRATION_EXPIRES_MINUTES * 60 * 1000,
     );
 
-    console.log("[REGISTER] OTP CREATED:", cleanEmail);
+    const otpExpiresAt = new Date(Date.now() + OTP_EXPIRES_MINUTES * 60 * 1000);
 
     // ========================================================
-    // GỬI EMAIL
+    // BEGIN TRANSACTION
+    // ========================================================
+
+    await connection.beginTransaction();
+
+    try {
+      // ======================================================
+      // SAVE / UPDATE PENDING REGISTRATION
+      // ======================================================
+
+      await connection.query(
+        `
+          INSERT INTO pending_registrations
+          (
+            email,
+            password_hash,
+            full_name,
+            phone,
+            church_name,
+            church_type,
+            address,
+            district,
+            ward,
+            pastor_name,
+            expires_at
+          )
+
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+          ON DUPLICATE KEY UPDATE
+            password_hash = VALUES(password_hash),
+            full_name = VALUES(full_name),
+            phone = VALUES(phone),
+            church_name = VALUES(church_name),
+            church_type = VALUES(church_type),
+            address = VALUES(address),
+            district = VALUES(district),
+            ward = VALUES(ward),
+            pastor_name = VALUES(pastor_name),
+            expires_at = VALUES(expires_at),
+            updated_at = CURRENT_TIMESTAMP
+        `,
+        [
+          normalizedEmail,
+          passwordHash,
+          cleanFullName,
+          cleanPhone,
+          cleanChurchName,
+          cleanChurchType,
+          cleanAddress,
+          cleanDistrict,
+          cleanWard,
+          cleanPastorName,
+          registrationExpiresAt,
+        ],
+      );
+
+      // ======================================================
+      // DELETE OLD REGISTER OTP
+      // ======================================================
+
+      await connection.query(
+        `
+          DELETE FROM email_verifications
+
+          WHERE email = ?
+            AND purpose = 'register'
+        `,
+        [normalizedEmail],
+      );
+
+      // ======================================================
+      // INSERT NEW OTP
+      // ======================================================
+
+      await connection.query(
+        `
+          INSERT INTO email_verifications
+          (
+            email,
+            otp_hash,
+            purpose,
+            expires_at,
+            attempts
+          )
+
+          VALUES (?, ?, 'register', ?, 0)
+        `,
+        [normalizedEmail, otpHash, otpExpiresAt],
+      );
+
+      // ======================================================
+      // COMMIT DB
+      // ======================================================
+
+      await connection.commit();
+
+      console.log("[REGISTER] PENDING + OTP SAVED:", normalizedEmail);
+    } catch (dbError) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error(
+          "⚠️ REGISTER REQUEST ROLLBACK ERROR:",
+          rollbackError?.message || rollbackError,
+        );
+      }
+
+      throw dbError;
+    }
+
+    // ========================================================
+    // RELEASE CONNECTION BEFORE SMTP
+    // ========================================================
+
+    connection.release();
+    connection = null;
+
+    // ========================================================
+    // SEND EMAIL
     // ========================================================
 
     try {
+      if (typeof emailService.sendRegisterOtpEmail !== "function") {
+        throw new Error(
+          "sendRegisterOtpEmail is not exported from emailService",
+        );
+      }
+
       await emailService.sendRegisterOtpEmail({
-        to: cleanEmail,
+        to: normalizedEmail,
         fullName: cleanFullName,
         otp,
-        expiresMinutes: 5,
+        expiresMinutes: OTP_EXPIRES_MINUTES,
       });
 
-      console.log("[REGISTER] OTP EMAIL SENT:", cleanEmail);
+      console.log("[REGISTER] OTP EMAIL SENT:", normalizedEmail);
     } catch (emailError) {
       console.error(
         "[REGISTER] SEND OTP EMAIL ERROR:",
         emailError?.message || emailError,
       );
 
-      // Nếu gửi email thất bại thì xóa OTP
-      await connection.query(
-        `
-        DELETE FROM email_verifications
-        WHERE email = ?
-          AND purpose = 'register'
-        `,
-        [cleanEmail],
-      );
+      // ======================================================
+      // CLEANUP AFTER EMAIL FAILURE
+      // ======================================================
+
+      let cleanupConnection = null;
+
+      try {
+        cleanupConnection = await db.getConnection();
+
+        await cleanupConnection.beginTransaction();
+
+        await cleanupConnection.query(
+          `
+            DELETE FROM email_verifications
+
+            WHERE email = ?
+              AND purpose = 'register'
+          `,
+          [normalizedEmail],
+        );
+
+        await cleanupConnection.query(
+          `
+            DELETE FROM pending_registrations
+
+            WHERE email = ?
+          `,
+          [normalizedEmail],
+        );
+
+        await cleanupConnection.commit();
+      } catch (cleanupError) {
+        try {
+          if (cleanupConnection) {
+            await cleanupConnection.rollback();
+          }
+        } catch (_) {}
+
+        console.error(
+          "⚠️ REGISTER CLEANUP ERROR:",
+          cleanupError?.message || cleanupError,
+        );
+      } finally {
+        if (cleanupConnection) {
+          cleanupConnection.release();
+        }
+      }
 
       return res.status(500).json({
         success: false,
@@ -1482,16 +813,19 @@ exports.registerRequest = async (req, res) => {
     }
 
     // ========================================================
-    // RESPONSE
+    // SUCCESS
     // ========================================================
+
+    console.log("[REGISTER] OTP SENT SUCCESSFULLY:", normalizedEmail);
 
     return res.status(200).json({
       success: true,
       code: "OTP_SENT",
       message: "Mã xác thực đã được gửi đến email của bạn",
+
       data: {
-        email: cleanEmail,
-        expires_in: 300,
+        email: normalizedEmail,
+        expires_in: OTP_EXPIRES_SECONDS,
       },
     });
   } catch (error) {
@@ -1499,11 +833,16 @@ exports.registerRequest = async (req, res) => {
     console.error(
       "============================================================",
     );
-    console.error("REGISTER REQUEST ERROR");
+    console.error("                 REGISTER REQUEST ERROR");
     console.error(
       "============================================================",
     );
-    console.error(error);
+
+    logDbError("REGISTER REQUEST DETAILS:", error);
+
+    console.error(
+      "============================================================",
+    );
 
     return res.status(500).json({
       success: false,
@@ -1516,3 +855,895 @@ exports.registerRequest = async (req, res) => {
     }
   }
 };
+
+// ============================================================
+// REGISTER VERIFY
+//
+// POST /api/auth/register/verify
+//
+// 1. Validate
+// 2. Lock OTP
+// 3. Compare OTP
+// 4. Lock pending registration
+// 5. Check email
+// 6. Generate username
+// 7. Create church
+// 8. Create admin
+// 9. Mark OTP verified
+// 10. Delete pending
+// 11. Commit
+// 12. Write log
+// 13. JWT
+// ============================================================
+
+exports.registerVerify = async (req, res) => {
+  console.log("");
+  console.log("============================================================");
+  console.log("                  REGISTER VERIFY");
+  console.log("============================================================");
+
+  let connection = null;
+  let transactionStarted = false;
+
+  try {
+    const { email, otp } = req.body || {};
+
+    // ========================================================
+    // NORMALIZE
+    // ========================================================
+
+    const cleanEmail = normalizeEmail(email);
+
+    const cleanOtp = normalizeString(otp);
+
+    console.log("EMAIL:", cleanEmail);
+    console.log("OTP RECEIVED:", cleanOtp ? "YES" : "NO");
+
+    // KHÔNG LOG OTP THẬT
+
+    // ========================================================
+    // VALIDATE
+    // ========================================================
+
+    if (!cleanEmail || !cleanOtp) {
+      return res.status(400).json({
+        success: false,
+        code: "MISSING_VERIFICATION_DATA",
+        message: "Vui lòng nhập email và mã xác thực",
+      });
+    }
+
+    if (!EMAIL_REGEX.test(cleanEmail)) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_EMAIL",
+        message: "Email không hợp lệ",
+      });
+    }
+
+    if (!/^\d{6}$/.test(cleanOtp)) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_OTP_FORMAT",
+        message: "Mã xác thực phải gồm 6 chữ số",
+      });
+    }
+
+    // ========================================================
+    // CONNECTION
+    // ========================================================
+
+    connection = await db.getConnection();
+
+    // ========================================================
+    // BEGIN TRANSACTION
+    // ========================================================
+
+    await connection.beginTransaction();
+
+    transactionStarted = true;
+
+    // ========================================================
+    // LOCK OTP
+    //
+    // RẤT QUAN TRỌNG:
+    // Không để 2 request verify chạy đồng thời.
+    // ========================================================
+
+    const [verificationRows] = await connection.query(
+      `
+          SELECT
+            id,
+            email,
+            otp_hash,
+            expires_at,
+            verified_at,
+            attempts
+
+          FROM email_verifications
+
+          WHERE email = ?
+            AND purpose = 'register'
+
+          ORDER BY id DESC
+
+          LIMIT 1
+
+          FOR UPDATE
+        `,
+      [cleanEmail],
+    );
+
+    if (verificationRows.length === 0) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(404).json({
+        success: false,
+        code: "OTP_NOT_FOUND",
+        message: "Không tìm thấy mã xác thực. Vui lòng yêu cầu gửi lại mã.",
+      });
+    }
+
+    const verification = verificationRows[0];
+
+    // ========================================================
+    // OTP ALREADY USED
+    // ========================================================
+
+    if (verification.verified_at) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(400).json({
+        success: false,
+        code: "OTP_ALREADY_USED",
+        message: "Mã xác thực này đã được sử dụng.",
+      });
+    }
+
+    // ========================================================
+    // MAX ATTEMPTS
+    // ========================================================
+
+    if (Number(verification.attempts) >= MAX_OTP_ATTEMPTS) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(429).json({
+        success: false,
+        code: "OTP_TOO_MANY_ATTEMPTS",
+        message: "Bạn đã nhập sai mã quá nhiều lần. Vui lòng yêu cầu mã mới.",
+      });
+    }
+
+    // ========================================================
+    // OTP EXPIRED
+    // ========================================================
+
+    const now = new Date();
+
+    const otpExpiresAt = new Date(verification.expires_at);
+
+    if (now > otpExpiresAt) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(400).json({
+        success: false,
+        code: "OTP_EXPIRED",
+        message: "Mã xác thực đã hết hạn. Vui lòng yêu cầu mã mới.",
+      });
+    }
+
+    // ========================================================
+    // COMPARE OTP
+    // ========================================================
+
+    const isOtpValid = await bcrypt.compare(cleanOtp, verification.otp_hash);
+
+    // ========================================================
+    // WRONG OTP
+    // ========================================================
+
+    if (!isOtpValid) {
+      await connection.query(
+        `
+          UPDATE email_verifications
+
+          SET attempts = attempts + 1
+
+          WHERE id = ?
+            AND verified_at IS NULL
+        `,
+        [verification.id],
+      );
+
+      await connection.commit();
+      transactionStarted = false;
+
+      const attemptsUsed = Number(verification.attempts) + 1;
+
+      console.warn(
+        `[REGISTER] INVALID OTP | EMAIL=${cleanEmail} | ATTEMPTS=${attemptsUsed}`,
+      );
+
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_OTP",
+        message: "Mã xác thực không chính xác",
+
+        data: {
+          attempts_remaining: Math.max(0, MAX_OTP_ATTEMPTS - attemptsUsed),
+        },
+      });
+    }
+
+    console.log("[REGISTER] OTP CORRECT:", cleanEmail);
+
+    // ========================================================
+    // LOCK PENDING REGISTRATION
+    // ========================================================
+
+    const [pendingRows] = await connection.query(
+      `
+          SELECT
+            id,
+            email,
+            password_hash,
+            full_name,
+            phone,
+            church_name,
+            church_type,
+            address,
+            district,
+            ward,
+            pastor_name,
+            expires_at
+
+          FROM pending_registrations
+
+          WHERE email = ?
+
+          LIMIT 1
+
+          FOR UPDATE
+        `,
+      [cleanEmail],
+    );
+
+    if (pendingRows.length === 0) {
+      throw new Error("PENDING_REGISTRATION_NOT_FOUND");
+    }
+
+    const pending = pendingRows[0];
+
+    // ========================================================
+    // PENDING EXPIRED
+    // ========================================================
+
+    const pendingExpiresAt = new Date(pending.expires_at);
+
+    if (now > pendingExpiresAt) {
+      throw new Error("PENDING_REGISTRATION_EXPIRED");
+    }
+
+    // ========================================================
+    // CHECK EMAIL AGAIN
+    // ========================================================
+
+    const [existingAccount] = await connection.query(
+      `
+          SELECT
+            id,
+            username,
+            email,
+            church_id,
+            role
+
+          FROM admins
+
+          WHERE LOWER(email) = ?
+
+          LIMIT 1
+
+          FOR UPDATE
+        `,
+      [cleanEmail],
+    );
+
+    if (existingAccount.length > 0) {
+      throw new Error("EMAIL_ALREADY_EXISTS");
+    }
+
+    // ========================================================
+    // GENERATE CATECHIST CODE
+    // ========================================================
+
+    const baseCatechistCode = await generateCatechistCode(connection);
+
+    console.log("🔢 BASE CATECHIST CODE:", baseCatechistCode);
+
+    // ========================================================
+    // FIND AVAILABLE USERNAME
+    // ========================================================
+
+    let catechistCode = baseCatechistCode;
+
+    let codeIndex = 0;
+
+    while (true) {
+      const [existingCatechist] = await connection.query(
+        `
+            SELECT id
+
+            FROM catechists
+
+            WHERE catechist_code = ?
+
+            LIMIT 1
+          `,
+        [catechistCode],
+      );
+
+      const [existingAdmin] = await connection.query(
+        `
+            SELECT id
+
+            FROM admins
+
+            WHERE username = ?
+
+            LIMIT 1
+          `,
+        [catechistCode],
+      );
+
+      console.log(`🔍 CHECK CODE "${catechistCode}"`, {
+        catechistExists: existingCatechist.length > 0,
+
+        adminExists: existingAdmin.length > 0,
+      });
+
+      if (existingCatechist.length === 0 && existingAdmin.length === 0) {
+        break;
+      }
+
+      codeIndex++;
+
+      if (codeIndex >= MAX_REGISTER_RETRY) {
+        throw new Error("CATECHIST_CODE_GENERATION_FAILED");
+      }
+
+      catechistCode = `${baseCatechistCode}_${codeIndex}`;
+    }
+
+    const username = catechistCode;
+
+    console.log("✅ FINAL USERNAME:", username);
+
+    // ========================================================
+    // TRIAL 30 DAYS
+    // ========================================================
+
+    const trialStartedAt = new Date();
+
+    const trialExpiresAt = new Date(trialStartedAt);
+
+    trialExpiresAt.setDate(trialExpiresAt.getDate() + 30);
+
+    // ========================================================
+    // CHURCH CODE
+    // ========================================================
+
+    let churchCode = null;
+
+    let churchCodeAvailable = false;
+
+    for (let attempt = 0; attempt < MAX_REGISTER_RETRY; attempt++) {
+      const candidate = `FE${Date.now()}${crypto.randomInt(100, 1000)}`;
+
+      const [existingChurch] = await connection.query(
+        `
+            SELECT id
+
+            FROM churches
+
+            WHERE code = ?
+
+            LIMIT 1
+          `,
+        [candidate],
+      );
+
+      if (existingChurch.length === 0) {
+        churchCode = candidate;
+        churchCodeAvailable = true;
+        break;
+      }
+    }
+
+    if (!churchCodeAvailable) {
+      throw new Error("CHURCH_CODE_GENERATION_FAILED");
+    }
+
+    console.log("⛪ CHURCH CODE:", churchCode);
+
+    // ========================================================
+    // CREATE CHURCH
+    // ========================================================
+
+    const [churchResult] = await connection.query(
+      `
+          INSERT INTO churches
+          (
+            name,
+            type,
+            address,
+            is_active,
+            phone,
+            email,
+            pastor_name,
+            district,
+            ward,
+            code,
+            image,
+            license_status,
+            trial_started_at,
+            trial_expires_at
+          )
+
+          VALUES
+          (
+            ?,
+            ?,
+            ?,
+            1,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            'trial',
+            ?,
+            ?
+          )
+        `,
+      [
+        pending.church_name,
+
+        pending.church_type || "GIAO_HO",
+
+        pending.address || null,
+
+        pending.phone || null,
+
+        pending.email,
+
+        pending.pastor_name || null,
+
+        pending.district || null,
+
+        pending.ward || null,
+
+        churchCode,
+
+        "/uploads/churches/default.jpg",
+
+        trialStartedAt,
+
+        trialExpiresAt,
+      ],
+    );
+
+    const churchId = churchResult.insertId;
+
+    if (!churchId) {
+      throw new Error("CHURCH_CREATE_FAILED");
+    }
+
+    console.log("✅ CHURCH CREATED:", churchId);
+
+    // ========================================================
+    // CREATE ADMIN
+    // ========================================================
+
+    const [adminResult] = await connection.query(
+      `
+          INSERT INTO admins
+          (
+            church_id,
+            username,
+            password,
+            role,
+            account_type,
+            is_active,
+            full_name,
+            email,
+            phone
+          )
+
+          VALUES
+          (
+            ?,
+            ?,
+            ?,
+            'catechist',
+            'member',
+            1,
+            ?,
+            ?,
+            ?
+          )
+        `,
+      [
+        churchId,
+
+        username,
+
+        pending.password_hash,
+
+        pending.full_name,
+
+        pending.email,
+
+        pending.phone || null,
+      ],
+    );
+
+    const adminId = adminResult.insertId;
+
+    if (!adminId) {
+      throw new Error("ADMIN_CREATE_FAILED");
+    }
+
+    console.log("✅ ADMIN CREATED:", adminId);
+
+    // ========================================================
+    // MARK OTP VERIFIED
+    // ========================================================
+
+    const [updateOtpResult] = await connection.query(
+      `
+          UPDATE email_verifications
+
+          SET verified_at = NOW()
+
+          WHERE id = ?
+
+            AND verified_at IS NULL
+        `,
+      [verification.id],
+    );
+
+    if (updateOtpResult.affectedRows !== 1) {
+      throw new Error("OTP_VERIFY_UPDATE_FAILED");
+    }
+
+    // ========================================================
+    // DELETE PENDING REGISTRATION
+    // ========================================================
+
+    const [deletePendingResult] = await connection.query(
+      `
+          DELETE FROM pending_registrations
+
+          WHERE id = ?
+        `,
+      [pending.id],
+    );
+
+    if (deletePendingResult.affectedRows !== 1) {
+      throw new Error("PENDING_REGISTRATION_DELETE_FAILED");
+    }
+
+    // ========================================================
+    // COMMIT
+    // ========================================================
+
+    await connection.commit();
+    transactionStarted = false;
+
+    console.log("✅ REGISTER TRANSACTION COMMITTED");
+
+    // ========================================================
+    // WRITE REGISTER LOG
+    // ========================================================
+
+    try {
+      await writeLog({
+        admin_id: adminId,
+
+        action: "REGISTER",
+
+        target_type: "catechist",
+
+        target_id: adminId,
+
+        description:
+          `${pending.full_name} đăng ký FaithEdu ` +
+          `- giáo xứ "${pending.church_name}" ` +
+          `- mã ${catechistCode} ` +
+          `- username ${username}`,
+
+        ip_address: req.ip,
+      });
+    } catch (logError) {
+      console.error(
+        "⚠️ WRITE REGISTER LOG ERROR:",
+        logError?.message || logError,
+      );
+    }
+
+    // ========================================================
+    // CREATE JWT
+    // ========================================================
+
+    const token = createJwtToken({
+      id: adminId,
+
+      email: pending.email,
+
+      full_name: pending.full_name,
+
+      username,
+
+      avatar: null,
+
+      role: "catechist",
+
+      church_id: churchId,
+
+      account_type: "member",
+
+      catechist_id: null,
+
+      teacher_id: null,
+
+      parent_id: null,
+    });
+
+    // ========================================================
+    // SUCCESS LOG
+    // ========================================================
+
+    console.log("");
+    console.log("============================================================");
+    console.log("             FAITHEDU REGISTER SUCCESS");
+    console.log("============================================================");
+    console.log("Admin ID       :", adminId);
+    console.log("Username       :", username);
+    console.log("Catechist Code :", catechistCode);
+    console.log("Email          :", pending.email);
+    console.log("Role           :", "catechist");
+    console.log("Church ID      :", churchId);
+    console.log("Church         :", pending.church_name);
+    console.log("Church Code    :", churchCode);
+    console.log("Trial Start    :", trialStartedAt);
+    console.log("Trial Expire   :", trialExpiresAt);
+    console.log("============================================================");
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
+
+    return res.status(201).json({
+      success: true,
+
+      code: "REGISTER_SUCCESS",
+
+      message: "Xác thực email và đăng ký FaithEdu thành công",
+
+      token,
+
+      admin: {
+        id: Number(adminId),
+
+        email: pending.email,
+
+        role: "catechist",
+
+        church_id: Number(churchId),
+
+        full_name: pending.full_name,
+
+        username,
+
+        catechist_code: catechistCode,
+
+        account_type: "member",
+
+        avatar: null,
+
+        catechist_id: null,
+
+        catechist_full_name: null,
+
+        teacher_id: null,
+
+        parent_id: null,
+
+        last_login: new Date(),
+      },
+
+      church: {
+        id: Number(churchId),
+
+        name: pending.church_name,
+
+        code: churchCode,
+
+        type: pending.church_type || "GIAO_HO",
+
+        license_status: "trial",
+
+        trial_started_at: trialStartedAt,
+
+        trial_expires_at: trialExpiresAt,
+
+        trial_days: 30,
+
+        activated_at: null,
+      },
+    });
+  } catch (error) {
+    // ========================================================
+    // ROLLBACK
+    // ========================================================
+
+    if (connection && transactionStarted) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error(
+          "⚠️ REGISTER VERIFY ROLLBACK ERROR:",
+          rollbackError?.message || rollbackError,
+        );
+      }
+
+      transactionStarted = false;
+    }
+
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("             FAITHEDU REGISTER VERIFY ERROR");
+    console.error(
+      "============================================================",
+    );
+
+    logDbError("REGISTER VERIFY DETAILS:", error);
+
+    console.error(
+      "============================================================",
+    );
+
+    // ========================================================
+    // KNOWN ERRORS
+    // ========================================================
+
+    switch (error?.message) {
+      case "PENDING_REGISTRATION_NOT_FOUND":
+        return res.status(404).json({
+          success: false,
+          code: "PENDING_REGISTRATION_NOT_FOUND",
+          message: "Không tìm thấy thông tin đăng ký. Vui lòng đăng ký lại.",
+        });
+
+      case "PENDING_REGISTRATION_EXPIRED":
+        return res.status(400).json({
+          success: false,
+          code: "REGISTRATION_EXPIRED",
+          message: "Phiên đăng ký đã hết hạn. Vui lòng đăng ký lại.",
+        });
+
+      case "EMAIL_ALREADY_EXISTS":
+        return res.status(409).json({
+          success: false,
+          code: "EMAIL_ALREADY_EXISTS",
+          message: "Email này đã được sử dụng.",
+        });
+
+      case "CHURCH_CREATE_FAILED":
+        return res.status(500).json({
+          success: false,
+          code: "CHURCH_CREATE_FAILED",
+          message: "Không thể tạo giáo xứ. Vui lòng thử lại.",
+        });
+
+      case "ADMIN_CREATE_FAILED":
+        return res.status(500).json({
+          success: false,
+          code: "ADMIN_CREATE_FAILED",
+          message: "Không thể tạo tài khoản. Vui lòng thử lại.",
+        });
+
+      case "OTP_VERIFY_UPDATE_FAILED":
+        return res.status(500).json({
+          success: false,
+          code: "OTP_VERIFY_UPDATE_FAILED",
+          message: "Không thể xác nhận email. Vui lòng thử lại.",
+        });
+
+      case "PENDING_REGISTRATION_DELETE_FAILED":
+        return res.status(500).json({
+          success: false,
+          code: "PENDING_REGISTRATION_DELETE_FAILED",
+          message: "Không thể hoàn tất đăng ký. Vui lòng thử lại.",
+        });
+
+      case "CATECHIST_CODE_GENERATION_FAILED":
+        return res.status(500).json({
+          success: false,
+          code: "CATECHIST_CODE_GENERATION_FAILED",
+          message: "Không thể tạo mã Giáo lý viên. Vui lòng thử lại.",
+        });
+
+      case "CHURCH_CODE_GENERATION_FAILED":
+        return res.status(500).json({
+          success: false,
+          code: "CHURCH_CODE_GENERATION_FAILED",
+          message: "Không thể tạo mã giáo xứ. Vui lòng thử lại.",
+        });
+
+      case "JWT_SECRET_NOT_CONFIGURED":
+        return res.status(500).json({
+          success: false,
+          code: "JWT_SECRET_NOT_CONFIGURED",
+          message: "Hệ thống chưa cấu hình JWT.",
+        });
+
+      default:
+        break;
+    }
+
+    // ========================================================
+    // DUPLICATE
+    // ========================================================
+
+    if (error?.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        success: false,
+        code: "REGISTER_DUPLICATE",
+        message:
+          "Email, username, mã Giáo lý viên hoặc mã giáo xứ đã tồn tại. Vui lòng thử lại.",
+      });
+    }
+
+    // ========================================================
+    // GENERAL ERROR
+    // ========================================================
+
+    return res.status(500).json({
+      success: false,
+
+      code: "REGISTER_VERIFY_ERROR",
+
+      message: "Không thể hoàn tất đăng ký FaithEdu. Vui lòng thử lại sau.",
+
+      error:
+        process.env.NODE_ENV === "development" ? error?.message : undefined,
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+
+      console.log("🔓 REGISTER VERIFY DB CONNECTION RELEASED");
+    }
+  }
+};
+
+// ============================================================
+// BACKWARD COMPATIBILITY
+//
+// Nếu một chỗ nào đó trong BE vẫn gọi:
+//
+// authController.register
+//
+// thì sẽ tự chuyển sang registerRequest.
+// ============================================================
+
+exports.register = exports.registerRequest;

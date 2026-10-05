@@ -431,23 +431,6 @@ exports.login = async (req, res) => {
   }
 };
 
-// ============================================================
-// REGISTER REQUEST
-//
-// POST /api/auth/register
-//
-// 1. Validate
-// 2. Check email
-// 3. Hash password
-// 4. Save pending registration
-// 5. Generate OTP
-// 6. Hash OTP
-// 7. Save OTP
-// 8. Release DB
-// 9. Send email
-
-// ============================================================
-
 exports.registerRequest = async (req, res) => {
   console.log("TAO ĐĂNG KÍ");
   console.log("============================================================");
@@ -856,26 +839,6 @@ exports.registerRequest = async (req, res) => {
     }
   }
 };
-
-// ============================================================
-// REGISTER VERIFY
-//
-// POST /api/auth/register/verify
-//
-// 1. Validate
-// 2. Lock OTP
-// 3. Compare OTP
-// 4. Lock pending registration
-// 5. Check email
-// 6. Generate username
-// 7. Create church
-// 8. Create admin
-// 9. Mark OTP verified
-// 10. Delete pending
-// 11. Commit
-// 12. Write log
-// 13. JWT
-// ============================================================
 
 exports.registerVerify = async (req, res) => {
   console.log("");
@@ -1736,15 +1699,5 @@ exports.registerVerify = async (req, res) => {
     }
   }
 };
-
-// ============================================================
-// BACKWARD COMPATIBILITY
-//
-// Nếu một chỗ nào đó trong BE vẫn gọi:
-//
-// authController.register
-//
-// thì sẽ tự chuyển sang registerRequest.
-// ============================================================
 
 exports.register = exports.registerRequest;

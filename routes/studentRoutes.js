@@ -5,8 +5,8 @@ const router = express.Router();
 const studentController = require("../controllers/studentController");
 
 const { verifyToken } = require("../middleware/authMiddleware");
-const { destructiveLimiter } = require("../middlewares/rateLimitMiddleware");
-const { globalApiLimiter } = require("./middlewares/rateLimitMiddleware");
+const { destructiveLimiter } = require("../middleware/rateLimitMiddleware");
+const { globalApiLimiter } = require("./middleware/rateLimitMiddleware");
 
 const uploadStudentAvatar = require("../middleware/uploadStudentAvatar");
 

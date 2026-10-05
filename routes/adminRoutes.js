@@ -4,8 +4,8 @@ const adminController = require("../controllers/adminController");
 const upload = require("../middleware/uploadAvatar");
 const { verifyToken } = require("../middleware/authMiddleware");
 const requireSystemAdmin = require("../middleware/requireSystemAdmin");
-const { destructiveLimiter } = require("../middlewares/rateLimitMiddleware");
-const { globalApiLimiter } = require("./middlewares/rateLimitMiddleware");
+const { destructiveLimiter } = require("../middleware/rateLimitMiddleware");
+const { globalApiLimiter } = require("./middleware/rateLimitMiddleware");
 
 // CREATE (có upload avatar)
 router.post(

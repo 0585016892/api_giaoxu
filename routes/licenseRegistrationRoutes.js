@@ -8,7 +8,7 @@ const uploadLicensePayment = require("../middleware/uploadLicensePayment");
 
 const controller = require("../controllers/licenseRegistrationController");
 const requireSystemAdmin = require("../middleware/requireSystemAdmin");
-const { globalApiLimiter } = require("./middlewares/rateLimitMiddleware");
+const { globalApiLimiter } = require("./middleware/rateLimitMiddleware");
 
 /**
  * ============================================================

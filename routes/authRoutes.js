@@ -4,7 +4,7 @@ const router = express.Router();
 
 const authController = require("../controllers/authController");
 
-const { authLimiter } = require("../middlewares/rateLimitMiddleware");
+const { authLimiter } = require("../middleware/rateLimitMiddleware");
 
 // ============================================================
 // AUTH - LOGIN

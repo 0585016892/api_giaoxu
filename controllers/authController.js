@@ -1,6 +1,7 @@
 const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const emailService = require("../utils/emailService");
 const { writeLog } = require("../utils/activityLogger");
 const { generateCatechistCode } = require("../utils/generateCode");
 exports.login = async (req, res) => {
@@ -1195,6 +1196,323 @@ exports.register = async (req, res) => {
       connection.release();
 
       console.log("🔓 REGISTER DB CONNECTION RELEASED");
+    }
+  }
+};
+// ============================================================
+// REGISTER REQUEST - GỬI OTP XÁC THỰC EMAIL
+// ============================================================
+
+// ============================================================
+// REGISTER REQUEST - TẠO ĐĂNG KÝ CHỜ + GỬI OTP
+// ============================================================
+
+exports.registerRequest = async (req, res) => {
+  console.log("");
+  console.log("============================================================");
+  console.log("                  REGISTER REQUEST");
+  console.log("============================================================");
+
+  let connection;
+
+  try {
+    const {
+      email,
+      password,
+      full_name,
+      phone,
+      church_name,
+      church_type,
+      address,
+      district,
+      ward,
+      pastor_name,
+    } = req.body;
+
+    // ========================================================
+    // NORMALIZE
+    // ========================================================
+
+    const cleanEmail = String(email || "")
+      .trim()
+      .toLowerCase();
+
+    const cleanPassword = String(password || "");
+
+    const cleanFullName = String(full_name || "").trim();
+    const cleanPhone = String(phone || "").trim();
+    const cleanChurchName = String(church_name || "").trim();
+    const cleanChurchType = String(church_type || "").trim();
+    const cleanAddress = String(address || "").trim();
+    const cleanDistrict = String(district || "").trim();
+    const cleanWard = String(ward || "").trim();
+    const cleanPastorName = String(pastor_name || "").trim();
+
+    // ========================================================
+    // LOG
+    // ========================================================
+
+    console.log("EMAIL:", cleanEmail);
+    console.log("FULL NAME:", cleanFullName);
+    console.log("PHONE:", cleanPhone);
+    console.log("CHURCH NAME:", cleanChurchName);
+
+    // KHÔNG BAO GIỜ LOG PASSWORD / OTP
+
+    // ========================================================
+    // REQUIRED
+    // ========================================================
+
+    if (!cleanEmail || !cleanPassword || !cleanFullName || !cleanChurchName) {
+      return res.status(400).json({
+        success: false,
+        code: "MISSING_REQUIRED_FIELDS",
+        message: "Vui lòng nhập email, mật khẩu, họ tên và tên giáo xứ",
+      });
+    }
+
+    // ========================================================
+    // EMAIL
+    // ========================================================
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!emailRegex.test(cleanEmail)) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_EMAIL",
+        message: "Email không hợp lệ",
+      });
+    }
+
+    // ========================================================
+    // PASSWORD
+    // ========================================================
+
+    if (cleanPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        code: "PASSWORD_TOO_SHORT",
+        message: "Mật khẩu phải có ít nhất 6 ký tự",
+      });
+    }
+
+    // ========================================================
+    // DB
+    // ========================================================
+
+    connection = await db.getConnection();
+
+    // ========================================================
+    // CHECK EMAIL ĐÃ CÓ TÀI KHOẢN CHƯA
+    // ========================================================
+
+    const [existingAdmins] = await connection.query(
+      `
+      SELECT id
+      FROM admins
+      WHERE LOWER(email) = ?
+      LIMIT 1
+      `,
+      [cleanEmail],
+    );
+
+    if (existingAdmins.length > 0) {
+      console.warn(`[REGISTER] EMAIL ALREADY EXISTS: ${cleanEmail}`);
+
+      return res.status(409).json({
+        success: false,
+        code: "EMAIL_ALREADY_EXISTS",
+        message:
+          "Email này đã được sử dụng. Vui lòng đăng nhập hoặc sử dụng email khác.",
+      });
+    }
+
+    // ========================================================
+    // HASH PASSWORD
+    // ========================================================
+
+    const passwordHash = await bcrypt.hash(cleanPassword, 10);
+
+    // ========================================================
+    // THỜI GIAN ĐĂNG KÝ CHỜ
+    // ========================================================
+
+    // Cho phép đăng ký chờ trong 15 phút
+    const registrationExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+    // ========================================================
+    // LƯU / CẬP NHẬT PENDING REGISTRATION
+    // ========================================================
+
+    await connection.query(
+      `
+      INSERT INTO pending_registrations
+      (
+        email,
+        password_hash,
+        full_name,
+        phone,
+        church_name,
+        church_type,
+        address,
+        district,
+        ward,
+        pastor_name,
+        expires_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+      ON DUPLICATE KEY UPDATE
+        password_hash = VALUES(password_hash),
+        full_name = VALUES(full_name),
+        phone = VALUES(phone),
+        church_name = VALUES(church_name),
+        church_type = VALUES(church_type),
+        address = VALUES(address),
+        district = VALUES(district),
+        ward = VALUES(ward),
+        pastor_name = VALUES(pastor_name),
+        expires_at = VALUES(expires_at),
+        updated_at = CURRENT_TIMESTAMP
+      `,
+      [
+        cleanEmail,
+        passwordHash,
+        cleanFullName,
+        cleanPhone || null,
+        cleanChurchName,
+        cleanChurchType || null,
+        cleanAddress || null,
+        cleanDistrict || null,
+        cleanWard || null,
+        cleanPastorName || null,
+        registrationExpiresAt,
+      ],
+    );
+
+    console.log("[REGISTER] PENDING REGISTRATION SAVED:", cleanEmail);
+
+    // ========================================================
+    // TẠO OTP
+    // ========================================================
+
+    const otp = String(Math.floor(100000 + Math.random() * 900000));
+
+    // ========================================================
+    // HASH OTP
+    // ========================================================
+
+    const otpHash = await bcrypt.hash(otp, 10);
+
+    // ========================================================
+    // OTP EXPIRE 5 PHÚT
+    // ========================================================
+
+    const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+    // ========================================================
+    // XÓA OTP CŨ
+    // ========================================================
+
+    await connection.query(
+      `
+      DELETE FROM email_verifications
+      WHERE email = ?
+        AND purpose = 'register'
+      `,
+      [cleanEmail],
+    );
+
+    // ========================================================
+    // INSERT OTP MỚI
+    // ========================================================
+
+    await connection.query(
+      `
+      INSERT INTO email_verifications
+      (
+        email,
+        otp_hash,
+        purpose,
+        expires_at,
+        attempts
+      )
+      VALUES (?, ?, 'register', ?, 0)
+      `,
+      [cleanEmail, otpHash, otpExpiresAt],
+    );
+
+    console.log("[REGISTER] OTP CREATED:", cleanEmail);
+
+    // ========================================================
+    // GỬI EMAIL
+    // ========================================================
+
+    try {
+      await emailService.sendRegisterOtpEmail({
+        to: cleanEmail,
+        fullName: cleanFullName,
+        otp,
+        expiresMinutes: 5,
+      });
+
+      console.log("[REGISTER] OTP EMAIL SENT:", cleanEmail);
+    } catch (emailError) {
+      console.error(
+        "[REGISTER] SEND OTP EMAIL ERROR:",
+        emailError?.message || emailError,
+      );
+
+      // Nếu gửi email thất bại thì xóa OTP
+      await connection.query(
+        `
+        DELETE FROM email_verifications
+        WHERE email = ?
+          AND purpose = 'register'
+        `,
+        [cleanEmail],
+      );
+
+      return res.status(500).json({
+        success: false,
+        code: "OTP_EMAIL_SEND_FAILED",
+        message: "Không thể gửi email xác thực. Vui lòng thử lại sau.",
+      });
+    }
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
+
+    return res.status(200).json({
+      success: true,
+      code: "OTP_SENT",
+      message: "Mã xác thực đã được gửi đến email của bạn",
+      data: {
+        email: cleanEmail,
+        expires_in: 300,
+      },
+    });
+  } catch (error) {
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("REGISTER REQUEST ERROR");
+    console.error(
+      "============================================================",
+    );
+    console.error(error);
+
+    return res.status(500).json({
+      success: false,
+      code: "REGISTER_REQUEST_ERROR",
+      message: "Không thể xử lý đăng ký. Vui lòng thử lại sau.",
+    });
+  } finally {
+    if (connection) {
+      connection.release();
     }
   }
 };

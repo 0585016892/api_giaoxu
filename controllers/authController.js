@@ -445,10 +445,11 @@ exports.login = async (req, res) => {
 // 7. Save OTP
 // 8. Release DB
 // 9. Send email
+
 // ============================================================
 
 exports.registerRequest = async (req, res) => {
-  console.log("");
+  console.log("TAO ĐĂNG KÍ");
   console.log("============================================================");
   console.log("                  REGISTER REQUEST");
   console.log("============================================================");

@@ -3,23 +3,40 @@ const express = require("express");
 const router = express.Router();
 
 const corsController = require("../controllers/corsController");
+const requireSystemAdmin = require("../middleware/requireSystemAdmin");
+const { globalApiLimiter } = require("./middlewares/rateLimitMiddleware");
 
 // Danh sách
-router.get("/", corsController.getAll);
+router.get("/", requireSystemAdmin, globalApiLimiter, corsController.getAll);
 
 // Active domains
-router.get("/active", corsController.getActive);
+router.get(
+  "/active",
+  requireSystemAdmin,
+  globalApiLimiter,
+  corsController.getActive,
+);
 
 // Thêm
-router.post("/", corsController.create);
+router.post("/", requireSystemAdmin, globalApiLimiter, corsController.create);
 
 // Sửa
-router.put("/:id", corsController.update);
+router.put("/:id", requireSystemAdmin, globalApiLimiter, corsController.update);
 
 // Bật / tắt
-router.patch("/:id/toggle", corsController.toggle);
+router.patch(
+  "/:id/toggle",
+  requireSystemAdmin,
+  globalApiLimiter,
+  corsController.toggle,
+);
 
 // Xóa
-router.delete("/:id", corsController.remove);
+router.delete(
+  "/:id",
+  requireSystemAdmin,
+  globalApiLimiter,
+  corsController.remove,
+);
 
 module.exports = router;

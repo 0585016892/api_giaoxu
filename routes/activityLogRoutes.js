@@ -5,21 +5,22 @@ const activityLogController = require("../controllers/activityLogController");
 
 const { verifyToken } = require("../middleware/authMiddleware");
 const { authorize } = require("../middleware/authorize");
+const requireSystemAdmin = require("../middleware/requireSystemAdmin");
 
 // GET ALL LOGS
-router.get("/", verifyToken, authorize("admin"), activityLogController.getLogs);
+router.get("/", verifyToken, requireSystemAdmin, activityLogController.getLogs);
 
 // GET DETAIL
 router.get(
   "/:id",
   verifyToken,
-  authorize("admin"),
+  requireSystemAdmin,
   activityLogController.getLogById,
 );
 router.delete(
   "/",
   verifyToken,
-  authorize("admin"),
+  requireSystemAdmin,
   activityLogController.deleteLogs,
 );
 module.exports = router;

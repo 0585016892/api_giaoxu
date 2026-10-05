@@ -25,6 +25,8 @@ const {
 } = require("../controllers/classController");
 
 const { verifyToken } = require("../middleware/authMiddleware");
+const { destructiveLimiter } = require("../middlewares/rateLimitMiddleware");
+const { globalApiLimiter } = require("./middlewares/rateLimitMiddleware");
 
 // =========================================================
 // QUẢN LÝ LỚP HỌC
@@ -35,7 +37,7 @@ const { verifyToken } = require("../middleware/authMiddleware");
 // GET /api/classes
 // =========================================================
 
-router.get("/", verifyToken, getClasses);
+router.get("/", verifyToken, globalApiLimiter, getClasses);
 
 // =========================================================
 // LỚP CỦA GIÁO LÝ VIÊN ĐANG ĐĂNG NHẬP
@@ -45,6 +47,7 @@ router.get("/", verifyToken, getClasses);
 router.get(
   "/teacher-class",
   verifyToken,
+  globalApiLimiter,
   (req, res, next) => {
     console.log("🔥 HIT GET /api/classes/teacher-class");
     console.log("USER:", req.user);
@@ -63,7 +66,7 @@ router.get(
 // Thứ 2 | Thứ 3 | ... | Chủ nhật
 // =========================================================
 
-router.get("/schedules", verifyToken, getClassSchedules);
+router.get("/schedules", verifyToken, globalApiLimiter, getClassSchedules);
 
 // =========================================================
 // THÊM LỊCH HỌC CHO LỚP
@@ -79,7 +82,12 @@ router.get("/schedules", verifyToken, getClassSchedules);
 // }
 // =========================================================
 
-router.post("/:id/schedules", verifyToken, createClassSchedule);
+router.post(
+  "/:id/schedules",
+  verifyToken,
+  globalApiLimiter,
+  createClassSchedule,
+);
 
 // =========================================================
 // SỬA LỊCH HỌC
@@ -87,7 +95,12 @@ router.post("/:id/schedules", verifyToken, createClassSchedule);
 // PUT /api/classes/:id/schedules/:scheduleId
 // =========================================================
 
-router.put("/:id/schedules/:scheduleId", verifyToken, updateClassSchedule);
+router.put(
+  "/:id/schedules/:scheduleId",
+  verifyToken,
+  globalApiLimiter,
+  updateClassSchedule,
+);
 
 // =========================================================
 // XÓA LỊCH HỌC
@@ -95,7 +108,13 @@ router.put("/:id/schedules/:scheduleId", verifyToken, updateClassSchedule);
 // DELETE /api/classes/:id/schedules/:scheduleId
 // =========================================================
 
-router.delete("/:id/schedules/:scheduleId", verifyToken, deleteClassSchedule);
+router.delete(
+  "/:id/schedules/:scheduleId",
+  destructiveLimiter,
+  verifyToken,
+  globalApiLimiter,
+  deleteClassSchedule,
+);
 
 // =========================================================
 // CHI TIẾT LỚP
@@ -105,7 +124,7 @@ router.delete("/:id/schedules/:scheduleId", verifyToken, deleteClassSchedule);
 // PHẢI ĐẶT SAU /schedules
 // =========================================================
 
-router.get("/:id", verifyToken, getClassById);
+router.get("/:id", verifyToken, globalApiLimiter, getClassById);
 
 // =========================================================
 // TẠO LỚP
@@ -113,7 +132,7 @@ router.get("/:id", verifyToken, getClassById);
 // POST /api/classes
 // =========================================================
 
-router.post("/", verifyToken, createClass);
+router.post("/", verifyToken, globalApiLimiter, createClass);
 
 // =========================================================
 // SỬA LỚP
@@ -121,7 +140,7 @@ router.post("/", verifyToken, createClass);
 // PUT /api/classes/:id
 // =========================================================
 
-router.put("/:id", verifyToken, updateClass);
+router.put("/:id", verifyToken, globalApiLimiter, updateClass);
 
 // =========================================================
 // XÓA LỚP
@@ -129,6 +148,6 @@ router.put("/:id", verifyToken, updateClass);
 // DELETE /api/classes/:id
 // =========================================================
 
-router.delete("/:id", verifyToken, deleteClass);
+router.delete("/:id", verifyToken, globalApiLimiter, deleteClass);
 
 module.exports = router;

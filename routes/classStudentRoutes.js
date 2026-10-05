@@ -4,6 +4,8 @@ const router = express.Router();
 
 const controller = require("../controllers/classStudentController");
 const { verifyToken } = require("../middleware/authMiddleware");
+const { destructiveLimiter } = require("../middlewares/rateLimitMiddleware");
+const { globalApiLimiter } = require("./middlewares/rateLimitMiddleware");
 
 // =====================================================
 // AUTHENTICATION
@@ -20,7 +22,7 @@ router.use(verifyToken);
 // Chỉ lấy học sinh của lớp thuộc giáo xứ hiện tại
 // =====================================================
 
-router.get("/class/:classId", controller.getStudentsByClass);
+router.get("/class/:classId", globalApiLimiter, controller.getStudentsByClass);
 
 // =====================================================
 // CÁC LỚP CỦA HỌC SINH
@@ -29,7 +31,11 @@ router.get("/class/:classId", controller.getStudentsByClass);
 // Chỉ lấy các lớp thuộc giáo xứ hiện tại
 // =====================================================
 
-router.get("/student/:studentId", controller.getClassesByStudent);
+router.get(
+  "/student/:studentId",
+  globalApiLimiter,
+  controller.getClassesByStudent,
+);
 
 // =====================================================
 // THÊM HỌC SINH VÀO LỚP
@@ -47,7 +53,7 @@ router.get("/student/:studentId", controller.getClassesByStudent);
 // - student thuộc church
 // =====================================================
 
-router.post("/", controller.addStudentToClass);
+router.post("/", globalApiLimiter, controller.addStudentToClass);
 
 // =====================================================
 // CẬP NHẬT QUAN HỆ LỚP - HỌC SINH
@@ -56,7 +62,11 @@ router.post("/", controller.addStudentToClass);
 // Backend phải kiểm tra class + student thuộc church
 // =====================================================
 
-router.put("/update/:classId/:studentId", controller.updateClassStudent);
+router.put(
+  "/update/:classId/:studentId",
+  globalApiLimiter,
+  controller.updateClassStudent,
+);
 
 // =====================================================
 // CHUYỂN LỚP
@@ -73,8 +83,16 @@ router.put("/update/:classId/:studentId", controller.updateClassStudent);
 // - lớp mới thuộc church
 // =====================================================
 
-router.put("/:classId/:studentId/change-class", controller.changeClassStudent);
-router.put("/classes/:classId/change-students", controller.changeClassStudents);
+router.put(
+  "/:classId/:studentId/change-class",
+  globalApiLimiter,
+  controller.changeClassStudent,
+);
+router.put(
+  "/classes/:classId/change-students",
+  globalApiLimiter,
+  controller.changeClassStudents,
+);
 // =====================================================
 // XÓA HỌC SINH KHỎI LỚP
 // DELETE /api/class-students/:classId/:studentId
@@ -82,6 +100,11 @@ router.put("/classes/:classId/change-students", controller.changeClassStudents);
 // Chỉ được xóa quan hệ thuộc giáo xứ hiện tại
 // =====================================================
 
-router.delete("/:classId/:studentId", controller.removeStudentFromClass);
+router.delete(
+  "/:classId/:studentId",
+  destructiveLimiter,
+  globalApiLimiter,
+  controller.removeStudentFromClass,
+);
 
 module.exports = router;

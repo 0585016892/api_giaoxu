@@ -7,6 +7,8 @@ const { verifyToken } = require("../middleware/authMiddleware");
 const uploadLicensePayment = require("../middleware/uploadLicensePayment");
 
 const controller = require("../controllers/licenseRegistrationController");
+const requireSystemAdmin = require("../middleware/requireSystemAdmin");
+const { globalApiLimiter } = require("./middlewares/rateLimitMiddleware");
 
 /**
  * ============================================================
@@ -25,17 +27,32 @@ router.use(verifyToken);
 /**
  * Thông tin gói + QR + STK + nội dung CK
  */
-router.get("/registration/config", controller.getRegistrationConfig);
+router.get(
+  "/registration/config",
+  requireSystemAdmin,
+  globalApiLimiter,
+  controller.getRegistrationConfig,
+);
 
 /**
  * Lịch sử đăng ký của giáo xứ hiện tại
  */
-router.get("/registration/me", controller.getMyRegistrations);
+router.get(
+  "/registration/me",
+  requireSystemAdmin,
+  globalApiLimiter,
+  controller.getMyRegistrations,
+);
 
 /**
  * Chi tiết đăng ký của giáo xứ hiện tại
  */
-router.get("/registration/:id", controller.getRegistrationById);
+router.get(
+  "/registration/:id",
+  requireSystemAdmin,
+  globalApiLimiter,
+  controller.getRegistrationById,
+);
 
 /**
  * Tạo đăng ký
@@ -48,6 +65,8 @@ router.get("/registration/:id", controller.getRegistrationById);
  */
 router.post(
   "/registration",
+  requireSystemAdmin,
+  globalApiLimiter,
   uploadLicensePayment.single("payment_image"),
   controller.createRegistration,
 );
@@ -55,7 +74,12 @@ router.post(
 /**
  * Xóa yêu cầu pending
  */
-router.delete("/registration/:id", controller.deleteMyRegistration);
+router.delete(
+  "/registration/:id",
+  requireSystemAdmin,
+  globalApiLimiter,
+  controller.deleteMyRegistration,
+);
 
 /**
  * ============================================================
@@ -74,12 +98,32 @@ const {
 router.use(requireSystemAdmin);
 */
 
-router.get("/registrations", controller.getAllRegistrations);
+router.get(
+  "/registrations",
+  requireSystemAdmin,
+  globalApiLimiter,
+  controller.getAllRegistrations,
+);
 
-router.get("/registrations/:id", controller.getAdminRegistrationById);
+router.get(
+  "/registrations/:id",
+  requireSystemAdmin,
+  globalApiLimiter,
+  controller.getAdminRegistrationById,
+);
 
-router.put("/registrations/:id/approve", controller.approveRegistration);
+router.put(
+  "/registrations/:id/approve",
+  requireSystemAdmin,
+  globalApiLimiter,
+  controller.approveRegistration,
+);
 
-router.put("/registrations/:id/reject", controller.rejectRegistration);
+router.put(
+  "/registrations/:id/reject",
+  requireSystemAdmin,
+  globalApiLimiter,
+  controller.rejectRegistration,
+);
 
 module.exports = router;

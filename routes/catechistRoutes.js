@@ -5,6 +5,8 @@ const router = express.Router();
 const catechistController = require("../controllers/catechistController");
 
 const { verifyToken } = require("../middleware/authMiddleware");
+const { destructiveLimiter } = require("../middlewares/rateLimitMiddleware");
+const { globalApiLimiter } = require("./middlewares/rateLimitMiddleware");
 
 // =========================================================
 // MIDDLEWARE
@@ -18,27 +20,44 @@ router.use(verifyToken);
 // =========================================================
 
 // Danh sách Giáo lý viên của giáo xứ hiện tại
-router.get("/", catechistController.getAllCatechists);
+router.get("/", globalApiLimiter, catechistController.getAllCatechists);
 
 // Chi tiết Giáo lý viên
-router.get("/:id", catechistController.getCatechistById);
+router.get("/:id", globalApiLimiter, catechistController.getCatechistById);
 
 // Tạo Giáo lý viên thuộc giáo xứ hiện tại
-router.post("/", catechistController.createCatechist);
-router.post("/assign-class", catechistController.assignClass);
+router.post("/", globalApiLimiter, catechistController.createCatechist);
+router.post("/assign-class", globalApiLimiter, catechistController.assignClass);
 
 // Lấy các thư bổ nhiệm chưa đọc
-router.get("/appointments/pending", catechistController.getPendingAppointments);
+router.get(
+  "/appointments/pending",
+  globalApiLimiter,
+  catechistController.getPendingAppointments,
+);
 
 // Xác nhận đã đọc thư bổ nhiệm
-router.patch("/appointments/:id/read", catechistController.readAppointment);
+router.patch(
+  "/appointments/:id/read",
+  globalApiLimiter,
+  catechistController.readAppointment,
+);
 
 // Cập nhật Giáo lý viên
-router.put("/:id", catechistController.updateCatechist);
-router.delete("/remove-class", catechistController.removeClass);
+router.put("/:id", globalApiLimiter, catechistController.updateCatechist);
+router.delete(
+  "/remove-class",
+  globalApiLimiter,
+  catechistController.removeClass,
+);
 
 // Xóa Giáo lý viên
-router.delete("/:id", catechistController.deleteCatechist);
+router.delete(
+  "/:id",
+  destructiveLimiter,
+  globalApiLimiter,
+  catechistController.deleteCatechist,
+);
 
 // =========================================================
 // PHÂN CÔNG GIÁO LÝ VIÊN VÀO LỚP

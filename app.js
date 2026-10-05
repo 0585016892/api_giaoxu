@@ -62,6 +62,7 @@ const settingChurchRoutes = require("./routes/settingChurchRoutes");
 
 const app = express();
 
+app.set("trust proxy", 1);
 // ===============================
 // CORS
 // ===============================

@@ -5,6 +5,8 @@ const router = express.Router();
 const studentController = require("../controllers/studentController");
 
 const { verifyToken } = require("../middleware/authMiddleware");
+const { destructiveLimiter } = require("../middlewares/rateLimitMiddleware");
+const { globalApiLimiter } = require("./middlewares/rateLimitMiddleware");
 
 const uploadStudentAvatar = require("../middleware/uploadStudentAvatar");
 
@@ -39,30 +41,39 @@ const uploadStudentExcel = multer({
 // =====================================================
 
 // Lấy danh sách học sinh
-router.get("/", verifyToken, studentController.getStudents);
+router.get("/", verifyToken, globalApiLimiter, studentController.getStudents);
 
 // Lấy học sinh theo giáo lý viên
 router.get(
   "/student-class",
   verifyToken,
+  globalApiLimiter,
   studentController.getStudentsByTeacher,
 );
 router.get(
   "/classes/:id/students",
   verifyToken,
+  globalApiLimiter,
   studentController.getStudentsByClass,
 );
 // Chi tiết học sinh
-router.get("/:id", verifyToken, studentController.getStudentById);
+router.get(
+  "/:id",
+  verifyToken,
+  globalApiLimiter,
+  studentController.getStudentById,
+);
 router.post(
   "/export-excel",
   verifyToken,
+  globalApiLimiter,
   studentController.exportStudentsExcel,
 );
 // Thêm học sinh
 router.post(
   "/",
   verifyToken,
+  globalApiLimiter,
   uploadStudentAvatar.single("avatar"),
   studentController.createStudent,
 );
@@ -74,11 +85,13 @@ router.post(
   "/import-excel",
   verifyToken,
   uploadStudentExcel.single("file"),
+  globalApiLimiter,
   studentController.importStudentsExcel,
 );
 router.put(
   "/:id/bulk-update",
   verifyToken,
+  globalApiLimiter,
   studentController.bulkUpdateStudents,
 );
 // Cập nhật học sinh
@@ -86,12 +99,25 @@ router.put(
   "/:id",
   verifyToken,
   uploadStudentAvatar.single("avatar"),
+  globalApiLimiter,
   studentController.updateStudent,
 );
 
 // Xóa học sinh
-router.delete("/bulk", verifyToken, studentController.deleteStudentsBulk);
+router.delete(
+  "/bulk",
+  verifyToken,
+  destructiveLimiter,
+  globalApiLimiter,
+  studentController.deleteStudentsBulk,
+);
 
-router.delete("/:id", verifyToken, studentController.deleteStudent);
+router.delete(
+  "/:id",
+  verifyToken,
+  destructiveLimiter,
+  globalApiLimiter,
+  studentController.deleteStudent,
+);
 
 module.exports = router;

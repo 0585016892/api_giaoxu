@@ -5,8 +5,10 @@ const router = express.Router();
 const catechistController = require("../controllers/catechistController");
 
 const { verifyToken } = require("../middleware/authMiddleware");
-const { destructiveLimiter } = require("../middleware/rateLimitMiddleware");
-const { globalApiLimiter } = require("./middleware/rateLimitMiddleware");
+const {
+  destructiveLimiter,
+  globalApiLimiter,
+} = require("../middleware/rateLimitMiddleware");
 
 // =========================================================
 // MIDDLEWARE

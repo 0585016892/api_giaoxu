@@ -5,8 +5,10 @@ const churchController = require("../controllers/church.controller");
 const upload = require("../middleware/uploadChurch");
 const { verifyToken } = require("../middleware/authMiddleware");
 const requireSystemAdmin = require("../middleware/requireSystemAdmin");
-const { destructiveLimiter } = require("../middleware/rateLimitMiddleware");
-const { globalApiLimiter } = require("./middleware/rateLimitMiddleware");
+const {
+  destructiveLimiter,
+  globalApiLimiter,
+} = require("../middleware/rateLimitMiddleware");
 
 // ================= CRUD =================
 // Tổng Giáo phận

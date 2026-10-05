@@ -12,23 +12,29 @@ const {
 
 // ================= CRUD =================
 // Tổng Giáo phận
-router.get("/archdioceses", globalApiLimiter, churchController.getArchdioceses);
+router.get("/archdioceses", churchController.getArchdioceses);
 
 // Giáo phận thuộc Tổng Giáo phận
 router.get(
   "/by-parent/:parentDioceseId",
-  globalApiLimiter,
+
   churchController.getDiocesesByParent,
 );
 router.get(
   "/by-diocese/:dioceseId",
-  globalApiLimiter,
+
   churchController.getDeaneriesByDiocese,
 );
 
-router.get("/", requireSystemAdmin, globalApiLimiter, churchController.getAll);
+router.get(
+  "/",
+  verifyToken,
+  requireSystemAdmin,
+  globalApiLimiter,
+  churchController.getAll,
+);
 
-router.get("/:id", globalApiLimiter, churchController.getById);
+router.get("/:id", verifyToken, globalApiLimiter, churchController.getById);
 router.post(
   "/:id/activate-license",
   verifyToken,
@@ -38,6 +44,8 @@ router.post(
 );
 router.post(
   "/",
+  verifyToken,
+  requireSystemAdmin,
   upload.single("image"),
   globalApiLimiter,
   churchController.create,
@@ -45,12 +53,15 @@ router.post(
 
 router.put(
   "/:id",
+  verifyToken,
+  requireSystemAdmin,
   upload.single("image"),
   globalApiLimiter,
   churchController.update,
 );
 router.delete(
   "/:id",
+  verifyToken,
   requireSystemAdmin,
   destructiveLimiter,
   globalApiLimiter,
@@ -60,6 +71,7 @@ router.delete(
 // ================= EXTRA =================
 router.patch(
   "/:id/toggle",
+  verifyToken,
   requireSystemAdmin,
   globalApiLimiter,
   churchController.toggleActive,

@@ -4,7 +4,7 @@ const router = express.Router();
 
 const corsController = require("../controllers/corsController");
 const requireSystemAdmin = require("../middleware/requireSystemAdmin");
-const { globalApiLimiter } = require("./middleware/rateLimitMiddleware");
+const { globalApiLimiter } = require("../middleware/rateLimitMiddleware");
 
 // Danh sách
 router.get("/", requireSystemAdmin, globalApiLimiter, corsController.getAll);

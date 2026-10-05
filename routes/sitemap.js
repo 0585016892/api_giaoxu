@@ -7,7 +7,7 @@ const router = express.Router();
 router.get("/sitemap.xml", async (req, res) => {
   try {
     const smStream = new SitemapStream({
-      hostname: "https://www.giaoxudongquan.site",
+      hostname: "https://www.giaolyso.site",
     });
 
     const staticRoutes = [

@@ -3,7 +3,7 @@ const router = express.Router();
 const dashboardController = require("../controllers/dashboard.controller");
 const { verifyToken } = require("../middleware/authMiddleware");
 const requireSystemAdmin = require("../middleware/requireSystemAdmin");
-const { globalApiLimiter } = require("./middleware/rateLimitMiddleware");
+const { globalApiLimiter } = require("../middleware/rateLimitMiddleware");
 
 router.get(
   "/",

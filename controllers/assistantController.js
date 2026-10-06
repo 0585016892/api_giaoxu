@@ -3,7 +3,7 @@
 // PHASE 5.1 → 5.7
 // ============================================================
 
-const assistantService = require("../services/assistantService");
+const assistantService = require("../services/assistant/assistantService");
 
 // ============================================================
 // CONSTANTS

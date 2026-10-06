@@ -38,39 +38,51 @@ exports.getAllCatechists = async (req, res) => {
 
     const [rows] = await db.query(
       `
-     SELECT
-  c.*,
-  a.avatar AS avatar
+      SELECT
+        c.*,
 
-FROM catechists c
+        -- Thông tin từ admins
+        a.avatar AS avatar,
+        a.role AS role
 
-LEFT JOIN admins a
-  ON a.username = c.catechist_code
-  AND a.church_id = c.church_id
+      FROM catechists c
 
-WHERE c.church_id = ?
+      LEFT JOIN admins a
+        ON a.username = c.catechist_code
+        AND a.church_id = c.church_id
 
-ORDER BY c.id DESC
+      WHERE c.church_id = ?
+
+      ORDER BY c.id DESC
       `,
       [churchId],
     );
 
     console.log("📊 Số lượng GLV:", rows.length);
 
-    res.status(200).json({
+    console.log(
+      "👥 ROLES:",
+      rows.map((item) => ({
+        id: item.id,
+        catechist_code: item.catechist_code,
+        full_name: item.full_name,
+        role: item.role,
+      })),
+    );
+
+    return res.status(200).json({
       success: true,
       data: rows,
     });
   } catch (error) {
     console.error("❌ GET ALL CATECHISTS ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message,
     });
   }
 };
-
 /**
  * ================================
  * LẤY CHI TIẾT GIÁO LÝ VIÊN

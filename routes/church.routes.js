@@ -54,7 +54,6 @@ router.post(
 router.put(
   "/:id",
   verifyToken,
-  requireSystemAdmin,
   upload.single("image"),
   globalApiLimiter,
   churchController.update,

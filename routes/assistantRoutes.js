@@ -5,10 +5,9 @@ const express = require("express");
 const router = express.Router();
 
 const assistantController = require("../controllers/assistantController");
+const { verifyToken } = require("../middleware/authMiddleware");
 
-const verifyToken = require("../middleware/verifyToken");
-const globalApiLimiter = require("../middleware/globalApiLimiter");
-
+const { globalApiLimiter } = require("../middleware/rateLimitMiddleware");
 /**
  * ============================================================
  * POST /api/assistant/chat

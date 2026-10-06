@@ -39,13 +39,7 @@ router.get(
   globalApiLimiter,
   adminController.getAllAdmins,
 );
-router.get(
-  "/:id",
-  verifyToken,
-  requireSystemAdmin,
-  globalApiLimiter,
-  adminController.getAdminById,
-);
+router.get("/:id", verifyToken, globalApiLimiter, adminController.getAdminById);
 router.patch(
   "/:id/toggle",
   verifyToken,
@@ -56,7 +50,6 @@ router.patch(
 router.patch(
   "/:id/toggle-catechits",
   verifyToken,
-  requireSystemAdmin,
   globalApiLimiter,
   adminController.toggleActiveCatechits,
 );
@@ -64,7 +57,6 @@ router.patch(
 router.put(
   "/password/:id",
   verifyToken,
-  requireSystemAdmin,
   globalApiLimiter,
   adminController.changePassword,
 );
@@ -72,7 +64,6 @@ router.put(
 router.put(
   "/:id/reset-passwordcate",
   verifyToken,
-  requireSystemAdmin,
   globalApiLimiter,
   adminController.resetCatechitsPassword,
 );

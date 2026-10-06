@@ -326,25 +326,29 @@ function buildArticleResponse(article) {
 
 function buildAttendanceResponse(data) {
   if (!data) {
-    return "Mình không tìm thấy lớp học phù hợp trong giáo xứ của bạn.";
+    return "Mình không tìm thấy dữ liệu điểm danh phù hợp.";
   }
 
-  const { class: classInfo, date, summary } = data;
+  const className = data.class?.name || "Toàn giáo xứ";
+
+  const statistics = data.statistics || {};
 
   return [
-    `**Điểm danh lớp ${classInfo.name}**`,
+    `**Điểm danh ${className}**`,
     "",
-    `Ngày: **${date}**`,
+    `Ngày: **${data.date}**`,
+    `Loại: **${data.attendance_type_label}**`,
     "",
-    `- Có mặt: **${summary.present}**`,
-    `- Đi trễ: **${summary.late}**`,
-    `- Vắng: **${summary.absent}**`,
-    `- Có phép: **${summary.excused}**`,
+    `- Tổng số: **${statistics.total || 0}**`,
+    `- Có mặt: **${statistics.present || 0}**`,
+    `- Đi trễ: **${statistics.late || 0}**`,
+    `- Vắng: **${statistics.absent || 0}**`,
+    `- Có phép: **${statistics.excused || 0}**`,
+    `- Chưa điểm danh: **${statistics.not_attended || 0}**`,
     "",
-    `Tổng số lượt điểm danh: **${summary.total}**`,
+    `Tỷ lệ tham dự: **${statistics.attendance_rate || 0}%**`,
   ].join("\n");
 }
-
 /**
  * ============================================================
  * STUDENT RESPONSE
@@ -362,8 +366,8 @@ function buildStudentResponse(students) {
     return [
       `**${student.name}**`,
       "",
-      `Mã học sinh: **${student.student_code || "Chưa có"}**`,
-      `Lớp: **${student.class_name || "Chưa phân lớp"}**`,
+      `Mã học sinh: **${student.code || "Chưa có"}**`,
+      `Lớp: **${student.class_names || "Chưa phân lớp"}**`,
     ].join("\n");
   }
 
@@ -372,14 +376,13 @@ function buildStudentResponse(students) {
   students.forEach((student, index) => {
     lines.push(
       `${index + 1}. **${student.name}** — ${
-        student.class_name || "Chưa phân lớp"
-      }`,
+        student.class_names || "Chưa phân lớp"
+      } — ${student.code || "Chưa có mã"}`,
     );
   });
 
   return lines.join("\n");
 }
-
 /**
  * ============================================================
  * CLASS RESPONSE

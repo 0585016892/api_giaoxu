@@ -743,7 +743,7 @@ async function getCatechismAttendanceSummary({ user, classId, date }) {
         s.code,
 
         a.id AS attendance_id,
-        a.attendance_status,
+        a.status,
         a.check_in_time,
         a.attendance_date,
         a.class_id,
@@ -807,7 +807,7 @@ async function getMassAttendanceSummary({ user, date }) {
         s.code,
 
         a.id AS attendance_id,
-        a.attendance_status,
+        a.status,
         a.check_in_time,
         a.attendance_date,
         a.class_id,
@@ -937,7 +937,7 @@ async function getAttendanceStudents({
       `;
     } else if (safeStatus !== "all") {
       statusCondition = `
-        AND a.attendance_status = ?
+        AND a.status = ?
       `;
 
       params.push(safeStatus);
@@ -950,7 +950,7 @@ async function getAttendanceStudents({
           s.name,
           s.code,
           a.id AS attendance_id,
-          a.attendance_status,
+          a.status,
           a.check_in_time,
           a.attendance_date
         FROM class_students cs
@@ -992,7 +992,7 @@ async function getAttendanceStudents({
       `;
     } else if (safeStatus !== "all") {
       condition = `
-        AND a.attendance_status = ?
+        AND a.status = ?
       `;
 
       params.push(safeStatus);
@@ -1005,7 +1005,7 @@ async function getAttendanceStudents({
           s.name,
           s.code,
           a.id AS attendance_id,
-          a.attendance_status,
+          a.status,
           a.check_in_time,
           a.attendance_date
         FROM students s
@@ -1108,7 +1108,7 @@ async function getStudentAttendanceHistory({
         SELECT
           a.id,
           a.attendance_date,
-          a.attendance_status,
+          a.status,
           a.check_in_time,
           a.class_id,
           c.name AS class_name,
@@ -1134,7 +1134,7 @@ async function getStudentAttendanceHistory({
         SELECT
           a.id,
           a.attendance_date,
-          a.attendance_status,
+          a.status,
           a.check_in_time,
           a.class_id,
           c.name AS class_name,
@@ -1263,28 +1263,28 @@ async function getStudentAttendanceRanking({
 
         SUM(
           CASE
-            WHEN a.attendance_status = 'present'
+            WHEN a.status = 'present'
             THEN 1 ELSE 0
           END
         ) AS present,
 
         SUM(
           CASE
-            WHEN a.attendance_status = 'late'
+            WHEN a.status = 'late'
             THEN 1 ELSE 0
           END
         ) AS late,
 
         SUM(
           CASE
-            WHEN a.attendance_status = 'absent'
+            WHEN a.status = 'absent'
             THEN 1 ELSE 0
           END
         ) AS absent,
 
         SUM(
           CASE
-            WHEN a.attendance_status = 'excused'
+            WHEN a.status = 'excused'
             THEN 1 ELSE 0
           END
         ) AS excused,
@@ -1294,7 +1294,7 @@ async function getStudentAttendanceRanking({
             (
               SUM(
                 CASE
-                  WHEN a.attendance_status IN ('present', 'late')
+                  WHEN a.status IN ('present', 'late')
                   THEN 1 ELSE 0
                 END
               )
@@ -1379,28 +1379,28 @@ async function getClassAttendanceRanking({
 
         SUM(
           CASE
-            WHEN a.attendance_status = 'present'
+            WHEN a.status = 'present'
             THEN 1 ELSE 0
           END
         ) AS present,
 
         SUM(
           CASE
-            WHEN a.attendance_status = 'late'
+            WHEN a.status = 'late'
             THEN 1 ELSE 0
           END
         ) AS late,
 
         SUM(
           CASE
-            WHEN a.attendance_status = 'absent'
+            WHEN a.status = 'absent'
             THEN 1 ELSE 0
           END
         ) AS absent,
 
         SUM(
           CASE
-            WHEN a.attendance_status = 'excused'
+            WHEN a.status = 'excused'
             THEN 1 ELSE 0
           END
         ) AS excused,
@@ -1409,7 +1409,7 @@ async function getClassAttendanceRanking({
           (
             SUM(
               CASE
-                WHEN a.attendance_status IN ('present', 'late')
+                WHEN a.status IN ('present', 'late')
                 THEN 1 ELSE 0
               END
             )
@@ -1723,28 +1723,28 @@ async function getStudentsNeedingAttention({
 
         SUM(
           CASE
-            WHEN a.attendance_status = 'present'
+            WHEN a.status = 'present'
             THEN 1 ELSE 0
           END
         ) AS present,
 
         SUM(
           CASE
-            WHEN a.attendance_status = 'late'
+            WHEN a.status = 'late'
             THEN 1 ELSE 0
           END
         ) AS late,
 
         SUM(
           CASE
-            WHEN a.attendance_status = 'absent'
+            WHEN a.status = 'absent'
             THEN 1 ELSE 0
           END
         ) AS absent,
 
         SUM(
           CASE
-            WHEN a.attendance_status = 'excused'
+            WHEN a.status = 'excused'
             THEN 1 ELSE 0
           END
         ) AS excused,
@@ -1753,7 +1753,7 @@ async function getStudentsNeedingAttention({
           (
             SUM(
               CASE
-                WHEN a.attendance_status IN ('present', 'late')
+                WHEN a.status IN ('present', 'late')
                 THEN 1 ELSE 0
               END
             )
@@ -2140,7 +2140,7 @@ async function getAttendanceAnomalies({
         a.class_id,
         a.attendance_date,
         a.attendance_type,
-        a.attendance_status,
+        a.status,
 
         s.name AS student_name,
         s.code AS student_code
@@ -2154,8 +2154,8 @@ async function getAttendanceAnomalies({
       WHERE a.church_id = ?
         AND a.attendance_date BETWEEN ? AND ?
         AND (
-          a.attendance_status IS NULL
-          OR a.attendance_status NOT IN (
+          a.status IS NULL
+          OR a.status NOT IN (
             'present',
             'absent',
             'late',

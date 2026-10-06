@@ -1,44 +1,30 @@
 // ============================================================
-// FAITHEDU - ASSISTANT CONTROLLER - PHASE 4
+// FAITHEDU - ASSISTANT CONTROLLER - PHASE 5
 // ============================================================
 
 const assistantService = require("../services/assistant/assistantService");
 
-// ============================================================
-// POST /api/assistant/chat
-// ============================================================
-
 exports.chat = async (req, res) => {
   console.log("");
   console.log("============================================================");
-  console.log("              POST /assistant/chat - PHASE 4");
+  console.log("          POST /assistant/chat - PHASE 5");
   console.log("============================================================");
 
   try {
-    // ========================================================
-    // USER
-    // ========================================================
-
     const user = req.user;
 
-    console.log("👤 USER ID:", user?.id);
-    console.log("🎭 ROLE:", user?.role);
-    console.log("⛪ CHURCH ID:", user?.church_id);
-    console.log("👨‍🏫 TEACHER ID:", user?.teacher_id || null);
-    console.log("👨‍🏫 CATECHIST ID:", user?.catechist_id || null);
+    console.log("USER ID:", user?.id);
 
-    // ========================================================
-    // MESSAGE
-    // ========================================================
+    console.log("ROLE:", user?.role);
+
+    console.log("CHURCH ID:", user?.church_id);
+
+    console.log("TEACHER ID:", user?.teacher_id || null);
 
     const message =
       typeof req.body?.message === "string" ? req.body.message.trim() : "";
 
-    console.log("💬 MESSAGE:", message);
-
-    // ========================================================
-    // VALIDATION
-    // ========================================================
+    console.log("MESSAGE:", message);
 
     if (!message) {
       return res.status(400).json({
@@ -56,10 +42,6 @@ exports.chat = async (req, res) => {
       });
     }
 
-    // ========================================================
-    // CHAT
-    // ========================================================
-
     const result = await assistantService.chat({
       user,
       message,
@@ -67,31 +49,21 @@ exports.chat = async (req, res) => {
 
     console.log("");
     console.log("============================================================");
-    console.log("              ASSISTANT SUCCESS - PHASE 4");
+    console.log("           ASSISTANT SUCCESS - PHASE 5");
     console.log("============================================================");
 
-    console.log("🎯 INTENT:", result?.intent);
+    console.log("INTENT:", result?.intent);
 
-    console.log("✅ SUCCESS:", result?.success);
+    console.log("SUCCESS:", result?.success);
 
     console.log(
-      "📦 DATA:",
+      "DATA:",
       Array.isArray(result?.data)
         ? `ARRAY(${result.data.length})`
         : result?.data
           ? "OBJECT"
           : "NULL",
     );
-
-    // ========================================================
-    // RESPONSE
-    // ========================================================
-    //
-    // Trả cả:
-    // reply  -> backend hiện tại
-    // answer -> tương thích FaithAssistant.jsx
-    //
-    // ========================================================
 
     return res.status(200).json({
       success: true,
@@ -104,14 +76,14 @@ exports.chat = async (req, res) => {
 
       data: result?.data ?? null,
 
-      suggestions: Array.isArray(result?.suggestions) ? result.suggestions : [],
+      suggestions: result?.suggestions || [],
 
       article: result?.article || null,
     });
   } catch (error) {
     console.log("");
     console.log("============================================================");
-    console.log("❌ ASSISTANT ERROR - PHASE 4");
+    console.log("             ASSISTANT ERROR");
     console.log("============================================================");
 
     console.log("CODE:", error?.code);

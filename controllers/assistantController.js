@@ -1,12 +1,8 @@
-// controllers/assistantController.js
+const assistantService = require("../services/assistant/assistantService");
 
-const { chatWithAssistant } = require("../services/assistant/assistantService");
-
-/**
- * ============================================================
- * POST /api/assistant/chat
- * ============================================================
- */
+// ============================================================
+// POST /api/assistant/chat
+// ============================================================
 
 exports.chat = async (req, res) => {
   console.log("");
@@ -15,111 +11,111 @@ exports.chat = async (req, res) => {
   console.log("============================================================");
 
   try {
-    if (!req.user) {
-      console.error("❌ USER NOT FOUND");
+    // ========================================================
+    // USER
+    // ========================================================
 
-      return res.status(401).json({
-        success: false,
-        code: "UNAUTHORIZED",
-        message: "Phiên đăng nhập không hợp lệ.",
-      });
-    }
+    const user = req.user;
 
-    const { message } = req.body || {};
+    console.log("👤 USER ID:", user?.id);
 
-    console.log("👤 USER ID:", req.user.id);
+    console.log("🎭 ROLE:", user?.role);
 
-    console.log("🎭 ROLE:", req.user.role);
+    console.log("⛪ CHURCH ID:", user?.church_id);
 
-    console.log("⛪ CHURCH ID:", req.user.church_id);
+    // ========================================================
+    // MESSAGE
+    // ========================================================
+
+    const message =
+      typeof req.body?.message === "string" ? req.body.message.trim() : "";
 
     console.log("💬 MESSAGE:", message);
 
-    if (typeof message !== "string" || !message.trim()) {
+    // ========================================================
+    // VALIDATE
+    // ========================================================
+
+    if (!message) {
       return res.status(400).json({
         success: false,
-        code: "EMPTY_MESSAGE",
         message: "Vui lòng nhập câu hỏi.",
+        code: "ASSISTANT_MESSAGE_REQUIRED",
       });
     }
 
-    if (message.trim().length > 500) {
+    if (message.length > 500) {
       return res.status(400).json({
         success: false,
-        code: "MESSAGE_TOO_LONG",
-        message: "Câu hỏi quá dài. Vui lòng nhập ngắn gọn hơn.",
+        message: "Câu hỏi không được vượt quá 500 ký tự.",
+        code: "ASSISTANT_MESSAGE_TOO_LONG",
       });
     }
 
-    const result = await chatWithAssistant({
-      message: message.trim(),
-      user: req.user,
+    // ========================================================
+    // CHAT
+    // ========================================================
+    //
+    // Phase 3 dùng:
+    //
+    // assistantService.chat()
+    //
+    // KHÔNG phải:
+    //
+    // chatWithAssistant()
+    //
+    // ========================================================
+
+    const result = await assistantService.chat({
+      user,
+      message,
     });
+
+    console.log("");
+    console.log("============================================================");
+    console.log("              ASSISTANT SUCCESS");
+    console.log("============================================================");
+
+    console.log("🎯 INTENT:", result?.intent);
+
+    console.log("✅ SUCCESS:", result?.success);
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
 
     return res.status(200).json({
       success: true,
-      data: result,
+
+      intent: result?.intent || "unknown",
+
+      reply: result?.reply || "",
+
+      data: result?.data || null,
     });
   } catch (error) {
-    console.error("");
-    console.error(
-      "============================================================",
-    );
-    console.error("❌ ASSISTANT ERROR");
-    console.error(
-      "============================================================",
-    );
+    console.log("");
+    console.log("============================================================");
+    console.log("❌ ASSISTANT ERROR");
+    console.log("============================================================");
 
-    console.error("CODE:", error.code);
+    console.log("CODE:", error?.code);
 
-    console.error("MESSAGE:", error.message);
+    console.log("MESSAGE:", error?.message);
 
-    console.error("STACK:", error.stack);
+    console.log("STACK:", error?.stack);
 
-    if (error.code === "ASSISTANT_PERMISSION_DENIED") {
-      return res.status(403).json({
-        success: false,
-        code: error.code,
-        message: error.message,
-      });
-    }
+    const status =
+      Number(error?.status) >= 400 && Number(error?.status) < 600
+        ? Number(error.status)
+        : 500;
 
-    if (error.code === "CHURCH_NOT_FOUND") {
-      return res.status(403).json({
-        success: false,
-        code: error.code,
-        message: error.message,
-      });
-    }
-
-    if (error.code === "INVALID_STUDENT_ID") {
-      return res.status(400).json({
-        success: false,
-        code: error.code,
-        message: error.message,
-      });
-    }
-
-    if (error.code === "INVALID_CLASS_ID") {
-      return res.status(400).json({
-        success: false,
-        code: error.code,
-        message: error.message,
-      });
-    }
-
-    if (error.code === "ATTENDANCE_DATE_REQUIRED") {
-      return res.status(400).json({
-        success: false,
-        code: error.code,
-        message: error.message,
-      });
-    }
-
-    return res.status(500).json({
+    return res.status(status).json({
       success: false,
-      code: "ASSISTANT_ERROR",
-      message: "Trợ lý FaithEdu đang gặp sự cố. Vui lòng thử lại sau.",
+
+      message: error?.message || "Trợ lý FaithEdu đang gặp lỗi.",
+
+      code: error?.code || "ASSISTANT_ERROR",
     });
   }
 };

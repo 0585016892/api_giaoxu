@@ -1716,7 +1716,7 @@ function buildStudentHistoryResponse(data) {
     rows.slice(0, 20).forEach((row) => {
       lines.push(
         `- ${formatDateVN(row.attendance_date)}: **${
-          row.attendance_status || "Không xác định"
+          row.status || "Không xác định"
         }**${row.class_name ? ` — ${row.class_name}` : ""}${
           row.check_in_time ? ` — ${formatTimeVN(row.check_in_time)}` : ""
         }`,
@@ -2087,7 +2087,7 @@ function buildAttendanceStudentsBlock(data) {
       id: student.id,
       name: student.name,
       code: student.code || null,
-      attendance_status: student.attendance_status || null,
+      status: student.status || null,
       check_in_time: student.check_in_time || null,
     })),
   });

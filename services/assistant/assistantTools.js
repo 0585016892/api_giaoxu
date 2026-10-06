@@ -666,9 +666,7 @@ function buildAttendanceStatistics(rows, rosterTotal = null) {
 
   if (Array.isArray(rows)) {
     for (const row of rows) {
-      const status = String(
-        row.attendance_status || row.status || "",
-      ).toLowerCase();
+      const status = String(row.status || row.status || "").toLowerCase();
 
       statistics.total += 1;
 
@@ -773,7 +771,7 @@ async function getCatechismAttendanceSummary({ user, classId, date }) {
 
   const statistics = buildAttendanceStatistics(
     rows.map((row) => ({
-      attendance_status: row.attendance_status || "not_attended",
+      status: row.status || "not_attended",
     })),
     rows.length,
   );
@@ -832,7 +830,7 @@ async function getMassAttendanceSummary({ user, date }) {
 
   const statistics = buildAttendanceStatistics(
     rows.map((row) => ({
-      attendance_status: row.attendance_status || "not_attended",
+      status: row.status || "not_attended",
     })),
     rows.length,
   );
@@ -1166,7 +1164,7 @@ async function getStudentAttendanceHistory({
   };
 
   for (const row of rows) {
-    const status = String(row.attendance_status || "").toLowerCase();
+    const status = String(row.status || "").toLowerCase();
 
     if (status === "present") {
       statistics.present += 1;
@@ -1589,28 +1587,28 @@ async function getParishStatistics({
 
         SUM(
           CASE
-            WHEN attendance_status = 'present'
+            WHEN status = 'present'
             THEN 1 ELSE 0
           END
         ) AS present,
 
         SUM(
           CASE
-            WHEN attendance_status = 'late'
+            WHEN status = 'late'
             THEN 1 ELSE 0
           END
         ) AS late,
 
         SUM(
           CASE
-            WHEN attendance_status = 'absent'
+            WHEN status = 'absent'
             THEN 1 ELSE 0
           END
         ) AS absent,
 
         SUM(
           CASE
-            WHEN attendance_status = 'excused'
+            WHEN status = 'excused'
             THEN 1 ELSE 0
           END
         ) AS excused
@@ -2173,7 +2171,7 @@ async function getAttendanceAnomalies({
 
   for (const row of invalidStatusRows) {
     anomalies.push({
-      type: "invalid_attendance_status",
+      type: "invalid_status",
       severity: "high",
       message: "Bản ghi điểm danh có trạng thái không hợp lệ.",
       attendance_id: row.id,
@@ -2183,7 +2181,7 @@ async function getAttendanceAnomalies({
       class_id: row.class_id,
       attendance_date: row.attendance_date,
       attendance_type: row.attendance_type,
-      attendance_status: row.attendance_status,
+      status: row.status,
     });
   }
 
@@ -2341,28 +2339,28 @@ async function getMonthlyAttendanceStatistics({
 
         SUM(
           CASE
-            WHEN attendance_status = 'present'
+            WHEN status = 'present'
             THEN 1 ELSE 0
           END
         ) AS present,
 
         SUM(
           CASE
-            WHEN attendance_status = 'late'
+            WHEN status = 'late'
             THEN 1 ELSE 0
           END
         ) AS late,
 
         SUM(
           CASE
-            WHEN attendance_status = 'absent'
+            WHEN status = 'absent'
             THEN 1 ELSE 0
           END
         ) AS absent,
 
         SUM(
           CASE
-            WHEN attendance_status = 'excused'
+            WHEN status = 'excused'
             THEN 1 ELSE 0
           END
         ) AS excused

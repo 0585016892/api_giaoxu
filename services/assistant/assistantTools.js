@@ -1,145 +1,582 @@
-// services/assistant/assistantTools.js
+// ============================================================
+// FAITHEDU - ASSISTANT TOOLS - PHASE 3
+// ============================================================
+// Mục tiêu:
+// - Chỉ đọc dữ liệu
+// - Không INSERT / UPDATE / DELETE
+// - Luôn giới hạn theo church_id
+// - Hỗ trợ:
+//   + Học sinh
+//   + Lớp học
+//   + Điểm danh
+//   + Thống kê điểm danh
+//   + Thống kê theo tháng
+//
+// QUAN TRỌNG:
+// - Không tin church_id từ frontend.
+// - church_id lấy từ JWT/user.
+// - Parent chưa được phép dùng các tool dữ liệu toàn giáo xứ.
+// ============================================================
 
 const db = require("../../config/db");
 
-/**
- * ============================================================
- * FAITHEDU ASSISTANT - READ ONLY DATA TOOLS
- * ============================================================
- *
- * Phase 2:
- *
- * - Chỉ đọc dữ liệu
- * - Không INSERT
- * - Không UPDATE
- * - Không DELETE
- * - Không thay đổi dữ liệu
- * - Luôn giới hạn theo church_id từ JWT
- *
- * Không nhận church_id từ frontend.
- */
-
-/**
- * ============================================================
- * NORMALIZE TEXT
- * ============================================================
- */
-
-function normalizeText(value) {
-  return String(value || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/đ/g, "d")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/**
- * ============================================================
- * READ ROLES
- * ============================================================
- */
+// ============================================================
+// CONSTANTS
+// ============================================================
 
 const READ_ALLOWED_ROLES = ["admin_catechist", "catechist", "teacher"];
 
-/**
- * ============================================================
- * CAN READ
- * ============================================================
- */
+const MAX_STUDENTS = 50;
+const MAX_CLASSES = 30;
+const MAX_ATTENDANCE_ROWS = 100;
 
-function canReadSchoolData(user) {
-  return READ_ALLOWED_ROLES.includes(user?.role);
+// ============================================================
+// NORMALIZE TEXT
+// ============================================================
+
+function normalizeText(value = "") {
+  return String(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase()
+    .trim();
 }
 
-/**
- * ============================================================
- * REQUIRE CHURCH
- * ============================================================
- */
+// ============================================================
+// CHURCH
+// ============================================================
 
 function requireChurch(user) {
   const churchId = Number(user?.church_id);
 
   if (!Number.isInteger(churchId) || churchId <= 0) {
-    const error = new Error("Tài khoản chưa được gán giáo xứ.");
-
-    error.code = "CHURCH_NOT_FOUND";
-
+    const error = new Error("Không xác định được giáo xứ.");
+    error.code = "ASSISTANT_CHURCH_REQUIRED";
+    error.status = 403;
     throw error;
   }
 
   return churchId;
 }
 
-/**
- * ============================================================
- * REQUIRE READ PERMISSION
- * ============================================================
- */
+// ============================================================
+// PERMISSION
+// ============================================================
 
 function requireReadPermission(user) {
-  if (!canReadSchoolData(user)) {
+  const role = String(user?.role || "").trim();
+
+  if (!READ_ALLOWED_ROLES.includes(role)) {
     const error = new Error(
-      "Tài khoản hiện tại không có quyền tra cứu dữ liệu.",
+      "Tài khoản của bạn không có quyền tra cứu dữ liệu giáo xứ.",
     );
 
-    error.code = "ASSISTANT_PERMISSION_DENIED";
+    error.code = "ASSISTANT_READ_FORBIDDEN";
+    error.status = 403;
 
     throw error;
   }
+
+  return role;
 }
 
-/**
- * ============================================================
- * SEARCH STUDENTS
- * ============================================================
- *
- * Schema thực tế:
- *
- * students:
- * - id
- * - code
- * - name
- * - phone
- * - email
- * - father_name
- * - mother_name
- * - father_phone
- * - mother_phone
- * - church_id
- *
- * KHÔNG CÓ student_code.
- * ============================================================
- */
+// ============================================================
+// BASIC VALIDATORS
+// ============================================================
 
-async function searchStudents({ user, keyword }) {
-  const churchId = requireChurch(user);
+function toPositiveInt(value) {
+  const number = Number(value);
 
-  requireReadPermission(user);
-
-  const cleanKeyword = String(keyword || "").trim();
-
-  if (!cleanKeyword) {
-    return [];
+  if (!Number.isInteger(number) || number <= 0) {
+    return null;
   }
 
-  console.log("");
-  console.log("------------------------------------------------------------");
-  console.log("ASSISTANT TOOL: SEARCH STUDENTS");
-  console.log("CHURCH ID:", churchId);
-  console.log("KEYWORD:", cleanKeyword);
-  console.log("------------------------------------------------------------");
+  return number;
+}
 
-  const searchValue = `%${cleanKeyword}%`;
+function normalizeAttendanceType(value) {
+  const normalized = normalizeText(value);
 
-  /**
-   * Bám đúng logic GET STUDENTS hiện tại.
-   */
+  if (
+    normalized === "mass" ||
+    normalized.includes("thanh le") ||
+    normalized.includes("di le") ||
+    normalized.includes("tham du thanh le")
+  ) {
+    return "mass";
+  }
 
-  const [rows] = await db.execute(
+  return "catechism";
+}
+
+function getAttendanceTypeLabel(type) {
+  return type === "mass" ? "Thánh lễ" : "Học giáo lý";
+}
+
+// ============================================================
+// DATE HELPERS
+// ============================================================
+
+function isValidDateString(date) {
+  if (!date || typeof date !== "string") {
+    return false;
+  }
+
+  return /^\d{4}-\d{2}-\d{2}$/.test(date);
+}
+
+function formatDateToMysql(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function getToday() {
+  const now = new Date();
+
+  return formatDateToMysql(now);
+}
+
+function getDateRange(startDate, endDate) {
+  if (!isValidDateString(startDate) || !isValidDateString(endDate)) {
+    return null;
+  }
+
+  if (startDate > endDate) {
+    return {
+      startDate: endDate,
+      endDate: startDate,
+    };
+  }
+
+  return {
+    startDate,
+    endDate,
+  };
+}
+
+// ============================================================
+// CLASS ACCESS
+// ============================================================
+//
+// IMPORTANT:
+// Chưa tự đoán schema phân công teacher.
+//
+// admin_catechist / catechist:
+//   được phép xem dữ liệu lớp trong cùng church.
+//
+// teacher:
+//   chỉ nên xem lớp được phân công.
+//
+// Nếu hệ thống hiện tại đã có helper resolveCatechismClass()
+// trong attendance controller thì nên tái sử dụng helper đó ở tầng
+// service/controller để enforce assignment.
+//
+// Ở đây tuyệt đối KHÔNG cho teacher vượt church_id.
+// ============================================================
+
+async function assertClassBelongsToChurch(classId, churchId) {
+  const [rows] = await db.query(
+    `
+      SELECT
+        id,
+        name,
+        code,
+        church_id
+      FROM classes
+      WHERE id = ?
+        AND church_id = ?
+      LIMIT 1
+    `,
+    [classId, churchId],
+  );
+
+  if (!rows.length) {
+    const error = new Error("Không tìm thấy lớp học trong giáo xứ.");
+    error.code = "CLASS_NOT_FOUND";
+    error.status = 404;
+
+    throw error;
+  }
+
+  return rows[0];
+}
+
+// ============================================================
+// SEARCH STUDENTS
+// ============================================================
+
+async function searchStudents({
+  user,
+  keyword,
+  classId,
+  limit = MAX_STUDENTS,
+}) {
+  requireReadPermission(user);
+
+  const churchId = requireChurch(user);
+
+  const safeLimit = Math.min(Math.max(Number(limit) || 10, 1), MAX_STUDENTS);
+
+  const search = String(keyword || "").trim();
+
+  const params = [churchId];
+
+  const where = ["s.church_id = ?"];
+
+  // ----------------------------------------------------------
+  // SEARCH KEYWORD
+  // ----------------------------------------------------------
+
+  if (search) {
+    const like = `%${search}%`;
+
+    where.push(`
+      (
+        s.name LIKE ?
+        OR s.code LIKE ?
+        OR s.phone LIKE ?
+        OR s.email LIKE ?
+        OR s.father_name LIKE ?
+        OR s.mother_name LIKE ?
+        OR s.father_phone LIKE ?
+        OR s.mother_phone LIKE ?
+      )
+    `);
+
+    params.push(like, like, like, like, like, like, like, like);
+  }
+
+  // ----------------------------------------------------------
+  // CLASS FILTER
+  // ----------------------------------------------------------
+
+  if (classId) {
+    const safeClassId = toPositiveInt(classId);
+
+    if (!safeClassId) {
+      const error = new Error("Mã lớp không hợp lệ.");
+      error.code = "INVALID_CLASS_ID";
+      error.status = 400;
+      throw error;
+    }
+
+    await assertClassBelongsToChurch(safeClassId, churchId);
+
+    where.push(`
+      EXISTS (
+        SELECT 1
+        FROM class_students cs_filter
+        INNER JOIN classes c_filter
+          ON c_filter.id = cs_filter.class_id
+        WHERE cs_filter.student_id = s.id
+          AND cs_filter.class_id = ?
+          AND c_filter.church_id = ?
+      )
+    `);
+
+    params.push(safeClassId, churchId);
+  }
+
+  // ----------------------------------------------------------
+  // QUERY
+  // ----------------------------------------------------------
+
+  const [rows] = await db.query(
+    `
+      SELECT
+        s.id,
+        s.name,
+        s.code,
+        s.phone,
+        s.email,
+
+        s.gender,
+        s.date_of_birth,
+        s.status,
+
+        s.father_name,
+        s.mother_name,
+        s.father_phone,
+        s.mother_phone,
+
+        (
+          SELECT GROUP_CONCAT(
+            DISTINCT c.id
+            ORDER BY c.id
+            SEPARATOR ','
+          )
+          FROM class_students cs
+          INNER JOIN classes c
+            ON c.id = cs.class_id
+          WHERE cs.student_id = s.id
+            AND c.church_id = ?
+        ) AS class_ids,
+
+        (
+          SELECT GROUP_CONCAT(
+            DISTINCT c.name
+            ORDER BY c.name
+            SEPARATOR ', '
+          )
+          FROM class_students cs
+          INNER JOIN classes c
+            ON c.id = cs.class_id
+          WHERE cs.student_id = s.id
+            AND c.church_id = ?
+        ) AS class_names
+
+      FROM students s
+
+      WHERE ${where.join(" AND ")}
+
+      ORDER BY s.id DESC
+
+      LIMIT ${safeLimit}
+    `,
+    [churchId, churchId, ...params],
+  );
+
+  return rows;
+}
+
+// ============================================================
+// STUDENT DETAIL
+// ============================================================
+
+async function getStudentDetail({ user, studentId, keyword }) {
+  requireReadPermission(user);
+
+  const churchId = requireChurch(user);
+
+  let targetStudentId = toPositiveInt(studentId);
+
+  // ----------------------------------------------------------
+  // Nếu không có ID thì tìm theo keyword
+  // ----------------------------------------------------------
+
+  if (!targetStudentId && keyword) {
+    const students = await searchStudents({
+      user,
+      keyword,
+      limit: 5,
+    });
+
+    if (!students.length) {
+      return null;
+    }
+
+    if (students.length > 1) {
+      return {
+        multiple: true,
+        students,
+      };
+    }
+
+    targetStudentId = students[0].id;
+  }
+
+  if (!targetStudentId) {
+    const error = new Error("Không xác định được học sinh cần tra cứu.");
+
+    error.code = "STUDENT_REQUIRED";
+    error.status = 400;
+
+    throw error;
+  }
+
+  // ----------------------------------------------------------
+  // STUDENT
+  // ----------------------------------------------------------
+
+  const [studentRows] = await db.query(
+    `
+      SELECT
+        s.id,
+        s.name,
+        s.code,
+        s.phone,
+        s.email,
+
+        s.gender,
+        s.date_of_birth,
+        s.status,
+
+        s.father_name,
+        s.mother_name,
+        s.father_phone,
+        s.mother_phone
+
+      FROM students s
+
+      WHERE s.id = ?
+        AND s.church_id = ?
+
+      LIMIT 1
+    `,
+    [targetStudentId, churchId],
+  );
+
+  if (!studentRows.length) {
+    return null;
+  }
+
+  const student = studentRows[0];
+
+  // ----------------------------------------------------------
+  // CLASSES
+  // ----------------------------------------------------------
+
+  const [classRows] = await db.query(
+    `
+      SELECT
+        c.id,
+        c.name,
+        c.code
+
+      FROM class_students cs
+
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+
+      WHERE cs.student_id = ?
+        AND c.church_id = ?
+
+      ORDER BY c.name ASC
+    `,
+    [targetStudentId, churchId],
+  );
+
+  // ----------------------------------------------------------
+  // RETURN
+  // ----------------------------------------------------------
+
+  return {
+    ...student,
+
+    classes: classRows,
+
+    class_names: classRows
+      .map((item) => item.name)
+      .filter(Boolean)
+      .join(", "),
+  };
+}
+
+// ============================================================
+// SEARCH CLASSES
+// ============================================================
+
+async function searchClasses({ user, keyword, limit = MAX_CLASSES }) {
+  requireReadPermission(user);
+
+  const churchId = requireChurch(user);
+
+  const safeLimit = Math.min(Math.max(Number(limit) || 10, 1), MAX_CLASSES);
+
+  const params = [churchId];
+
+  let sql = `
+    SELECT
+      c.id,
+      c.name,
+      c.code,
+
+      (
+        SELECT COUNT(*)
+        FROM class_students cs
+        INNER JOIN students s
+          ON s.id = cs.student_id
+          AND s.church_id = ?
+        WHERE cs.class_id = c.id
+      ) AS student_count
+
+    FROM classes c
+
+    WHERE c.church_id = ?
+  `;
+
+  params.push(churchId);
+
+  if (keyword) {
+    const like = `%${String(keyword).trim()}%`;
+
+    sql += `
+      AND (
+        c.name LIKE ?
+        OR c.code LIKE ?
+      )
+    `;
+
+    params.push(like, like);
+  }
+
+  sql += `
+    ORDER BY c.name ASC
+    LIMIT ${safeLimit}
+  `;
+
+  const [rows] = await db.query(sql, params);
+
+  return rows;
+}
+
+// ============================================================
+// CLASS DETAIL
+// ============================================================
+
+async function getClassDetail({ user, classId, keyword }) {
+  requireReadPermission(user);
+
+  const churchId = requireChurch(user);
+
+  let targetClassId = toPositiveInt(classId);
+
+  // ----------------------------------------------------------
+  // Resolve bằng keyword
+  // ----------------------------------------------------------
+
+  if (!targetClassId && keyword) {
+    const classes = await searchClasses({
+      user,
+      keyword,
+      limit: 10,
+    });
+
+    if (!classes.length) {
+      return null;
+    }
+
+    if (classes.length > 1) {
+      return {
+        multiple: true,
+        classes,
+      };
+    }
+
+    targetClassId = classes[0].id;
+  }
+
+  if (!targetClassId) {
+    const error = new Error("Không xác định được lớp cần tra cứu.");
+
+    error.code = "CLASS_REQUIRED";
+    error.status = 400;
+
+    throw error;
+  }
+
+  const classInfo = await assertClassBelongsToChurch(targetClassId, churchId);
+
+  // ----------------------------------------------------------
+  // STUDENTS
+  // ----------------------------------------------------------
+
+  const [studentRows] = await db.query(
     `
       SELECT
         s.id,
@@ -147,252 +584,7 @@ async function searchStudents({ user, keyword }) {
         s.name,
         s.gender,
         s.date_of_birth,
-        s.phone,
-        s.email,
-        s.father_name,
-        s.mother_name,
-        s.father_phone,
-        s.mother_phone,
-        s.status,
-
-        (
-          SELECT
-            GROUP_CONCAT(
-              DISTINCT c.id
-              ORDER BY c.id
-              SEPARATOR ','
-            )
-
-          FROM class_students cs
-
-          INNER JOIN classes c
-            ON c.id = cs.class_id
-
-          WHERE
-            cs.student_id = s.id
-            AND c.church_id = ?
-        ) AS class_ids,
-
-        (
-          SELECT
-            GROUP_CONCAT(
-              DISTINCT c.name
-              ORDER BY c.name
-              SEPARATOR ', '
-            )
-
-          FROM class_students cs
-
-          INNER JOIN classes c
-            ON c.id = cs.class_id
-
-          WHERE
-            cs.student_id = s.id
-            AND c.church_id = ?
-        ) AS class_names
-
-      FROM students s
-
-      WHERE
-        s.church_id = ?
-
-        AND (
-          s.name LIKE ?
-          OR s.code LIKE ?
-          OR s.phone LIKE ?
-          OR s.email LIKE ?
-          OR s.father_name LIKE ?
-          OR s.mother_name LIKE ?
-          OR s.father_phone LIKE ?
-          OR s.mother_phone LIKE ?
-        )
-
-      ORDER BY
-        s.name ASC,
-        s.id ASC
-
-      LIMIT 10
-    `,
-    [
-      churchId,
-      churchId,
-      churchId,
-
-      searchValue,
-      searchValue,
-      searchValue,
-      searchValue,
-      searchValue,
-      searchValue,
-      searchValue,
-      searchValue,
-    ],
-  );
-
-  console.log("STUDENTS FOUND:", rows.length);
-
-  return rows.map((student) => ({
-    id: student.id,
-
-    code: student.code,
-
-    name: student.name,
-
-    gender: student.gender,
-
-    date_of_birth: student.date_of_birth,
-
-    phone: student.phone,
-
-    email: student.email,
-
-    father_name: student.father_name,
-
-    mother_name: student.mother_name,
-
-    father_phone: student.father_phone,
-
-    mother_phone: student.mother_phone,
-
-    status: student.status,
-
-    class_ids: student.class_ids
-      ? String(student.class_ids)
-          .split(",")
-          .map((id) => Number(id))
-          .filter(Boolean)
-      : [],
-
-    class_names: student.class_names || null,
-  }));
-}
-
-/**
- * ============================================================
- * SEARCH CLASSES
- * ============================================================
- */
-
-async function searchClasses({ user, keyword }) {
-  const churchId = requireChurch(user);
-
-  requireReadPermission(user);
-
-  const cleanKeyword = String(keyword || "").trim();
-
-  if (!cleanKeyword) {
-    return [];
-  }
-
-  console.log("");
-  console.log("------------------------------------------------------------");
-  console.log("ASSISTANT TOOL: SEARCH CLASSES");
-  console.log("CHURCH ID:", churchId);
-  console.log("KEYWORD:", cleanKeyword);
-  console.log("------------------------------------------------------------");
-
-  const searchValue = `%${cleanKeyword}%`;
-
-  const [rows] = await db.execute(
-    `
-      SELECT
-        c.id,
-        c.name,
-        c.code
-
-      FROM classes c
-
-      WHERE
-        c.church_id = ?
-
-        AND (
-          c.name LIKE ?
-          OR c.code LIKE ?
-        )
-
-      ORDER BY
-        c.name ASC,
-        c.id ASC
-
-      LIMIT 10
-    `,
-    [churchId, searchValue, searchValue],
-  );
-
-  console.log("CLASSES FOUND:", rows.length);
-
-  return rows;
-}
-
-/**
- * ============================================================
- * GET CLASS STUDENTS
- * ============================================================
- */
-
-async function getClassStudents({ user, classId }) {
-  const churchId = requireChurch(user);
-
-  requireReadPermission(user);
-
-  const id = Number(classId);
-
-  if (!Number.isInteger(id) || id <= 0) {
-    const error = new Error("Mã lớp không hợp lệ.");
-
-    error.code = "INVALID_CLASS_ID";
-
-    throw error;
-  }
-
-  console.log("");
-  console.log("------------------------------------------------------------");
-  console.log("ASSISTANT TOOL: GET CLASS STUDENTS");
-  console.log("CHURCH ID:", churchId);
-  console.log("CLASS ID:", id);
-  console.log("------------------------------------------------------------");
-
-  /**
-   * Kiểm tra lớp thuộc giáo xứ.
-   */
-
-  const [classRows] = await db.execute(
-    `
-      SELECT
-        id,
-        name,
-        code
-
-      FROM classes
-
-      WHERE
-        id = ?
-        AND church_id = ?
-
-      LIMIT 1
-    `,
-    [id, churchId],
-  );
-
-  if (!classRows.length) {
-    return null;
-  }
-
-  /**
-   * Danh sách học sinh.
-   *
-   * Không lấy student_code.
-   * Dùng s.code.
-   */
-
-  const [students] = await db.execute(
-    `
-      SELECT
-        s.id,
-        s.code,
-        s.name,
-        s.gender,
-        s.date_of_birth
+        s.status
 
       FROM class_students cs
 
@@ -400,156 +592,127 @@ async function getClassStudents({ user, classId }) {
         ON s.id = cs.student_id
         AND s.church_id = ?
 
-      WHERE
-        cs.class_id = ?
+      WHERE cs.class_id = ?
 
-      ORDER BY
-        s.name ASC,
-        s.id ASC
+      ORDER BY s.name ASC
     `,
-    [churchId, id],
+    [churchId, targetClassId],
   );
 
   return {
-    class: classRows[0],
-
-    students: students.map((student) => ({
-      id: student.id,
-      code: student.code,
-      name: student.name,
-      gender: student.gender,
-      date_of_birth: student.date_of_birth,
-    })),
-
-    total: students.length,
+    ...classInfo,
+    student_count: studentRows.length,
+    students: studentRows,
   };
 }
 
-/**
- * ============================================================
- * ATTENDANCE - CATECHISM
- * ============================================================
- *
- * Dựa đúng getAttendance hiện tại:
- *
- * catechism:
- * - class_id bắt buộc
- * - class_students
- * - attendances
- * ============================================================
- */
+// ============================================================
+// GET CLASS STUDENTS
+// ============================================================
 
-async function getCatechismAttendanceSummary({ user, classId, date }) {
-  const churchId = requireChurch(user);
-
+async function getClassStudents({ user, classId, limit = MAX_STUDENTS }) {
   requireReadPermission(user);
 
-  const id = Number(classId);
+  const churchId = requireChurch(user);
 
-  if (!Number.isInteger(id) || id <= 0) {
+  const safeClassId = toPositiveInt(classId);
+
+  if (!safeClassId) {
     const error = new Error("Mã lớp không hợp lệ.");
-
     error.code = "INVALID_CLASS_ID";
+    error.status = 400;
 
     throw error;
   }
 
-  if (!date) {
-    const error = new Error("Chưa xác định ngày điểm danh.");
+  const classInfo = await assertClassBelongsToChurch(safeClassId, churchId);
 
-    error.code = "ATTENDANCE_DATE_REQUIRED";
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), MAX_STUDENTS);
 
-    throw error;
-  }
-
-  console.log("");
-  console.log("------------------------------------------------------------");
-  console.log("ASSISTANT TOOL: CATECHISM ATTENDANCE");
-  console.log("CHURCH ID:", churchId);
-  console.log("CLASS ID:", id);
-  console.log("DATE:", date);
-  console.log("------------------------------------------------------------");
-
-  /**
-   * Kiểm tra lớp thuộc giáo xứ.
-   */
-
-  const [classRows] = await db.execute(
+  const [rows] = await db.query(
     `
       SELECT
-        id,
-        name,
-        code
+        s.id,
+        s.code,
+        s.name,
+        s.gender,
+        s.date_of_birth,
+        s.status
 
-      FROM classes
+      FROM class_students cs
 
-      WHERE
-        id = ?
-        AND church_id = ?
+      INNER JOIN students s
+        ON s.id = cs.student_id
+        AND s.church_id = ?
 
-      LIMIT 1
+      WHERE cs.class_id = ?
+
+      ORDER BY s.name ASC
+
+      LIMIT ${safeLimit}
     `,
-    [id, churchId],
+    [churchId, safeClassId],
   );
 
-  if (!classRows.length) {
-    return null;
+  return {
+    class: classInfo,
+    total: rows.length,
+    students: rows,
+  };
+}
+
+// ============================================================
+// ATTENDANCE SUMMARY - CATECHISM
+// ============================================================
+
+async function getCatechismAttendanceSummary({ user, classId, date }) {
+  requireReadPermission(user);
+
+  const churchId = requireChurch(user);
+
+  const safeClassId = toPositiveInt(classId);
+
+  if (!safeClassId) {
+    const error = new Error("Vui lòng xác định lớp.");
+    error.code = "CLASS_REQUIRED";
+    error.status = 400;
+
+    throw error;
   }
 
-  /**
-   * Statistics.
-   *
-   * QUAN TRỌNG:
-   *
-   * LEFT JOIN attendances để bao gồm
-   * cả học sinh chưa điểm danh.
-   */
+  if (!isValidDateString(date)) {
+    const error = new Error("Ngày điểm danh không hợp lệ.");
+    error.code = "INVALID_DATE";
+    error.status = 400;
 
-  const [statsRows] = await db.execute(
+    throw error;
+  }
+
+  const classInfo = await assertClassBelongsToChurch(safeClassId, churchId);
+
+  // ----------------------------------------------------------
+  // STUDENTS + ATTENDANCE
+  // ----------------------------------------------------------
+
+  const [rows] = await db.query(
     `
       SELECT
+        s.id,
+        s.code,
+        s.name,
+        s.gender,
+        s.date_of_birth,
+        s.status AS student_status,
 
-        COUNT(*) AS total,
-
-        SUM(
-          CASE
-            WHEN a.status = 'present'
-            THEN 1
-            ELSE 0
-          END
-        ) AS present,
-
-        SUM(
-          CASE
-            WHEN a.status = 'absent'
-            THEN 1
-            ELSE 0
-          END
-        ) AS absent,
-
-        SUM(
-          CASE
-            WHEN a.status = 'late'
-            THEN 1
-            ELSE 0
-          END
-        ) AS late,
-
-        SUM(
-          CASE
-            WHEN a.status = 'excused'
-            THEN 1
-            ELSE 0
-          END
-        ) AS excused,
-
-        SUM(
-          CASE
-            WHEN a.id IS NULL
-            THEN 1
-            ELSE 0
-          END
-        ) AS not_attended
+        a.id AS attendance_id,
+        a.attendance_type,
+        a.status AS attendance_status,
+        a.check_in_time,
+        a.note,
+        a.teacher_id,
+        a.attendance_date,
+        a.created_at,
+        a.updated_at
 
       FROM class_students cs
 
@@ -564,128 +727,84 @@ async function getCatechismAttendanceSummary({ user, classId, date }) {
         AND a.attendance_date = ?
         AND a.attendance_type = 'catechism'
 
-      WHERE
-        cs.class_id = ?
+      WHERE cs.class_id = ?
+
+      ORDER BY
+        CASE
+          WHEN a.status = 'absent' THEN 1
+          WHEN a.status = 'late' THEN 2
+          WHEN a.status = 'excused' THEN 3
+          WHEN a.status = 'present' THEN 4
+          ELSE 5
+        END,
+        s.name ASC
     `,
-    [churchId, id, churchId, date, id],
+    [churchId, safeClassId, churchId, date, safeClassId],
   );
 
-  const stats = statsRows[0] || {};
+  // ----------------------------------------------------------
+  // STATISTICS
+  // ----------------------------------------------------------
 
-  const total = Number(stats.total || 0);
-
-  const present = Number(stats.present || 0);
-
-  const absent = Number(stats.absent || 0);
-
-  const late = Number(stats.late || 0);
-
-  const excused = Number(stats.excused || 0);
-
-  const notAttended = Number(stats.not_attended || 0);
-
-  const attended = present + late;
-
-  const attendanceRate =
-    total > 0 ? Number(((attended / total) * 100).toFixed(2)) : 0;
+  const statistics = buildAttendanceStatistics(rows);
 
   return {
-    class: classRows[0],
+    success: true,
+
+    class: {
+      id: classInfo.id,
+      name: classInfo.name,
+      code: classInfo.code,
+    },
 
     date,
 
     attendance_type: "catechism",
-
     attendance_type_label: "Học giáo lý",
 
-    statistics: {
-      total,
-      present,
-      absent,
-      late,
-      excused,
-      not_attended: notAttended,
-      attendance_rate: attendanceRate,
-    },
+    statistics,
+
+    data: rows,
   };
 }
 
-/**
- * ============================================================
- * ATTENDANCE - MASS
- * ============================================================
- *
- * Mass KHÔNG có class_id.
- *
- * Toàn bộ học sinh thuộc church.
- * ============================================================
- */
+// ============================================================
+// ATTENDANCE SUMMARY - MASS
+// ============================================================
 
 async function getMassAttendanceSummary({ user, date }) {
-  const churchId = requireChurch(user);
-
   requireReadPermission(user);
 
-  if (!date) {
-    const error = new Error("Chưa xác định ngày điểm danh.");
+  const churchId = requireChurch(user);
 
-    error.code = "ATTENDANCE_DATE_REQUIRED";
+  if (!isValidDateString(date)) {
+    const error = new Error("Ngày điểm danh không hợp lệ.");
+    error.code = "INVALID_DATE";
+    error.status = 400;
 
     throw error;
   }
 
-  console.log("");
-  console.log("------------------------------------------------------------");
-  console.log("ASSISTANT TOOL: MASS ATTENDANCE");
-  console.log("CHURCH ID:", churchId);
-  console.log("DATE:", date);
-  console.log("------------------------------------------------------------");
-
-  const [statsRows] = await db.execute(
+  const [rows] = await db.query(
     `
       SELECT
+        s.id,
+        s.code,
+        s.name,
+        s.gender,
+        s.date_of_birth,
+        s.status AS student_status,
 
-        COUNT(*) AS total,
-
-        SUM(
-          CASE
-            WHEN a.status = 'present'
-            THEN 1
-            ELSE 0
-          END
-        ) AS present,
-
-        SUM(
-          CASE
-            WHEN a.status = 'absent'
-            THEN 1
-            ELSE 0
-          END
-        ) AS absent,
-
-        SUM(
-          CASE
-            WHEN a.status = 'late'
-            THEN 1
-            ELSE 0
-          END
-        ) AS late,
-
-        SUM(
-          CASE
-            WHEN a.status = 'excused'
-            THEN 1
-            ELSE 0
-          END
-        ) AS excused,
-
-        SUM(
-          CASE
-            WHEN a.id IS NULL
-            THEN 1
-            ELSE 0
-          END
-        ) AS not_attended
+        a.id AS attendance_id,
+        a.attendance_type,
+        a.status AS attendance_status,
+        a.check_in_time,
+        a.note,
+        a.teacher_id,
+        a.class_id,
+        a.attendance_date,
+        a.created_at,
+        a.updated_at
 
       FROM students s
 
@@ -695,25 +814,81 @@ async function getMassAttendanceSummary({ user, date }) {
         AND a.attendance_date = ?
         AND a.attendance_type = 'mass'
 
-      WHERE
-        s.church_id = ?
+      WHERE s.church_id = ?
+
+      ORDER BY
+        CASE
+          WHEN a.status = 'absent' THEN 1
+          WHEN a.status = 'late' THEN 2
+          WHEN a.status = 'excused' THEN 3
+          WHEN a.status = 'present' THEN 4
+          ELSE 5
+        END,
+        s.name ASC
+
+      LIMIT ${MAX_ATTENDANCE_ROWS}
     `,
     [churchId, date, churchId],
   );
 
-  const stats = statsRows[0] || {};
+  const statistics = buildAttendanceStatistics(rows);
 
-  const total = Number(stats.total || 0);
+  return {
+    success: true,
 
-  const present = Number(stats.present || 0);
+    class: null,
 
-  const absent = Number(stats.absent || 0);
+    date,
 
-  const late = Number(stats.late || 0);
+    attendance_type: "mass",
+    attendance_type_label: "Thánh lễ",
 
-  const excused = Number(stats.excused || 0);
+    statistics,
 
-  const notAttended = Number(stats.not_attended || 0);
+    data: rows,
+  };
+}
+
+// ============================================================
+// ATTENDANCE STATISTICS
+// ============================================================
+
+function buildAttendanceStatistics(rows = []) {
+  const total = rows.length;
+
+  let present = 0;
+  let absent = 0;
+  let late = 0;
+  let excused = 0;
+  let not_attended = 0;
+
+  for (const row of rows) {
+    const status = row.attendance_status;
+
+    if (status === "present") {
+      present++;
+      continue;
+    }
+
+    if (status === "absent") {
+      absent++;
+      continue;
+    }
+
+    if (status === "late") {
+      late++;
+      continue;
+    }
+
+    if (status === "excused") {
+      excused++;
+      continue;
+    }
+
+    if (!row.attendance_id) {
+      not_attended++;
+    }
+  }
 
   const attended = present + late;
 
@@ -721,31 +896,20 @@ async function getMassAttendanceSummary({ user, date }) {
     total > 0 ? Number(((attended / total) * 100).toFixed(2)) : 0;
 
   return {
-    class: null,
-
-    date,
-
-    attendance_type: "mass",
-
-    attendance_type_label: "Thánh lễ",
-
-    statistics: {
-      total,
-      present,
-      absent,
-      late,
-      excused,
-      not_attended: notAttended,
-      attendance_rate: attendanceRate,
-    },
+    total,
+    present,
+    absent,
+    late,
+    excused,
+    not_attended,
+    attended,
+    attendance_rate: attendanceRate,
   };
 }
 
-/**
- * ============================================================
- * GENERIC ATTENDANCE SUMMARY
- * ============================================================
- */
+// ============================================================
+// GET ATTENDANCE SUMMARY
+// ============================================================
 
 async function getAttendanceSummary({
   user,
@@ -753,7 +917,9 @@ async function getAttendanceSummary({
   date,
   attendanceType = "catechism",
 }) {
-  if (attendanceType === "mass") {
+  const type = normalizeAttendanceType(attendanceType);
+
+  if (type === "mass") {
     return getMassAttendanceSummary({
       user,
       date,
@@ -767,28 +933,518 @@ async function getAttendanceSummary({
   });
 }
 
-/**
- * ============================================================
- * EXPORT
- * ============================================================
- */
+// ============================================================
+// GET ATTENDANCE STUDENTS
+// ============================================================
+//
+// Trả danh sách theo trạng thái:
+//
+// present
+// absent
+// late
+// excused
+// not_attended
+// all
+//
+// ============================================================
+
+async function getAttendanceStudents({
+  user,
+  classId,
+  date,
+  attendanceType = "catechism",
+  status = "all",
+}) {
+  requireReadPermission(user);
+
+  const churchId = requireChurch(user);
+
+  const type = normalizeAttendanceType(attendanceType);
+
+  const normalizedStatus = normalizeText(status).replace(/\s+/g, "_");
+
+  if (!isValidDateString(date)) {
+    const error = new Error("Ngày điểm danh không hợp lệ.");
+    error.code = "INVALID_DATE";
+    error.status = 400;
+
+    throw error;
+  }
+
+  const allowedStatuses = [
+    "all",
+    "present",
+    "absent",
+    "late",
+    "excused",
+    "not_attended",
+  ];
+
+  const safeStatus = allowedStatuses.includes(normalizedStatus)
+    ? normalizedStatus
+    : "all";
+
+  let rows;
+
+  // ==========================================================
+  // MASS
+  // ==========================================================
+
+  if (type === "mass") {
+    let sql = `
+      SELECT
+        s.id,
+        s.code,
+        s.name,
+        s.gender,
+        s.date_of_birth,
+
+        a.id AS attendance_id,
+        a.status AS attendance_status,
+        a.check_in_time,
+        a.note,
+        a.attendance_date
+
+      FROM students s
+
+      LEFT JOIN attendances a
+        ON a.student_id = s.id
+        AND a.church_id = ?
+        AND a.attendance_date = ?
+        AND a.attendance_type = 'mass'
+
+      WHERE s.church_id = ?
+    `;
+
+    const params = [churchId, date, churchId];
+
+    if (safeStatus === "not_attended") {
+      sql += `
+        AND a.id IS NULL
+      `;
+    } else if (safeStatus !== "all") {
+      sql += `
+        AND a.status = ?
+      `;
+
+      params.push(safeStatus);
+    }
+
+    sql += `
+      ORDER BY s.name ASC
+      LIMIT ${MAX_ATTENDANCE_ROWS}
+    `;
+
+    [rows] = await db.query(sql, params);
+  }
+
+  // ==========================================================
+  // CATECHISM
+  // ==========================================================
+  else {
+    const safeClassId = toPositiveInt(classId);
+
+    if (!safeClassId) {
+      const error = new Error("Vui lòng xác định lớp.");
+      error.code = "CLASS_REQUIRED";
+      error.status = 400;
+
+      throw error;
+    }
+
+    await assertClassBelongsToChurch(safeClassId, churchId);
+
+    let sql = `
+      SELECT
+        s.id,
+        s.code,
+        s.name,
+        s.gender,
+        s.date_of_birth,
+
+        a.id AS attendance_id,
+        a.status AS attendance_status,
+        a.check_in_time,
+        a.note,
+        a.attendance_date
+
+      FROM class_students cs
+
+      INNER JOIN students s
+        ON s.id = cs.student_id
+        AND s.church_id = ?
+
+      LEFT JOIN attendances a
+        ON a.student_id = s.id
+        AND a.class_id = ?
+        AND a.church_id = ?
+        AND a.attendance_date = ?
+        AND a.attendance_type = 'catechism'
+
+      WHERE cs.class_id = ?
+    `;
+
+    const params = [churchId, safeClassId, churchId, date, safeClassId];
+
+    if (safeStatus === "not_attended") {
+      sql += `
+        AND a.id IS NULL
+      `;
+    } else if (safeStatus !== "all") {
+      sql += `
+        AND a.status = ?
+      `;
+
+      params.push(safeStatus);
+    }
+
+    sql += `
+      ORDER BY s.name ASC
+      LIMIT ${MAX_ATTENDANCE_ROWS}
+    `;
+
+    [rows] = await db.query(sql, params);
+  }
+
+  return {
+    success: true,
+
+    date,
+
+    attendance_type: type,
+    attendance_type_label: getAttendanceTypeLabel(type),
+
+    status: safeStatus,
+
+    total: rows.length,
+
+    data: rows,
+  };
+}
+
+// ============================================================
+// MONTHLY ATTENDANCE STATISTICS
+// ============================================================
+
+async function getMonthlyAttendanceStatistics({
+  user,
+  classId,
+  startDate,
+  endDate,
+  attendanceType = "catechism",
+}) {
+  requireReadPermission(user);
+
+  const churchId = requireChurch(user);
+
+  const range = getDateRange(startDate, endDate);
+
+  if (!range) {
+    const error = new Error("Khoảng thời gian không hợp lệ.");
+
+    error.code = "INVALID_DATE_RANGE";
+    error.status = 400;
+
+    throw error;
+  }
+
+  const type = normalizeAttendanceType(attendanceType);
+
+  // ==========================================================
+  // MASS
+  // ==========================================================
+
+  if (type === "mass") {
+    const [rows] = await db.query(
+      `
+        SELECT
+          COUNT(*) AS total_records,
+
+          SUM(
+            CASE
+              WHEN a.status = 'present'
+              THEN 1 ELSE 0
+            END
+          ) AS present,
+
+          SUM(
+            CASE
+              WHEN a.status = 'late'
+              THEN 1 ELSE 0
+            END
+          ) AS late,
+
+          SUM(
+            CASE
+              WHEN a.status = 'absent'
+              THEN 1 ELSE 0
+            END
+          ) AS absent,
+
+          SUM(
+            CASE
+              WHEN a.status = 'excused'
+              THEN 1 ELSE 0
+            END
+          ) AS excused
+
+        FROM students s
+
+        INNER JOIN attendances a
+          ON a.student_id = s.id
+          AND a.church_id = ?
+          AND a.attendance_type = 'mass'
+          AND a.attendance_date BETWEEN ? AND ?
+
+        WHERE s.church_id = ?
+      `,
+      [churchId, range.startDate, range.endDate, churchId],
+    );
+
+    const result = rows[0] || {};
+
+    const present = Number(result.present || 0);
+    const late = Number(result.late || 0);
+    const absent = Number(result.absent || 0);
+    const excused = Number(result.excused || 0);
+
+    const totalRecords = Number(result.total_records || 0);
+
+    const attended = present + late;
+
+    const attendanceRate =
+      totalRecords > 0
+        ? Number(((attended / totalRecords) * 100).toFixed(2))
+        : 0;
+
+    return {
+      success: true,
+
+      class: null,
+
+      start_date: range.startDate,
+      end_date: range.endDate,
+
+      attendance_type: "mass",
+      attendance_type_label: "Thánh lễ",
+
+      statistics: {
+        total_records: totalRecords,
+        present,
+        late,
+        absent,
+        excused,
+        attended,
+        attendance_rate: attendanceRate,
+      },
+    };
+  }
+
+  // ==========================================================
+  // CATECHISM
+  // ==========================================================
+
+  const safeClassId = toPositiveInt(classId);
+
+  if (!safeClassId) {
+    const error = new Error("Vui lòng xác định lớp.");
+    error.code = "CLASS_REQUIRED";
+    error.status = 400;
+
+    throw error;
+  }
+
+  const classInfo = await assertClassBelongsToChurch(safeClassId, churchId);
+
+  const [rows] = await db.query(
+    `
+      SELECT
+        COUNT(*) AS total_records,
+
+        SUM(
+          CASE
+            WHEN a.status = 'present'
+            THEN 1 ELSE 0
+          END
+        ) AS present,
+
+        SUM(
+          CASE
+            WHEN a.status = 'late'
+            THEN 1 ELSE 0
+          END
+        ) AS late,
+
+        SUM(
+          CASE
+            WHEN a.status = 'absent'
+            THEN 1 ELSE 0
+          END
+        ) AS absent,
+
+        SUM(
+          CASE
+            WHEN a.status = 'excused'
+            THEN 1 ELSE 0
+          END
+        ) AS excused
+
+      FROM class_students cs
+
+      INNER JOIN students s
+        ON s.id = cs.student_id
+        AND s.church_id = ?
+
+      INNER JOIN attendances a
+        ON a.student_id = s.id
+        AND a.class_id = ?
+        AND a.church_id = ?
+        AND a.attendance_type = 'catechism'
+        AND a.attendance_date BETWEEN ? AND ?
+
+      WHERE cs.class_id = ?
+    `,
+    [
+      churchId,
+      safeClassId,
+      churchId,
+      range.startDate,
+      range.endDate,
+      safeClassId,
+    ],
+  );
+
+  const result = rows[0] || {};
+
+  const present = Number(result.present || 0);
+  const late = Number(result.late || 0);
+  const absent = Number(result.absent || 0);
+  const excused = Number(result.excused || 0);
+
+  const totalRecords = Number(result.total_records || 0);
+
+  const attended = present + late;
+
+  const attendanceRate =
+    totalRecords > 0 ? Number(((attended / totalRecords) * 100).toFixed(2)) : 0;
+
+  // ----------------------------------------------------------
+  // TOTAL STUDENTS
+  // ----------------------------------------------------------
+
+  const [studentCountRows] = await db.query(
+    `
+      SELECT COUNT(*) AS total
+      FROM class_students cs
+
+      INNER JOIN students s
+        ON s.id = cs.student_id
+        AND s.church_id = ?
+
+      WHERE cs.class_id = ?
+    `,
+    [churchId, safeClassId],
+  );
+
+  const totalStudents = Number(studentCountRows[0]?.total || 0);
+
+  // ----------------------------------------------------------
+  // UNIQUE ATTENDANCE DAYS
+  // ----------------------------------------------------------
+
+  const [dateRows] = await db.query(
+    `
+      SELECT COUNT(
+        DISTINCT a.attendance_date
+      ) AS attendance_days
+
+      FROM class_students cs
+
+      INNER JOIN students s
+        ON s.id = cs.student_id
+        AND s.church_id = ?
+
+      INNER JOIN attendances a
+        ON a.student_id = s.id
+        AND a.class_id = ?
+        AND a.church_id = ?
+        AND a.attendance_type = 'catechism'
+        AND a.attendance_date BETWEEN ? AND ?
+
+      WHERE cs.class_id = ?
+    `,
+    [
+      churchId,
+      safeClassId,
+      churchId,
+      range.startDate,
+      range.endDate,
+      safeClassId,
+    ],
+  );
+
+  const attendanceDays = Number(dateRows[0]?.attendance_days || 0);
+
+  return {
+    success: true,
+
+    class: {
+      id: classInfo.id,
+      name: classInfo.name,
+      code: classInfo.code,
+    },
+
+    start_date: range.startDate,
+    end_date: range.endDate,
+
+    attendance_type: "catechism",
+    attendance_type_label: "Học giáo lý",
+
+    statistics: {
+      total_students: totalStudents,
+      attendance_days: attendanceDays,
+
+      total_records: totalRecords,
+
+      present,
+      late,
+      absent,
+      excused,
+
+      attended,
+
+      attendance_rate: attendanceRate,
+    },
+  };
+}
+
+// ============================================================
+// EXPORT
+// ============================================================
 
 module.exports = {
   normalizeText,
 
-  canReadSchoolData,
-
   requireChurch,
+  requireReadPermission,
 
   searchStudents,
+  getStudentDetail,
 
   searchClasses,
-
+  getClassDetail,
   getClassStudents,
 
-  getCatechismAttendanceSummary,
+  getAttendanceSummary,
+  getAttendanceStudents,
 
+  getMonthlyAttendanceStatistics,
+
+  getCatechismAttendanceSummary,
   getMassAttendanceSummary,
 
-  getAttendanceSummary,
+  normalizeAttendanceType,
+  getAttendanceTypeLabel,
+
+  getToday,
 };

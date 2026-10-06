@@ -1696,7 +1696,7 @@ exports.updateCatechistRole = async (req, res) => {
         username,
         role,
         church_id,
-        status
+        
       FROM admins
       WHERE id = ?
       LIMIT 1
@@ -1723,7 +1723,6 @@ exports.updateCatechistRole = async (req, res) => {
     console.log("TARGET USERNAME:", target.username);
     console.log("TARGET ROLE:", target.role);
     console.log("TARGET CHURCH ID RAW:", target.church_id);
-    console.log("TARGET STATUS:", target.status);
 
     // =========================================================
     // 9. NORMALIZE TARGET CHURCH

@@ -42,18 +42,132 @@ const {
 
 function formatDateVN(date) {
   if (!date) {
-    return "";
+    return "Chưa cập nhật";
   }
 
-  const parts = date.split("-");
+  try {
+    /**
+     * ========================================================
+     * MYSQL DATE dạng string
+     * Ví dụ:
+     * 2005-08-21
+     * ========================================================
+     */
+    if (typeof date === "string") {
+      const value = date.trim();
 
-  if (parts.length !== 3) {
-    return date;
+      if (!value) {
+        return "Chưa cập nhật";
+      }
+
+      /**
+       * YYYY-MM-DD
+       */
+      const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+
+      if (match) {
+        const [, year, month, day] = match;
+
+        return `${day}/${month}/${year}`;
+      }
+
+      /**
+       * Trường hợp string nhưng không đúng YYYY-MM-DD
+       */
+      const parsed = new Date(value);
+
+      if (Number.isNaN(parsed.getTime())) {
+        return "Chưa cập nhật";
+      }
+
+      const day = String(parsed.getDate()).padStart(2, "0");
+      const month = String(parsed.getMonth() + 1).padStart(2, "0");
+      const year = parsed.getFullYear();
+
+      return `${day}/${month}/${year}`;
+    }
+
+    /**
+     * ========================================================
+     * MYSQL DATE / DATETIME trả về JavaScript Date
+     * ========================================================
+     */
+    if (date instanceof Date) {
+      if (Number.isNaN(date.getTime())) {
+        return "Chưa cập nhật";
+      }
+
+      const day = String(date.getDate()).padStart(2, "0");
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const year = date.getFullYear();
+
+      return `${day}/${month}/${year}`;
+    }
+
+    /**
+     * ========================================================
+     * Trường hợp timestamp / number
+     * ========================================================
+     */
+    if (typeof date === "number") {
+      const parsed = new Date(date);
+
+      if (Number.isNaN(parsed.getTime())) {
+        return "Chưa cập nhật";
+      }
+
+      const day = String(parsed.getDate()).padStart(2, "0");
+      const month = String(parsed.getMonth() + 1).padStart(2, "0");
+      const year = parsed.getFullYear();
+
+      return `${day}/${month}/${year}`;
+    }
+
+    return "Chưa cập nhật";
+  } catch (error) {
+    console.log("[ASSISTANT] FORMAT DATE ERROR:", error?.message);
+
+    return "Chưa cập nhật";
+  }
+}
+function formatGenderVN(gender) {
+  if (!gender) {
+    return "Chưa cập nhật";
   }
 
-  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  const value = String(gender).trim().toLowerCase();
+
+  const genderMap = {
+    male: "Nam",
+    female: "Nữ",
+    other: "Khác",
+    nam: "Nam",
+    nữ: "Nữ",
+    nu: "Nữ",
+    khac: "Khác",
+    khác: "Khác",
+  };
+
+  return genderMap[value] || gender;
 }
 
+function formatStudentStatusVN(status) {
+  if (!status) {
+    return "Chưa cập nhật";
+  }
+
+  const value = String(status).trim().toLowerCase();
+
+  const statusMap = {
+    active: "Đang học",
+    inactive: "Ngừng học",
+    graduated: "Đã tốt nghiệp",
+    transferred: "Đã chuyển trường",
+    deleted: "Đã xóa",
+  };
+
+  return statusMap[value] || status;
+}
 function getTodayDate() {
   const now = new Date();
 
@@ -557,9 +671,9 @@ function buildStudentDetailResponse(student) {
     `**${student.name || "Chưa có tên"}**`,
     "",
     `- Mã học sinh: **${student.code || "Chưa có"}**`,
-    `- Giới tính: **${student.gender || "Chưa cập nhật"}**`,
+    `- Giới tính: **${formatGenderVN(student.gender)}**`,
     `- Ngày sinh: **${formatDateVN(student.date_of_birth) || "Chưa cập nhật"}**`,
-    `- Trạng thái: **${student.status || "Chưa cập nhật"}**`,
+    `- Trạng thái: **${formatStudentStatusVN(student.status)}**`,
     "",
     "### Lớp học",
   ];

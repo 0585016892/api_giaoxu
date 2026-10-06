@@ -4,7 +4,7 @@ const { chatWithAssistant } = require("../services/assistant/assistantService");
 
 /**
  * ============================================================
- * POST /assistant/chat
+ * POST /api/assistant/chat
  * ============================================================
  */
 
@@ -15,14 +15,6 @@ exports.chat = async (req, res) => {
   console.log("============================================================");
 
   try {
-    /**
-     * ========================================================
-     * USER
-     * ========================================================
-     */
-
-    console.log("👤 USER:", req.user);
-
     if (!req.user) {
       console.error("❌ USER NOT FOUND");
 
@@ -33,13 +25,13 @@ exports.chat = async (req, res) => {
       });
     }
 
-    /**
-     * ========================================================
-     * MESSAGE
-     * ========================================================
-     */
-
     const { message } = req.body || {};
+
+    console.log("👤 USER ID:", req.user.id);
+
+    console.log("🎭 ROLE:", req.user.role);
+
+    console.log("⛪ CHURCH ID:", req.user.church_id);
 
     console.log("💬 MESSAGE:", message);
 
@@ -51,12 +43,6 @@ exports.chat = async (req, res) => {
       });
     }
 
-    /**
-     * ========================================================
-     * LENGTH
-     * ========================================================
-     */
-
     if (message.trim().length > 500) {
       return res.status(400).json({
         success: false,
@@ -65,22 +51,10 @@ exports.chat = async (req, res) => {
       });
     }
 
-    /**
-     * ========================================================
-     * ASSISTANT
-     * ========================================================
-     */
-
     const result = await chatWithAssistant({
       message: message.trim(),
       user: req.user,
     });
-
-    /**
-     * ========================================================
-     * RESPONSE
-     * ========================================================
-     */
 
     return res.status(200).json({
       success: true,
@@ -97,10 +71,28 @@ exports.chat = async (req, res) => {
     );
 
     console.error("CODE:", error.code);
+
     console.error("MESSAGE:", error.message);
+
     console.error("STACK:", error.stack);
 
-    if (error.code === "INVALID_MESSAGE") {
+    if (error.code === "ASSISTANT_PERMISSION_DENIED") {
+      return res.status(403).json({
+        success: false,
+        code: error.code,
+        message: error.message,
+      });
+    }
+
+    if (error.code === "CHURCH_NOT_FOUND") {
+      return res.status(403).json({
+        success: false,
+        code: error.code,
+        message: error.message,
+      });
+    }
+
+    if (error.code === "INVALID_STUDENT_ID") {
       return res.status(400).json({
         success: false,
         code: error.code,
@@ -108,7 +100,7 @@ exports.chat = async (req, res) => {
       });
     }
 
-    if (error.code === "EMPTY_MESSAGE") {
+    if (error.code === "INVALID_CLASS_ID") {
       return res.status(400).json({
         success: false,
         code: error.code,
@@ -116,7 +108,7 @@ exports.chat = async (req, res) => {
       });
     }
 
-    if (error.code === "MESSAGE_TOO_LONG") {
+    if (error.code === "ATTENDANCE_DATE_REQUIRED") {
       return res.status(400).json({
         success: false,
         code: error.code,

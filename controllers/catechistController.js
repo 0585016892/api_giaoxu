@@ -25,11 +25,17 @@ exports.getAllCatechists = async (req, res) => {
   try {
     const churchId = getChurchId(req);
 
-    console.log("========== GET ALL CATECHISTS ==========");
+    console.log("");
+    console.log("============================================================");
+    console.log("                    GET ALL CATECHISTS");
+    console.log("============================================================");
+
     console.log("👤 USER:", req.user);
     console.log("⛪ CHURCH ID:", churchId);
 
     if (!churchId) {
+      console.log("❌ CHURCH ID NOT FOUND");
+
       return res.status(403).json({
         success: false,
         message: "Tài khoản chưa được gán giáo xứ",
@@ -41,7 +47,12 @@ exports.getAllCatechists = async (req, res) => {
       SELECT
         c.*,
 
-        -- Thông tin từ admins
+        -- =====================================================
+        -- THÔNG TIN TÀI KHOẢN ADMINS
+        -- =====================================================
+
+        a.id AS admin_id,
+        a.username AS admin_username,
         a.avatar AS avatar,
         a.role AS role
 
@@ -58,24 +69,46 @@ exports.getAllCatechists = async (req, res) => {
       [churchId],
     );
 
-    console.log("📊 Số lượng GLV:", rows.length);
+    console.log("");
+    console.log("📊 SỐ LƯỢNG GLV:", rows.length);
+
+    console.log("");
+    console.log("--------------- CATECHISTS ----------------");
 
     console.log(
-      "👥 ROLES:",
+      "👥 DATA:",
       rows.map((item) => ({
-        id: item.id,
+        catechist_id: item.id,
+        admin_id: item.admin_id,
         catechist_code: item.catechist_code,
+        admin_username: item.admin_username,
         full_name: item.full_name,
         role: item.role,
+        church_id: item.church_id,
       })),
     );
+
+    console.log("");
+    console.log("============================================================");
+    console.log("              ✅ GET ALL CATECHISTS SUCCESS");
+    console.log("============================================================");
+    console.log("");
 
     return res.status(200).json({
       success: true,
       data: rows,
     });
   } catch (error) {
-    console.error("❌ GET ALL CATECHISTS ERROR:", error);
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("              ❌ GET ALL CATECHISTS ERROR");
+    console.error(
+      "============================================================",
+    );
+
+    console.error(error);
 
     return res.status(500).json({
       success: false,

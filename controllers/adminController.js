@@ -1588,183 +1588,124 @@ exports.updateAdmin = async (req, res) => {
 exports.updateCatechistRole = async (req, res) => {
   console.log("");
   console.log("============================================================");
-  console.log("                 UPDATE CATECHIST ROLE");
+  console.log("                    UPDATE ADMIN ROLE");
   console.log("============================================================");
 
   try {
-    // ========================================================
-    // 1. CURRENT USER
-    // ========================================================
+    // =========================================================
+    // 1. OPERATOR
+    // =========================================================
 
-    const currentUser = req.user;
+    console.log("OPERATOR ID:", req.user?.id);
+    console.log("OPERATOR USERNAME:", req.user?.username);
+    console.log("OPERATOR ROLE:", req.user?.role);
+    console.log("OPERATOR CHURCH ID RAW:", req.user?.church_id);
 
-    console.log("[AUTH] CURRENT USER:", {
-      id: currentUser?.id,
-      username: currentUser?.username,
-      role: currentUser?.role,
-      church_id: currentUser?.church_id,
-    });
+    // =========================================================
+    // 2. REQUEST
+    // =========================================================
 
-    // ========================================================
-    // 2. CHECK LOGIN
-    // ========================================================
+    console.log("TARGET ID RAW:", req.params.id);
+    console.log("REQUEST BODY:", req.body);
+    console.log("NEW ROLE RAW:", req.body?.role);
 
-    if (!currentUser) {
-      console.log("[AUTH] ❌ USER NOT FOUND");
+    // =========================================================
+    // 3. NORMALIZE
+    // =========================================================
 
-      return res.status(401).json({
-        success: false,
-        message: "Chưa đăng nhập",
-        code: "UNAUTHORIZED",
-      });
-    }
+    const operatorId = Number(req.user?.id);
+    const operatorChurchId = Number(req.user?.church_id);
 
-    // ========================================================
-    // 3. CHECK CURRENT USER ROLE
-    //
-    // Chỉ:
-    // - admin_catechist
-    // - catechist
-    //
-    // mới được đổi:
-    // catechist <-> teacher
-    //
-    // teacher không được đổi role.
-    // ========================================================
+    const targetId = Number(req.params.id);
+    const newRole = req.body?.role;
 
-    const allowedOperatorRoles = ["admin_catechist", "catechist"];
+    console.log("");
+    console.log("NORMALIZED DATA");
+    console.log("OPERATOR ID:", operatorId);
+    console.log("OPERATOR CHURCH ID:", operatorChurchId);
+    console.log("TARGET ID:", targetId);
+    console.log("NEW ROLE:", newRole);
 
-    console.log("[AUTH] OPERATOR ROLE:", currentUser.role);
+    // =========================================================
+    // 4. CHECK OPERATOR ROLE
+    // =========================================================
 
-    if (!allowedOperatorRoles.includes(currentUser.role)) {
-      console.log("[AUTH] ❌ ROLE CHANGE FORBIDDEN:", currentUser.role);
+    if (
+      req.user?.role !== "admin_catechist" &&
+      req.user?.role !== "catechist"
+    ) {
+      console.log("❌ OPERATOR ROLE FORBIDDEN");
 
       return res.status(403).json({
         success: false,
-        message:
-          "Chỉ quản trị viên giáo xứ hoặc giáo lý viên được cấp quyền mới có thể thay đổi vai trò",
+        message: "Bạn không có quyền thay đổi vai trò tài khoản",
         code: "ROLE_CHANGE_FORBIDDEN",
       });
     }
 
-    // ========================================================
-    // 4. CURRENT USER CHURCH
-    // ========================================================
+    // =========================================================
+    // 5. CHECK OPERATOR CHURCH
+    // =========================================================
 
-    const churchId = Number(currentUser.church_id);
-
-    console.log("[AUTH] CURRENT CHURCH ID:", churchId);
-
-    if (!Number.isInteger(churchId) || churchId <= 0) {
-      console.log("[AUTH] ❌ CHURCH ID INVALID");
+    if (!Number.isInteger(operatorChurchId) || operatorChurchId <= 0) {
+      console.log("❌ OPERATOR CHURCH INVALID");
 
       return res.status(403).json({
         success: false,
-        message: "Không xác định được giáo xứ của tài khoản",
-        code: "CHURCH_NOT_FOUND",
+        message: "Tài khoản của bạn chưa được xác định giáo xứ",
+        code: "OPERATOR_CHURCH_INVALID",
       });
     }
 
-    // ========================================================
-    // 5. TARGET ADMIN ID
-    // ========================================================
+    // =========================================================
+    // 6. CHECK TARGET ID
+    // =========================================================
 
-    const targetAdminId = Number(req.params.id);
-
-    console.log("[TARGET] ADMIN ID:", targetAdminId);
-
-    if (!Number.isInteger(targetAdminId) || targetAdminId <= 0) {
-      console.log("[TARGET] ❌ INVALID ADMIN ID");
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      console.log("❌ TARGET ID INVALID");
 
       return res.status(400).json({
         success: false,
         message: "ID tài khoản không hợp lệ",
-        code: "INVALID_ADMIN_ID",
+        code: "INVALID_TARGET_ID",
       });
     }
 
-    // ========================================================
-    // 6. PREVENT SELF ROLE CHANGE
-    // ========================================================
+    // =========================================================
+    // 7. CHECK NEW ROLE
+    // =========================================================
 
-    if (Number(currentUser.id) === Number(targetAdminId)) {
-      console.log("[SECURITY] ❌ SELF ROLE CHANGE");
+    if (!["catechist", "teacher"].includes(newRole)) {
+      console.log("❌ NEW ROLE INVALID:", newRole);
 
-      return res.status(403).json({
+      return res.status(400).json({
         success: false,
-        message: "Không thể tự thay đổi vai trò của chính mình",
-        code: "SELF_ROLE_CHANGE_FORBIDDEN",
+        message: "Vai trò không hợp lệ",
+        code: "INVALID_ROLE",
       });
     }
 
-    // ========================================================
-    // 7. REQUEST BODY
-    // ========================================================
+    // =========================================================
+    // 8. GET TARGET ACCOUNT
+    // =========================================================
 
-    const { role } = req.body || {};
-
-    console.log("[REQUEST] BODY:", req.body);
-    console.log("[REQUEST] REQUESTED ROLE:", role);
-
-    // ========================================================
-    // 8. ALLOWED TARGET ROLES
-    //
-    // CỰC KỲ QUAN TRỌNG:
-    //
-    // Chỉ được:
-    //
-    // catechist
-    // teacher
-    //
-    // Tuyệt đối không cho:
-    //
-    // admin_catechist
-    // parent
-    // admin
-    // bất kỳ role khác
-    // ========================================================
-
-    const allowedTargetRoles = ["catechist", "teacher"];
-
-    if (!allowedTargetRoles.includes(role)) {
-      console.log("[ROLE] ❌ INVALID TARGET ROLE:", role);
-
-      return res.status(403).json({
-        success: false,
-        message: "Chỉ được chuyển đổi giữa vai trò catechist và teacher",
-        code: "ROLE_CHANGE_TARGET_FORBIDDEN",
-        allowed_roles: allowedTargetRoles,
-      });
-    }
-
-    // ========================================================
-    // 9. FIND TARGET ACCOUNT
-    // ========================================================
-
-    console.log("[DB] FIND TARGET ACCOUNT...");
-
-    const [admins] = await db.execute(
+    const [rows] = await db.query(
       `
       SELECT
         id,
         username,
         role,
-        church_id
+        church_id,
+        status
       FROM admins
       WHERE id = ?
       LIMIT 1
       `,
-      [targetAdminId],
+      [targetId],
     );
 
-    console.log("[DB] TARGET ACCOUNT COUNT:", admins.length);
-
-    // ========================================================
-    // 10. TARGET NOT FOUND
-    // ========================================================
-
-    if (!admins.length) {
-      console.log("[DB] ❌ TARGET ACCOUNT NOT FOUND");
+    if (!rows.length) {
+      console.log("❌ TARGET ADMIN NOT FOUND:", targetId);
 
       return res.status(404).json({
         success: false,
@@ -1773,32 +1714,49 @@ exports.updateCatechistRole = async (req, res) => {
       });
     }
 
-    const targetAdmin = admins[0];
+    const target = rows[0];
 
-    console.log("[TARGET] ACCOUNT:", {
-      id: targetAdmin.id,
-      username: targetAdmin.username,
-      role: targetAdmin.role,
-      church_id: targetAdmin.church_id,
-    });
+    console.log("");
+    console.log("TARGET ADMIN");
+    console.log("----------------------------");
+    console.log("TARGET ID:", target.id);
+    console.log("TARGET USERNAME:", target.username);
+    console.log("TARGET ROLE:", target.role);
+    console.log("TARGET CHURCH ID RAW:", target.church_id);
+    console.log("TARGET STATUS:", target.status);
 
-    // ========================================================
-    // 11. CHECK SAME CHURCH
-    //
-    // Admin/catechist giáo xứ A
-    // chỉ được đổi GLV giáo xứ A.
-    //
-    // Không được sửa giáo xứ B.
-    // ========================================================
+    // =========================================================
+    // 9. NORMALIZE TARGET CHURCH
+    // =========================================================
 
-    const targetChurchId = Number(targetAdmin.church_id);
+    const targetChurchId = Number(target.church_id);
 
-    console.log("[SECURITY] CHECK CHURCH");
-    console.log("[SECURITY] CURRENT CHURCH:", churchId);
-    console.log("[SECURITY] TARGET CHURCH:", targetChurchId);
+    console.log("");
+    console.log("CHURCH CHECK");
+    console.log("----------------------------");
+    console.log("OPERATOR CHURCH ID:", operatorChurchId);
+    console.log("TARGET CHURCH ID:", targetChurchId);
+    console.log("SAME CHURCH:", operatorChurchId === targetChurchId);
 
-    if (!Number.isInteger(targetChurchId) || targetChurchId !== churchId) {
-      console.log("[SECURITY] ❌ CROSS CHURCH ACCESS");
+    // =========================================================
+    // 10. CROSS CHURCH PROTECTION
+    // =========================================================
+
+    if (!Number.isInteger(targetChurchId) || targetChurchId <= 0) {
+      console.log("❌ TARGET CHURCH INVALID");
+
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được gán giáo xứ hợp lệ",
+        code: "TARGET_CHURCH_INVALID",
+      });
+    }
+
+    if (operatorChurchId !== targetChurchId) {
+      console.log("");
+      console.log("❌❌❌ CROSS CHURCH FORBIDDEN ❌❌❌");
+      console.log("OPERATOR CHURCH:", operatorChurchId);
+      console.log("TARGET CHURCH:", targetChurchId);
 
       return res.status(403).json({
         success: false,
@@ -1808,190 +1766,137 @@ exports.updateCatechistRole = async (req, res) => {
       });
     }
 
-    // ========================================================
-    // 12. CURRENT TARGET ROLE
-    // ========================================================
+    // =========================================================
+    // 11. SELF CHANGE
+    // =========================================================
 
-    const oldRole = targetAdmin.role;
-
-    console.log("[ROLE] OLD ROLE:", oldRole);
-    console.log("[ROLE] NEW ROLE:", role);
-
-    // ========================================================
-    // 13. TARGET MUST BE CATECHIST OR TEACHER
-    //
-    // Nếu target là:
-    //
-    // admin_catechist
-    // parent
-    // admin
-    // ...
-    //
-    // => KHÔNG ĐƯỢC ĐỔI.
-    // ========================================================
-
-    if (!allowedTargetRoles.includes(oldRole)) {
-      console.log("[ROLE] ❌ TARGET ROLE NOT MANAGEABLE:", oldRole);
+    if (operatorId === targetId) {
+      console.log("❌ SELF ROLE CHANGE FORBIDDEN");
 
       return res.status(403).json({
         success: false,
-        message:
-          "Không được phép thay đổi vai trò của tài khoản quản trị hoặc tài khoản không thuộc nhóm giáo lý viên",
-        code: "TARGET_ROLE_CHANGE_FORBIDDEN",
-        current_role: oldRole,
+        message: "Bạn không thể tự thay đổi vai trò của chính mình",
+        code: "SELF_ROLE_CHANGE_FORBIDDEN",
       });
     }
 
-    // ========================================================
-    // 14. SAME ROLE
-    // ========================================================
+    // =========================================================
+    // 12. TARGET ROLE
+    // =========================================================
 
-    if (oldRole === role) {
-      console.log("[ROLE] ⚠️ ROLE ALREADY EXISTS");
+    if (target.role === "admin_catechist") {
+      console.log("❌ TARGET IS ADMIN_CATECHIST");
 
-      return res.status(400).json({
+      return res.status(403).json({
         success: false,
-        message: "Tài khoản đã có vai trò này",
-        code: "ROLE_ALREADY_EXISTS",
-        data: {
-          id: targetAdmin.id,
-          username: targetAdmin.username,
-          role: oldRole,
-        },
+        message: "Không được thay đổi vai trò của tài khoản Quản trị giáo lý",
+        code: "ADMIN_CATECHIST_PROTECTED",
       });
     }
 
-    // ========================================================
-    // 15. ONLY ALLOW:
-    //
-    // catechist -> teacher
-    //
-    // teacher -> catechist
-    //
-    // ========================================================
+    if (!["catechist", "teacher"].includes(target.role)) {
+      console.log("❌ TARGET ROLE FORBIDDEN:", target.role);
+
+      return res.status(403).json({
+        success: false,
+        message: "Chỉ được chuyển đổi giữa vai trò Giáo lý viên và Giáo viên",
+        code: "ROLE_CHANGE_TARGET_FORBIDDEN",
+      });
+    }
+
+    // =========================================================
+    // 13. CHECK TRANSITION
+    // =========================================================
 
     const validTransition =
-      (oldRole === "catechist" && role === "teacher") ||
-      (oldRole === "teacher" && role === "catechist");
+      (target.role === "catechist" && newRole === "teacher") ||
+      (target.role === "teacher" && newRole === "catechist");
 
     if (!validTransition) {
-      console.log("[ROLE] ❌ INVALID ROLE TRANSITION");
+      console.log("❌ INVALID ROLE TRANSITION");
+      console.log("OLD ROLE:", target.role);
+      console.log("NEW ROLE:", newRole);
 
       return res.status(403).json({
         success: false,
-        message: "Chỉ được chuyển đổi giữa catechist và teacher",
+        message: "Chỉ được chuyển đổi giữa vai trò Giáo lý viên và Giáo viên",
         code: "INVALID_ROLE_TRANSITION",
-        old_role: oldRole,
-        new_role: role,
       });
     }
 
-    // ========================================================
-    // 16. UPDATE DATABASE
-    //
-    // Luôn khóa theo:
-    //
-    // id
-    // church_id
-    // old role
-    //
-    // Điều này giúp tránh update nhầm dữ liệu.
-    // ========================================================
+    // =========================================================
+    // 14. UPDATE
+    // =========================================================
 
-    console.log("[DB] UPDATE ROLE...");
-    console.log("[DB] TARGET ID:", targetAdminId);
-    console.log("[DB] CHURCH ID:", churchId);
-    console.log("[DB] OLD ROLE:", oldRole);
-    console.log("[DB] NEW ROLE:", role);
+    console.log("");
+    console.log("UPDATING ROLE...");
+    console.log("TARGET ID:", targetId);
+    console.log("CHURCH ID:", operatorChurchId);
+    console.log("OLD ROLE:", target.role);
+    console.log("NEW ROLE:", newRole);
 
-    const [result] = await db.execute(
+    const [result] = await db.query(
       `
       UPDATE admins
       SET role = ?
       WHERE id = ?
         AND church_id = ?
         AND role = ?
+      LIMIT 1
       `,
-      [role, targetAdminId, churchId, oldRole],
+      [newRole, targetId, operatorChurchId, target.role],
     );
 
-    console.log("[DB] UPDATE RESULT:", {
-      affectedRows: result.affectedRows,
-      changedRows: result.changedRows,
-    });
-
-    // ========================================================
-    // 17. UPDATE FAILED
-    // ========================================================
+    console.log("UPDATE AFFECTED ROWS:", result.affectedRows);
 
     if (result.affectedRows !== 1) {
-      console.log("[DB] ❌ UPDATE FAILED");
+      console.log("❌ UPDATE FAILED");
 
       return res.status(409).json({
         success: false,
         message:
-          "Không thể cập nhật vai trò. Dữ liệu có thể đã thay đổi, vui lòng tải lại trang",
-        code: "ROLE_UPDATE_CONFLICT",
+          "Không thể cập nhật vai trò. Dữ liệu tài khoản có thể đã thay đổi.",
+        code: "ROLE_UPDATE_FAILED",
       });
     }
 
-    // ========================================================
-    // 18. SUCCESS
-    // ========================================================
+    // =========================================================
+    // 15. SUCCESS
+    // =========================================================
 
     console.log("");
-    console.log("============================================================");
-    console.log("             ROLE UPDATED SUCCESSFULLY");
-    console.log("============================================================");
-    console.log("OPERATOR ID:", currentUser.id);
-    console.log("OPERATOR ROLE:", currentUser.role);
-    console.log("TARGET ADMIN ID:", targetAdminId);
-    console.log("USERNAME:", targetAdmin.username);
-    console.log("CHURCH ID:", churchId);
-    console.log("OLD ROLE:", oldRole);
-    console.log("NEW ROLE:", role);
-    console.log("============================================================");
+    console.log("✅ ROLE UPDATE SUCCESS");
+    console.log("ADMIN ID:", targetId);
+    console.log("OLD ROLE:", target.role);
+    console.log("NEW ROLE:", newRole);
+    console.log("CHURCH ID:", operatorChurchId);
 
-    return res.status(200).json({
+    console.log("============================================================");
+    console.log("");
+
+    return res.json({
       success: true,
-      message: "Cập nhật vai trò giáo lý viên thành công",
+      message: "Đổi vai trò thành công",
       data: {
-        id: targetAdmin.id,
-        username: targetAdmin.username,
-        old_role: oldRole,
-        role,
-        church_id: churchId,
+        id: targetId,
+        role: newRole,
       },
     });
   } catch (error) {
-    // ========================================================
-    // ERROR
-    // ========================================================
-
     console.error("");
     console.error(
       "============================================================",
     );
-    console.error("              UPDATE CATECHIST ROLE ERROR");
+    console.error("                 UPDATE ADMIN ROLE ERROR");
     console.error(
       "============================================================",
     );
-    console.error("MESSAGE:", error.message);
-    console.error("CODE:", error.code);
-    console.error("SQL MESSAGE:", error.sqlMessage);
-    console.error("SQL:", error.sql);
-    console.error("STACK:", error.stack);
-    console.error(
-      "============================================================",
-    );
+    console.error(error);
 
     return res.status(500).json({
       success: false,
-      message:
-        error.sqlMessage ||
-        error.message ||
-        "Lỗi server khi cập nhật vai trò giáo lý viên",
-      code: "UPDATE_ROLE_SERVER_ERROR",
+      message: "Lỗi máy chủ khi thay đổi vai trò",
+      code: "ROLE_UPDATE_SERVER_ERROR",
     });
   }
 };

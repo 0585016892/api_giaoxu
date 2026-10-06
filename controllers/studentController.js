@@ -4716,7 +4716,20 @@ exports.importStudentsExcel = async (req, res) => {
   let transactionStarted = false;
 
   try {
+    console.log("");
+    console.log("============================================================");
+    console.log("              IMPORT STUDENTS EXCEL");
+    console.log("============================================================");
+
+    /**
+     * ========================================================
+     * 1. CHURCH
+     * ========================================================
+     */
+
     const churchId = getChurchId(req);
+
+    console.log("CHURCH ID:", churchId);
 
     if (!churchId) {
       return res.status(403).json({
@@ -4724,6 +4737,12 @@ exports.importStudentsExcel = async (req, res) => {
         message: "Không xác định được giáo xứ",
       });
     }
+
+    /**
+     * ========================================================
+     * 2. FILE
+     * ========================================================
+     */
 
     if (!req.file) {
       return res.status(400).json({
@@ -4741,10 +4760,12 @@ exports.importStudentsExcel = async (req, res) => {
       });
     }
 
+    console.log("FILE:", req.file.originalname);
+
     /**
-     * -------------------------------------------------------
-     * READ EXCEL
-     * -------------------------------------------------------
+     * ========================================================
+     * 3. READ EXCEL
+     * ========================================================
      */
 
     const workbook = XLSX.read(req.file.buffer, {
@@ -4782,29 +4803,133 @@ exports.importStudentsExcel = async (req, res) => {
       });
     }
 
+    console.log("SHEET:", sheetName);
+    console.log("TOTAL ROWS:", rows.length);
+
     /**
-     * -------------------------------------------------------
-     * CHECK HEADER NAME
-     * -------------------------------------------------------
+     * ========================================================
+     * 4. NORMALIZE HEADER
+     * ========================================================
+     *
+     * Ví dụ:
+     *
+     * "Tên Thánh"
+     * "TÊN THÁNH"
+     * " tên   thánh "
+     *
+     * đều thành:
+     *
+     * "ten thanh"
+     *
+     */
+
+    const normalizeHeader = (value) => {
+      return String(value || "")
+        .trim()
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/đ/g, "d")
+        .replace(/\s+/g, " ");
+    };
+
+    /**
+     * ========================================================
+     * 5. HEADER ALIAS
+     * ========================================================
+     */
+
+    const HEADER_ALIASES = {
+      saint_name: ["ten thanh", "tenthanh", "ten thanh", "thanh", "ten thanh"],
+
+      name: [
+        "ho ten",
+        "hoten",
+        "ho va ten",
+        "hovaten",
+        "ten hoc sinh",
+        "ho ten hoc sinh",
+      ],
+
+      father_name: [
+        "ho ten cha",
+        "hotencha",
+        "ten cha",
+        "cha",
+        "ho va ten cha",
+      ],
+
+      mother_name: ["ho ten me", "hotenme", "ten me", "me", "ho va ten me"],
+    };
+
+    /**
+     * ========================================================
+     * 6. FIND HEADER
+     * ========================================================
      */
 
     const firstRow = rows[0];
 
-    const normalizedHeaders = Object.keys(firstRow).map((key) =>
-      String(key).trim().toLowerCase(),
-    );
+    const originalHeaders = Object.keys(firstRow);
 
-    if (!normalizedHeaders.includes("name")) {
+    console.log("ORIGINAL HEADERS:", originalHeaders);
+
+    const normalizedHeaders = {};
+
+    originalHeaders.forEach((header) => {
+      normalizedHeaders[normalizeHeader(header)] = header;
+    });
+
+    console.log("NORMALIZED HEADERS:", Object.keys(normalizedHeaders));
+
+    /**
+     * Tìm cột Excel tương ứng
+     */
+
+    const findHeader = (aliases) => {
+      for (const alias of aliases) {
+        const normalizedAlias = normalizeHeader(alias);
+
+        if (normalizedHeaders[normalizedAlias]) {
+          return normalizedHeaders[normalizedAlias];
+        }
+      }
+
+      return null;
+    };
+
+    const columnMap = {
+      saint_name: findHeader(HEADER_ALIASES.saint_name),
+      name: findHeader(HEADER_ALIASES.name),
+      father_name: findHeader(HEADER_ALIASES.father_name),
+      mother_name: findHeader(HEADER_ALIASES.mother_name),
+    };
+
+    console.log("");
+    console.log("COLUMN MAP:");
+    console.log("Tên thánh  :", columnMap.saint_name);
+    console.log("Họ tên      :", columnMap.name);
+    console.log("Họ tên cha  :", columnMap.father_name);
+    console.log("Họ tên mẹ   :", columnMap.mother_name);
+
+    /**
+     * ========================================================
+     * 7. CHECK REQUIRED COLUMN
+     * ========================================================
+     */
+
+    if (!columnMap.name) {
       return res.status(400).json({
         success: false,
-        message: "File Excel bắt buộc phải có cột name",
+        message: "File Excel bắt buộc phải có cột Họ tên",
+        required_columns: ["Tên thánh", "Họ tên", "Họ tên cha", "Họ tên mẹ"],
       });
     }
 
     /**
-     * -------------------------------------------------------
-     * TRANSACTION
-     * -------------------------------------------------------
+     * ========================================================
+     * 8. TRANSACTION
+     * ========================================================
      */
 
     await connection.beginTransaction();
@@ -4812,33 +4937,39 @@ exports.importStudentsExcel = async (req, res) => {
     transactionStarted = true;
 
     /**
-     * Cache class
+     * ========================================================
+     * 9. LẤY ID CUỐI
+     * ========================================================
      */
-    const classCache = new Map();
 
-    /**
-     * Lấy ID cuối
-     */
     const [lastStudentRows] = await connection.execute(
       `
-          SELECT id
-          FROM students
-          ORDER BY id DESC
-          LIMIT 1
-          FOR UPDATE
-        `,
+        SELECT id
+        FROM students
+        ORDER BY id DESC
+        LIMIT 1
+        FOR UPDATE
+      `,
     );
 
     let nextId =
       lastStudentRows.length > 0 ? Number(lastStudentRows[0].id) + 1 : 1;
 
+    console.log("NEXT STUDENT ID:", nextId);
+
+    /**
+     * ========================================================
+     * 10. RESULT
+     * ========================================================
+     */
+
     const successRows = [];
     const errorRows = [];
 
     /**
-     * -------------------------------------------------------
-     * LOOP
-     * -------------------------------------------------------
+     * ========================================================
+     * 11. IMPORT
+     * ========================================================
      */
 
     for (let index = 0; index < rows.length; index++) {
@@ -4848,363 +4979,104 @@ exports.importStudentsExcel = async (req, res) => {
 
       try {
         /**
-         * NAME
+         * ----------------------------------------------------
+         * ĐỌC DỮ LIỆU THEO HEADER ĐÃ MAP
+         * ----------------------------------------------------
          */
-        const name = normalizeValue(row.name);
+
+        const saintName = columnMap.saint_name
+          ? normalizeValue(row[columnMap.saint_name])
+          : null;
+
+        const name = columnMap.name
+          ? normalizeValue(row[columnMap.name])
+          : null;
+
+        const fatherName = columnMap.father_name
+          ? normalizeValue(row[columnMap.father_name])
+          : null;
+
+        const motherName = columnMap.mother_name
+          ? normalizeValue(row[columnMap.mother_name])
+          : null;
+
+        /**
+         * ----------------------------------------------------
+         * HỌ TÊN BẮT BUỘC
+         * ----------------------------------------------------
+         */
 
         if (!name) {
-          throw new Error("Thiếu tên học sinh");
+          throw new Error("Thiếu họ tên học sinh");
         }
 
         /**
-         * GENDER
-         */
-        const gender = normalizeValue(row.gender);
-
-        if (gender && !VALID_GENDERS.includes(gender)) {
-          throw new Error(`gender không hợp lệ: ${gender}`);
-        }
-
-        /**
-         * STATUS
-         */
-        const status = normalizeValue(row.status) || "active";
-
-        if (!VALID_STUDENT_STATUS.includes(status)) {
-          throw new Error(`status không hợp lệ: ${status}`);
-        }
-
-        /**
-         * CATECHISM STATUS
-         */
-        const catechismStatus = normalizeValue(row.catechism_status) || "new";
-
-        if (!VALID_CATECHISM_STATUS.includes(catechismStatus)) {
-          throw new Error(`catechism_status không hợp lệ: ${catechismStatus}`);
-        }
-
-        /**
-         * DATES
-         */
-        const dateOfBirth = normalizeDate(row.date_of_birth);
-
-        const baptismDate = normalizeDate(row.baptism_date);
-
-        const firstCommunionDate = normalizeDate(row.first_communion_date);
-
-        const confirmationDate = normalizeDate(row.confirmation_date);
-
-        const enrollmentDate = normalizeDate(row.enrollment_date);
-
-        const dates = [
-          {
-            name: "date_of_birth",
-            value: dateOfBirth,
-          },
-          {
-            name: "baptism_date",
-            value: baptismDate,
-          },
-          {
-            name: "first_communion_date",
-            value: firstCommunionDate,
-          },
-          {
-            name: "confirmation_date",
-            value: confirmationDate,
-          },
-          {
-            name: "enrollment_date",
-            value: enrollmentDate,
-          },
-        ];
-
-        for (const date of dates) {
-          if (!isValidDateString(date.value)) {
-            throw new Error(`${date.name} không hợp lệ`);
-          }
-        }
-
-        /**
-         * ---------------------------------------------------
-         * CLASS
-         * ---------------------------------------------------
-         */
-
-        const rawClassId =
-          row.class_id !== undefined &&
-          row.class_id !== null &&
-          row.class_id !== ""
-            ? Number(row.class_id)
-            : null;
-
-        let classId = null;
-
-        if (rawClassId !== null) {
-          if (!Number.isInteger(rawClassId)) {
-            throw new Error(`class_id không hợp lệ: ${row.class_id}`);
-          }
-
-          if (classCache.has(rawClassId)) {
-            classId = classCache.get(rawClassId);
-          } else {
-            const validClassId = await checkClassBelongsToChurch(
-              connection,
-              rawClassId,
-              churchId,
-            );
-
-            if (!validClassId) {
-              throw new Error(
-                `Lớp ${rawClassId} không tồn tại hoặc không thuộc giáo xứ`,
-              );
-            }
-
-            classId = validClassId;
-
-            classCache.set(rawClassId, validClassId);
-          }
-        }
-
-        /**
-         * ---------------------------------------------------
+         * ----------------------------------------------------
          * CODE
-         * ---------------------------------------------------
+         * ----------------------------------------------------
          */
 
-        let code = normalizeValue(row.code);
-
-        if (!code) {
-          code = `HS${String(nextId).padStart(6, "0")}`;
-        }
+        const code = `HS${String(nextId).padStart(6, "0")}`;
 
         /**
-         * CHECK CODE
+         * ----------------------------------------------------
+         * QR TOKEN
+         * ----------------------------------------------------
          */
-        const [codeRows] = await connection.execute(
-          `
-              SELECT id
-              FROM students
-              WHERE code = ?
-              LIMIT 1
-              FOR UPDATE
-            `,
-          [code],
-        );
 
-        if (codeRows.length > 0) {
-          throw new Error(`Mã học sinh ${code} đã tồn tại`);
-        }
-
-        /**
-         * QR
-         */
         const qrToken = `${churchId}-${Date.now()}-${index}-${Math.random()
           .toString(36)
           .substring(2, 10)}`;
 
         /**
-         * ---------------------------------------------------
+         * ----------------------------------------------------
          * INSERT
-         * ---------------------------------------------------
+         * ----------------------------------------------------
          */
 
         const [result] = await connection.execute(
           `
-              INSERT INTO students (
-                church_id,
-                code,
-                qr_token,
-                name,
-                gender,
-                date_of_birth,
-                birth_place,
-                nationality,
-                phone,
-                email,
-                address,
-                parish,
-
-                father_name,
-                father_phone,
-
-                mother_name,
-                mother_phone,
-
-                guardian_name,
-                guardian_phone,
-                guardian_relationship,
-
-                baptism_name,
-                baptism_date,
-                baptism_place,
-                baptism_parish,
-                baptism_certificate_no,
-
-                saint_name,
-
-                first_communion_date,
-                first_communion_place,
-
-                confirmation_date,
-                confirmation_place,
-                confirmation_saint_name,
-
-                catechism_level,
-                catechism_status,
-                enrollment_date,
-
-                note,
-                avatar,
-                status
-              )
-              VALUES (
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-
-                ?,
-                ?,
-
-                ?,
-                ?,
-
-                ?,
-                ?,
-                ?,
-
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-
-                ?,
-
-                ?,
-                ?,
-
-                ?,
-                ?,
-                ?,
-
-                ?,
-                ?,
-                ?,
-
-                ?,
-                ?,
-                ?
-              )
-            `,
+            INSERT INTO students (
+              church_id,
+              code,
+              qr_token,
+              name,
+              saint_name,
+              father_name,
+              mother_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `,
           [
             churchId,
             code,
             qrToken,
             name,
-            gender,
-            dateOfBirth,
-            normalizeValue(row.birth_place),
-            normalizeValue(row.nationality) || "Việt Nam",
-            normalizeValue(row.phone),
-            normalizeValue(row.email),
-            normalizeValue(row.address),
-            normalizeValue(row.parish),
-
-            normalizeValue(row.father_name),
-            normalizeParentPhone(row.father_phone),
-
-            normalizeValue(row.mother_name),
-            normalizeParentPhone(row.mother_phone),
-
-            normalizeValue(row.guardian_name),
-            normalizeParentPhone(row.guardian_phone),
-            normalizeValue(row.guardian_relationship),
-
-            normalizeValue(row.baptism_name),
-            baptismDate,
-            normalizeValue(row.baptism_place),
-            normalizeValue(row.baptism_parish),
-            normalizeValue(row.baptism_certificate_no),
-
-            normalizeValue(row.saint_name),
-
-            firstCommunionDate,
-            normalizeValue(row.first_communion_place),
-
-            confirmationDate,
-            normalizeValue(row.confirmation_place),
-            normalizeValue(row.confirmation_saint_name),
-
-            normalizeValue(row.catechism_level),
-            catechismStatus,
-            enrollmentDate,
-
-            normalizeValue(row.note),
-            normalizeValue(row.avatar),
-            status,
+            saintName || null,
+            fatherName || null,
+            motherName || null,
           ],
         );
 
         const studentId = Number(result.insertId);
 
         /**
-         * ---------------------------------------------------
-         * CLASS
-         * ---------------------------------------------------
+         * ----------------------------------------------------
+         * SUCCESS
+         * ----------------------------------------------------
          */
-
-        if (classId) {
-          await connection.execute(
-            `
-              INSERT INTO class_students (
-                class_id,
-                student_id
-              )
-              VALUES (?, ?)
-            `,
-            [classId, studentId],
-          );
-        }
-
-        /**
-         * ---------------------------------------------------
-         * PARENT
-         * ---------------------------------------------------
-         */
-
-        const parentAccounts = await syncStudentParents({
-          connection,
-          churchId,
-          studentId,
-
-          fatherName: normalizeValue(row.father_name),
-          fatherPhone: normalizeParentPhone(row.father_phone),
-
-          motherName: normalizeValue(row.mother_name),
-          motherPhone: normalizeParentPhone(row.mother_phone),
-
-          guardianName: normalizeValue(row.guardian_name),
-          guardianPhone: normalizeParentPhone(row.guardian_phone),
-          guardianRelationship: normalizeValue(row.guardian_relationship),
-        });
 
         successRows.push({
           row: excelRow,
           student_id: studentId,
           code,
+          saint_name: saintName || null,
           name,
-          parent_count: parentAccounts.length,
+          father_name: fatherName || null,
+          mother_name: motherName || null,
         });
+
+        console.log(`✅ ROW ${excelRow}: ${name} → ${code}`);
 
         nextId++;
       } catch (rowError) {
@@ -5212,23 +5084,27 @@ exports.importStudentsExcel = async (req, res) => {
 
         errorRows.push({
           row: excelRow,
-          name: normalizeValue(row.name) || null,
+          name: columnMap.name
+            ? normalizeValue(row[columnMap.name]) || null
+            : null,
           error: rowError.message,
         });
       }
     }
 
     /**
-     * -------------------------------------------------------
-     * NẾU CÓ BẤT KỲ ROW LỖI
-     * -> ROLLBACK TOÀN BỘ
-     * -------------------------------------------------------
+     * ========================================================
+     * 12. ROLLBACK NẾU CÓ LỖI
+     * ========================================================
      */
 
     if (errorRows.length > 0) {
       await connection.rollback();
 
       transactionStarted = false;
+
+      console.log("❌ IMPORT FAILED");
+      console.log("ROLLBACK ALL DATA");
 
       return res.status(400).json({
         success: false,
@@ -5243,14 +5119,21 @@ exports.importStudentsExcel = async (req, res) => {
     }
 
     /**
-     * -------------------------------------------------------
-     * COMMIT
-     * -------------------------------------------------------
+     * ========================================================
+     * 13. COMMIT
+     * ========================================================
      */
 
     await connection.commit();
 
     transactionStarted = false;
+
+    console.log("");
+    console.log("============================================================");
+    console.log("IMPORT SUCCESS");
+    console.log("TOTAL:", rows.length);
+    console.log("SUCCESS:", successRows.length);
+    console.log("============================================================");
 
     return res.status(201).json({
       success: true,
@@ -5263,13 +5146,21 @@ exports.importStudentsExcel = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("❌ IMPORT STUDENTS EXCEL:", error);
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("❌ IMPORT STUDENTS EXCEL ERROR");
+    console.error(
+      "============================================================",
+    );
+    console.error(error);
 
     if (transactionStarted) {
       try {
         await connection.rollback();
       } catch (rollbackError) {
-        console.error("❌ ROLLBACK IMPORT:", rollbackError);
+        console.error("❌ ROLLBACK IMPORT ERROR:", rollbackError);
       }
     }
 

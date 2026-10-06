@@ -1,79 +1,56 @@
 // ============================================================
-// FAITHEDU - ASSISTANT SERVICE - PHASE 3
+// FAITHEDU - ASSISTANT SERVICE - PHASE 4
 // ============================================================
+//
+// Native rule-based assistant.
 // Không AI.
 // Không OpenAI.
-// Không ghi dữ liệu.
+// Không ghi DB.
 //
-// Flow:
-//
-// message
-//   ↓
-// normalize
-//   ↓
-// detect intent
-//   ↓
-// extract class / student / date / status
-//   ↓
-// assistantTools
-//   ↓
-// response builder
 // ============================================================
 
 const {
   searchStudents,
   getStudentDetail,
-
   searchClasses,
   getClassDetail,
-  getClassStudents,
-
   getAttendanceSummary,
   getAttendanceStudents,
-
   getMonthlyAttendanceStatistics,
-
   normalizeText,
 } = require("./assistantTools");
 
 // ============================================================
-// DATE
+// DATE FORMAT
 // ============================================================
 
 function formatDateVN(date) {
-  if (!date) {
+  if (date === null || date === undefined || date === "") {
     return "Chưa cập nhật";
   }
 
   try {
-    /**
-     * ========================================================
-     * MYSQL DATE dạng string
-     * Ví dụ:
-     * 2005-08-21
-     * ========================================================
-     */
-    if (typeof date === "string") {
-      const value = date.trim();
-
-      if (!value) {
+    if (date instanceof Date) {
+      if (Number.isNaN(date.getTime())) {
         return "Chưa cập nhật";
       }
 
-      /**
-       * YYYY-MM-DD
-       */
+      const day = String(date.getDate()).padStart(2, "0");
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const year = date.getFullYear();
+
+      return `${day}/${month}/${year}`;
+    }
+
+    if (typeof date === "string") {
+      const value = date.trim();
+
       const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
 
       if (match) {
-        const [, year, month, day] = match;
-
-        return `${day}/${month}/${year}`;
+        return `${match[3]}/${match[2]}/${match[1]}`;
       }
 
-      /**
-       * Trường hợp string nhưng không đúng YYYY-MM-DD
-       */
       const parsed = new Date(value);
 
       if (Number.isNaN(parsed.getTime())) {
@@ -87,28 +64,6 @@ function formatDateVN(date) {
       return `${day}/${month}/${year}`;
     }
 
-    /**
-     * ========================================================
-     * MYSQL DATE / DATETIME trả về JavaScript Date
-     * ========================================================
-     */
-    if (date instanceof Date) {
-      if (Number.isNaN(date.getTime())) {
-        return "Chưa cập nhật";
-      }
-
-      const day = String(date.getDate()).padStart(2, "0");
-      const month = String(date.getMonth() + 1).padStart(2, "0");
-      const year = date.getFullYear();
-
-      return `${day}/${month}/${year}`;
-    }
-
-    /**
-     * ========================================================
-     * Trường hợp timestamp / number
-     * ========================================================
-     */
     if (typeof date === "number") {
       const parsed = new Date(date);
 
@@ -130,25 +85,59 @@ function formatDateVN(date) {
     return "Chưa cập nhật";
   }
 }
+
+// ============================================================
+// TIME
+// ============================================================
+
+function formatTimeVN(value) {
+  if (!value) {
+    return "";
+  }
+
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      return "";
+    }
+
+    const hours = String(value.getHours()).padStart(2, "0");
+    const minutes = String(value.getMinutes()).padStart(2, "0");
+
+    return `${hours}:${minutes}`;
+  }
+
+  const text = String(value);
+
+  const match = text.match(/(\d{1,2}):(\d{2})/);
+
+  if (!match) {
+    return text;
+  }
+
+  return `${match[1].padStart(2, "0")}:${match[2]}`;
+}
+
+// ============================================================
+// FORMAT
+// ============================================================
+
 function formatGenderVN(gender) {
   if (!gender) {
     return "Chưa cập nhật";
   }
 
-  const value = String(gender).trim().toLowerCase();
+  const value = normalizeText(gender);
 
-  const genderMap = {
+  const map = {
     male: "Nam",
     female: "Nữ",
     other: "Khác",
     nam: "Nam",
-    nữ: "Nữ",
     nu: "Nữ",
     khac: "Khác",
-    khác: "Khác",
   };
 
-  return genderMap[value] || gender;
+  return map[value] || gender;
 }
 
 function formatStudentStatusVN(status) {
@@ -156,9 +145,9 @@ function formatStudentStatusVN(status) {
     return "Chưa cập nhật";
   }
 
-  const value = String(status).trim().toLowerCase();
+  const value = normalizeText(status);
 
-  const statusMap = {
+  const map = {
     active: "Đang học",
     inactive: "Ngừng học",
     graduated: "Đã tốt nghiệp",
@@ -166,8 +155,13 @@ function formatStudentStatusVN(status) {
     deleted: "Đã xóa",
   };
 
-  return statusMap[value] || status;
+  return map[value] || status;
 }
+
+// ============================================================
+// DATE
+// ============================================================
+
 function getTodayDate() {
   const now = new Date();
 
@@ -190,12 +184,36 @@ function getYesterdayDate() {
   return `${year}-${month}-${day}`;
 }
 
+function getCurrentMonthRange() {
+  const now = new Date();
+
+  const year = now.getFullYear();
+  const month = now.getMonth();
+
+  const start = new Date(year, month, 1);
+  const end = new Date(year, month + 1, 0);
+
+  return {
+    startDate: formatDateISO(start),
+    endDate: formatDateISO(end),
+  };
+}
+
+function formatDateISO(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
 // ============================================================
-// DATE DETECTION
+// DETECT DATE
 // ============================================================
 
 function detectDate(message) {
-  const normalized = normalizeText(message);
+  const original = String(message || "");
+  const normalized = normalizeText(original);
 
   if (normalized.includes("hom nay")) {
     return getTodayDate();
@@ -205,15 +223,13 @@ function detectDate(message) {
     return getYesterdayDate();
   }
 
-  // YYYY-MM-DD
-  const isoMatch = message.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  const isoMatch = original.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
 
   if (isoMatch) {
     return isoMatch[0];
   }
 
-  // DD/MM/YYYY
-  const vnMatch = message.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/);
+  const vnMatch = original.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/);
 
   if (vnMatch) {
     const day = vnMatch[1].padStart(2, "0");
@@ -223,8 +239,7 @@ function detectDate(message) {
     return `${year}-${month}-${day}`;
   }
 
-  // DD-MM-YYYY
-  const dashMatch = message.match(/\b(\d{1,2})-(\d{1,2})-(\d{4})\b/);
+  const dashMatch = original.match(/\b(\d{1,2})-(\d{1,2})-(\d{4})\b/);
 
   if (dashMatch) {
     const day = dashMatch[1].padStart(2, "0");
@@ -241,64 +256,43 @@ function detectDate(message) {
 // MONTH RANGE
 // ============================================================
 
-function getCurrentMonthRange() {
-  const now = new Date();
-
-  const year = now.getFullYear();
-  const month = now.getMonth();
-
-  const start = new Date(year, month, 1);
-
-  const end = new Date(year, month + 1, 0);
-
-  const format = (date) => {
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, "0");
-    const d = String(date.getDate()).padStart(2, "0");
-
-    return `${y}-${m}-${d}`;
-  };
-
-  return {
-    startDate: format(start),
-    endDate: format(end),
-  };
-}
-
 function detectMonthRange(message) {
   const normalized = normalizeText(message);
 
-  // "tháng này"
   if (normalized.includes("thang nay")) {
     return getCurrentMonthRange();
   }
 
-  // "tháng 9/2026"
+  if (normalized.includes("thang truoc")) {
+    const now = new Date();
+
+    const year = now.getFullYear();
+    const month = now.getMonth() - 1;
+
+    const start = new Date(year, month, 1);
+    const end = new Date(year, month + 1, 0);
+
+    return {
+      startDate: formatDateISO(start),
+      endDate: formatDateISO(end),
+    };
+  }
+
   const monthMatch = normalized.match(
     /\bthang\s+(\d{1,2})(?:\/|-|\s+)(\d{4})\b/,
   );
 
   if (monthMatch) {
     const month = Number(monthMatch[1]);
-
     const year = Number(monthMatch[2]);
 
-    if (month >= 1 && month <= 12 && year >= 2000) {
+    if (month >= 1 && month <= 12 && year >= 2000 && year <= 2100) {
       const start = new Date(year, month - 1, 1);
-
       const end = new Date(year, month, 0);
 
-      const format = (date) => {
-        const y = date.getFullYear();
-        const m = String(date.getMonth() + 1).padStart(2, "0");
-        const d = String(date.getDate()).padStart(2, "0");
-
-        return `${y}-${m}-${d}`;
-      };
-
       return {
-        startDate: format(start),
-        endDate: format(end),
+        startDate: formatDateISO(start),
+        endDate: formatDateISO(end),
       };
     }
   }
@@ -317,6 +311,7 @@ function detectAttendanceType(message) {
     normalized.includes("thanh le") ||
     normalized.includes("di le") ||
     normalized.includes("tham du thanh le") ||
+    normalized.includes("tham du le") ||
     normalized.includes("mass")
   ) {
     return "mass";
@@ -335,7 +330,8 @@ function detectAttendanceStatus(message) {
   if (
     normalized.includes("chua diem danh") ||
     normalized.includes("chua duoc diem danh") ||
-    normalized.includes("khong diem danh")
+    normalized.includes("khong diem danh") ||
+    normalized.includes("chua danh")
   ) {
     return "not_attended";
   }
@@ -376,24 +372,21 @@ function detectIntent(message) {
     "cach",
     "su dung",
     "khong biet",
-    "loi",
     "bi loi",
+    "loi gi",
   ];
 
-  if (helpWords.some((word) => normalized.includes(word))) {
-    // Nếu đồng thời có dữ liệu điểm danh/học sinh
-    // thì ưu tiên data intent.
-    const hasDataKeyword =
-      normalized.includes("hoc sinh") ||
-      normalized.includes("lop") ||
-      normalized.includes("diem danh") ||
-      normalized.includes("vang") ||
-      normalized.includes("di tre") ||
-      normalized.includes("di le");
+  const hasDataKeyword =
+    normalized.includes("hoc sinh") ||
+    normalized.includes("lop") ||
+    normalized.includes("diem danh") ||
+    normalized.includes("vang") ||
+    normalized.includes("di tre") ||
+    normalized.includes("di le") ||
+    normalized.includes("thanh le");
 
-    if (!hasDataKeyword) {
-      return "help";
-    }
+  if (helpWords.some((word) => normalized.includes(word)) && !hasDataKeyword) {
+    return "help";
   }
 
   // ----------------------------------------------------------
@@ -418,7 +411,8 @@ function detectIntent(message) {
       normalized.includes("thang") ||
       normalized.includes("tuan") ||
       normalized.includes("khoang thoi gian") ||
-      normalized.includes("thong ke")
+      normalized.includes("thong ke") ||
+      normalized.includes("chuyen can")
     ) {
       return "attendance_period_statistics";
     }
@@ -441,8 +435,20 @@ function detectIntent(message) {
   // ----------------------------------------------------------
 
   if (
-    normalized.includes("thong tin") &&
-    (normalized.includes("hoc sinh") || normalized.includes("em "))
+    normalized.includes("thong tin chi tiet") &&
+    normalized.includes("hoc sinh")
+  ) {
+    return "student_detail";
+  }
+
+  if (normalized.includes("thong tin") && normalized.includes("hoc sinh")) {
+    return "student_detail";
+  }
+
+  // "cho toi thong tin tran hung"
+  if (
+    normalized.includes("cho toi thong tin") ||
+    normalized.includes("tra cuu thong tin")
   ) {
     return "student_detail";
   }
@@ -452,10 +458,9 @@ function detectIntent(message) {
   // ----------------------------------------------------------
 
   if (
-    normalized.includes("hoc sinh") ||
-    normalized.includes("tim em") ||
     normalized.includes("tim hoc sinh") ||
-    normalized.includes("em nao")
+    normalized.includes("tim em") ||
+    normalized.includes("hoc sinh")
   ) {
     return "student_search";
   }
@@ -476,51 +481,32 @@ function detectIntent(message) {
     return "class_detail";
   }
 
-  // ----------------------------------------------------------
-  // DEFAULT
-  // ----------------------------------------------------------
-
   return "unknown";
 }
 
 // ============================================================
 // CLASS KEYWORD
 // ============================================================
-//
-// Ví dụ:
-// "lớp Ấu 1"
-// "lớp Ấu 1 hôm nay vắng ai"
-// "Ấu 1 có bao nhiêu học sinh"
-//
-// Không cố parse bằng regex phức tạp.
-// Lấy phần sau chữ "lớp", hoặc fallback tìm class bằng
-// toàn bộ message.
-// ============================================================
 
 function extractClassKeyword(message) {
   const original = String(message || "").trim();
-
   const normalized = normalizeText(original);
 
   const match = normalized.match(
-    /\blop\s+(.+?)(?=\s+(hom nay|hom qua|ngay|co|bao nhieu|v[aă]ng|di tre|chua|diem danh|thang|danh sach|nhung ai|ai|the nao|nhu the nao)\b|$)/,
+    /\blop\s+(.+?)(?=\s+(hom nay|hom qua|ngay|co|bao nhieu|vang|di tre|chua|diem danh|thang|danh sach|nhung ai|ai|the nao|nhu the nao|chuyen can)\b|$)/,
   );
 
-  if (match && match[1]) {
+  if (match?.[1]) {
     return match[1].trim();
   }
 
-  // fallback:
-  // Nếu có "lớp" nhưng regex không lấy được,
-  // lấy chuỗi sau "lớp".
   const index = normalized.indexOf("lop ");
 
   if (index >= 0) {
     return normalized
       .slice(index + 4)
-      .trim()
       .split(
-        /\s+(hom nay|hom qua|bao nhieu|danh sach|v[aă]ng|di tre|chua|diem danh|thang)\b/,
+        /\s+(hom nay|hom qua|bao nhieu|danh sach|vang|di tre|chua|diem danh|thang|chuyen can)\b/,
       )[0]
       .trim();
   }
@@ -535,20 +521,51 @@ function extractClassKeyword(message) {
 function extractStudentKeyword(message) {
   let text = String(message || "").trim();
 
+  text = normalizeText(text);
+
+  // ----------------------------------------------------------
+  // Prefix dài -> ngắn
+  // ----------------------------------------------------------
+
+  const prefixes = [
+    "cho toi biet thong tin chi tiet hoc sinh",
+    "cho toi thong tin chi tiet hoc sinh",
+    "thong tin chi tiet hoc sinh",
+    "thong tin hoc sinh",
+    "thong tin ve hoc sinh",
+    "tim hoc sinh",
+    "tim em",
+    "tra cuu hoc sinh",
+    "tra cuu em",
+    "cho toi thong tin",
+    "thong tin",
+    "hoc sinh",
+  ];
+
+  for (const prefix of prefixes) {
+    if (text.startsWith(prefix + " ")) {
+      text = text.slice(prefix.length).trim();
+      break;
+    }
+
+    if (text === prefix) {
+      text = "";
+      break;
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Remove suffix
+  // ----------------------------------------------------------
+
   text = text
     .replace(
-      /^(cho toi|cho mình|cho minh|tim|tìm|tra cuu|tra cứu|thong tin|thông tin)\s*/i,
+      /\b(hom nay|hom qua|ngay\s+\d+|diem danh|chi tiet|thong tin chi tiet)\b/g,
       "",
     )
-    .replace(/^(hoc sinh|học sinh)\s*/i, "")
     .trim();
 
-  text = text.replace(
-    /\b(hom nay|hom qua|ngay|diem danh|thong tin chi tiet|chi tiet)\b/gi,
-    "",
-  );
-
-  return text.trim();
+  return text;
 }
 
 // ============================================================
@@ -574,7 +591,6 @@ async function resolveClassFromMessage({ user, message }) {
 
   const normalizedKeyword = normalizeText(keyword);
 
-  // Exact name
   const exact = classes.find(
     (item) => normalizeText(item.name) === normalizedKeyword,
   );
@@ -583,7 +599,6 @@ async function resolveClassFromMessage({ user, message }) {
     return exact;
   }
 
-  // Exact code
   const exactCode = classes.find(
     (item) => normalizeText(item.code) === normalizedKeyword,
   );
@@ -592,12 +607,10 @@ async function resolveClassFromMessage({ user, message }) {
     return exactCode;
   }
 
-  // Nếu chỉ có một kết quả
   if (classes.length === 1) {
     return classes[0];
   }
 
-  // Nếu nhiều kết quả thì không tự đoán
   return {
     multiple: true,
     classes,
@@ -605,7 +618,7 @@ async function resolveClassFromMessage({ user, message }) {
 }
 
 // ============================================================
-// FORMAT STUDENT
+// STUDENT FORMAT
 // ============================================================
 
 function formatStudentBasic(student, index) {
@@ -619,7 +632,7 @@ function formatStudentBasic(student, index) {
 }
 
 // ============================================================
-// BUILD STUDENT SEARCH RESPONSE
+// STUDENT SEARCH RESPONSE
 // ============================================================
 
 function buildStudentSearchResponse(students) {
@@ -649,7 +662,6 @@ function buildStudentSearchResponse(students) {
 
   students.forEach((student, index) => {
     lines.push(formatStudentBasic(student, index));
-
     lines.push("");
   });
 
@@ -657,7 +669,7 @@ function buildStudentSearchResponse(students) {
 }
 
 // ============================================================
-// BUILD STUDENT DETAIL
+// STUDENT DETAIL
 // ============================================================
 
 function buildStudentDetailResponse(student) {
@@ -672,13 +684,13 @@ function buildStudentDetailResponse(student) {
     "",
     `- Mã học sinh: **${student.code || "Chưa có"}**`,
     `- Giới tính: **${formatGenderVN(student.gender)}**`,
-    `- Ngày sinh: **${formatDateVN(student.date_of_birth) || "Chưa cập nhật"}**`,
+    `- Ngày sinh: **${formatDateVN(student.date_of_birth)}**`,
     `- Trạng thái: **${formatStudentStatusVN(student.status)}**`,
     "",
     "### Lớp học",
   ];
 
-  if (student.classes && student.classes.length) {
+  if (Array.isArray(student.classes) && student.classes.length) {
     student.classes.forEach((classItem) => {
       lines.push(
         `- ${classItem.name || "Chưa có tên"}${
@@ -686,6 +698,8 @@ function buildStudentDetailResponse(student) {
         }`,
       );
     });
+  } else if (student.class_names) {
+    lines.push(`- ${student.class_names}`);
   } else {
     lines.push("- Chưa được phân lớp");
   }
@@ -722,7 +736,7 @@ function buildStudentDetailResponse(student) {
 }
 
 // ============================================================
-// BUILD CLASS RESPONSE
+// CLASS RESPONSE
 // ============================================================
 
 function buildClassResponse(data) {
@@ -757,7 +771,7 @@ function buildClassResponse(data) {
     `Sĩ số: **${data.student_count || 0} học sinh**`,
   ];
 
-  if (data.students && data.students.length) {
+  if (Array.isArray(data.students) && data.students.length) {
     lines.push("");
     lines.push("### Danh sách học sinh");
 
@@ -772,7 +786,7 @@ function buildClassResponse(data) {
 }
 
 // ============================================================
-// BUILD ATTENDANCE SUMMARY
+// ATTENDANCE RESPONSE
 // ============================================================
 
 function buildAttendanceResponse(data) {
@@ -807,7 +821,7 @@ function buildAttendanceResponse(data) {
 }
 
 // ============================================================
-// BUILD ATTENDANCE STUDENTS
+// ATTENDANCE STUDENTS RESPONSE
 // ============================================================
 
 function buildAttendanceStudentsResponse(data) {
@@ -837,12 +851,13 @@ function buildAttendanceStudentsResponse(data) {
 
   if (!rows.length) {
     lines.push("Không có học sinh phù hợp.");
-
     return lines.join("\n");
   }
 
   rows.forEach((student, index) => {
-    const checkIn = student.check_in_time ? ` — ${student.check_in_time}` : "";
+    const checkIn = student.check_in_time
+      ? ` — ${formatTimeVN(student.check_in_time)}`
+      : "";
 
     lines.push(
       `${index + 1}. **${student.name}** — ${
@@ -858,7 +873,7 @@ function buildAttendanceStudentsResponse(data) {
 }
 
 // ============================================================
-// BUILD PERIOD STATISTICS
+// PERIOD RESPONSE
 // ============================================================
 
 function buildPeriodStatisticsResponse(data) {
@@ -877,13 +892,13 @@ function buildPeriodStatisticsResponse(data) {
   }
 
   lines.push(
-    `Thời gian: **${formatDateVN(data.start_date)} → ${formatDateVN(data.end_date)}**`,
+    `Thời gian: **${formatDateVN(
+      data.start_date,
+    )} → ${formatDateVN(data.end_date)}**`,
   );
 
   lines.push(`Loại: **${data.attendance_type_label}**`);
 
-  lines.push("");
-  lines.push("### Tổng hợp");
   lines.push("");
 
   if (s.total_students !== undefined) {
@@ -913,6 +928,38 @@ function buildPeriodStatisticsResponse(data) {
   );
 
   return lines.join("\n");
+}
+
+// ============================================================
+// HELP
+// ============================================================
+
+function buildHelpResponse() {
+  return [
+    "🤖 **TRỢ LÝ FAITHEDU**",
+    "",
+    "Mình có thể hỗ trợ bạn tra cứu dữ liệu giáo xứ.",
+    "",
+    "### Học sinh",
+    "- Tìm học sinh Nguyễn Văn An",
+    "- Thông tin học sinh Nguyễn Văn An",
+    "- Tìm học sinh theo mã HS",
+    "",
+    "### Lớp học",
+    "- Lớp Ấu 1 có bao nhiêu học sinh?",
+    "- Danh sách học sinh lớp Ấu 1",
+    "",
+    "### Điểm danh",
+    "- Hôm nay lớp Ấu 1 điểm danh thế nào?",
+    "- Hôm nay lớp Ấu 1 những ai vắng?",
+    "- Hôm nay lớp Ấu 1 những ai đi trễ?",
+    "- Hôm nay lớp Ấu 1 ai chưa điểm danh?",
+    "",
+    "### Thống kê",
+    "- Tháng này lớp Ấu 1 chuyên cần thế nào?",
+    "- Tháng 9/2026 lớp Ấu 1 chuyên cần thế nào?",
+    "- Hôm nay có bao nhiêu em đi lễ?",
+  ].join("\n");
 }
 
 // ============================================================
@@ -963,7 +1010,7 @@ async function chat({ user, message }) {
 
   console.log("");
   console.log("============================================================");
-  console.log("                 FAITHEDU ASSISTANT PHASE 3");
+  console.log("                 FAITHEDU ASSISTANT PHASE 4");
   console.log("============================================================");
   console.log("USER ID:", user?.id);
   console.log("ROLE:", user?.role);
@@ -979,7 +1026,9 @@ async function chat({ user, message }) {
     return {
       success: true,
       intent,
-      reply: buildUnknownResponse(),
+      reply: buildHelpResponse(),
+      answer: buildHelpResponse(),
+      data: null,
     };
   }
 
@@ -990,24 +1039,32 @@ async function chat({ user, message }) {
   if (intent === "student_detail") {
     const keyword = extractStudentKeyword(text);
 
+    console.log("[ASSISTANT] STUDENT KEYWORD:", keyword);
+
     const result = await getStudentDetail({
       user,
       keyword,
     });
 
     if (result?.multiple) {
+      const reply = buildStudentSearchResponse(result.students);
+
       return {
         success: true,
         intent,
-        reply: buildStudentSearchResponse(result.students),
+        reply,
+        answer: reply,
         data: result.students,
       };
     }
 
+    const reply = buildStudentDetailResponse(result);
+
     return {
       success: true,
       intent,
-      reply: buildStudentDetailResponse(result),
+      reply,
+      answer: reply,
       data: result,
     };
   }
@@ -1019,16 +1076,21 @@ async function chat({ user, message }) {
   if (intent === "student_search") {
     const keyword = extractStudentKeyword(text);
 
+    console.log("[ASSISTANT] STUDENT KEYWORD:", keyword);
+
     const students = await searchStudents({
       user,
       keyword,
       limit: 20,
     });
 
+    const reply = buildStudentSearchResponse(students);
+
     return {
       success: true,
       intent,
-      reply: buildStudentSearchResponse(students),
+      reply,
+      answer: reply,
       data: students,
     };
   }
@@ -1044,19 +1106,26 @@ async function chat({ user, message }) {
     });
 
     if (!classInfo) {
+      const reply =
+        "Mình không tìm thấy lớp phù hợp. Bạn hãy cho mình tên hoặc mã lớp cụ thể.";
+
       return {
         success: true,
         intent,
-        reply:
-          "Mình không tìm thấy lớp phù hợp. Bạn hãy cho mình tên hoặc mã lớp cụ thể.",
+        reply,
+        answer: reply,
+        data: null,
       };
     }
 
     if (classInfo.multiple) {
+      const reply = buildClassResponse(classInfo);
+
       return {
         success: true,
         intent,
-        reply: buildClassResponse(classInfo),
+        reply,
+        answer: reply,
         data: classInfo.classes,
       };
     }
@@ -1066,16 +1135,19 @@ async function chat({ user, message }) {
       classId: classInfo.id,
     });
 
+    const reply = buildClassResponse(result);
+
     return {
       success: true,
       intent,
-      reply: buildClassResponse(result),
+      reply,
+      answer: reply,
       data: result,
     };
   }
 
   // ==========================================================
-  // ATTENDANCE PERIOD STATISTICS
+  // ATTENDANCE PERIOD
   // ==========================================================
 
   if (intent === "attendance_period_statistics") {
@@ -1087,24 +1159,27 @@ async function chat({ user, message }) {
     });
 
     if (classInfo?.multiple) {
+      const reply = buildClassResponse(classInfo);
+
       return {
         success: true,
         intent,
-        reply: buildClassResponse(classInfo),
+        reply,
+        answer: reply,
         data: classInfo.classes,
       };
     }
 
-    // --------------------------------------------------------
-    // Nếu là giáo lý mà không có lớp
-    // --------------------------------------------------------
-
     if (attendanceType === "catechism" && !classInfo) {
+      const reply =
+        "Bạn hãy cho mình biết lớp cần thống kê, ví dụ: **Tháng này lớp Ấu 1 chuyên cần thế nào?**";
+
       return {
         success: true,
         intent,
-        reply:
-          "Bạn hãy cho mình biết lớp cần thống kê, ví dụ: **Tháng này lớp Ấu 1 chuyên cần thế nào?**",
+        reply,
+        answer: reply,
+        data: null,
       };
     }
 
@@ -1115,30 +1190,38 @@ async function chat({ user, message }) {
 
     if (monthRange) {
       startDate = monthRange.startDate;
-
       endDate = monthRange.endDate;
     } else {
-      const today = getTodayDate();
+      const date = detectDate(text);
 
-      startDate = today;
-      endDate = today;
+      if (date) {
+        startDate = date;
+        endDate = date;
+      } else {
+        const current = getCurrentMonthRange();
+
+        startDate = current.startDate;
+        endDate = current.endDate;
+      }
     }
+
+    console.log("[ASSISTANT] PERIOD:", startDate, "→", endDate);
 
     const result = await getMonthlyAttendanceStatistics({
       user,
-
       classId: classInfo?.id || null,
-
       startDate,
       endDate,
-
       attendanceType,
     });
+
+    const reply = buildPeriodStatisticsResponse(result);
 
     return {
       success: true,
       intent,
-      reply: buildPeriodStatisticsResponse(result),
+      reply,
+      answer: reply,
       data: result,
     };
   }
@@ -1160,39 +1243,45 @@ async function chat({ user, message }) {
     });
 
     if (classInfo?.multiple) {
+      const reply = buildClassResponse(classInfo);
+
       return {
         success: true,
         intent,
-        reply: buildClassResponse(classInfo),
+        reply,
+        answer: reply,
         data: classInfo.classes,
       };
     }
 
     if (attendanceType === "catechism" && !classInfo) {
+      const reply =
+        "Bạn hãy cho mình biết lớp cần xem, ví dụ: **Hôm nay lớp Ấu 1 những ai vắng?**";
+
       return {
         success: true,
         intent,
-        reply:
-          "Bạn hãy cho mình biết lớp cần xem, ví dụ: **Hôm nay lớp Ấu 1 những ai vắng?**",
+        reply,
+        answer: reply,
+        data: null,
       };
     }
 
     const result = await getAttendanceStudents({
       user,
-
       classId: classInfo?.id || null,
-
       date,
-
       attendanceType,
-
       status,
     });
+
+    const reply = buildAttendanceStudentsResponse(result);
 
     return {
       success: true,
       intent,
-      reply: buildAttendanceStudentsResponse(result),
+      reply,
+      answer: reply,
       data: result,
     };
   }
@@ -1212,10 +1301,13 @@ async function chat({ user, message }) {
     });
 
     if (classInfo?.multiple) {
+      const reply = buildClassResponse(classInfo);
+
       return {
         success: true,
         intent,
-        reply: buildClassResponse(classInfo),
+        reply,
+        answer: reply,
         data: classInfo.classes,
       };
     }
@@ -1231,10 +1323,13 @@ async function chat({ user, message }) {
         attendanceType: "mass",
       });
 
+      const reply = buildAttendanceResponse(result);
+
       return {
         success: true,
         intent,
-        reply: buildAttendanceResponse(result),
+        reply,
+        answer: reply,
         data: result,
       };
     }
@@ -1244,28 +1339,32 @@ async function chat({ user, message }) {
     // --------------------------------------------------------
 
     if (!classInfo) {
+      const reply =
+        "Bạn hãy cho mình biết lớp cần xem điểm danh, ví dụ: **Hôm nay lớp Ấu 1 điểm danh thế nào?**";
+
       return {
         success: true,
         intent,
-        reply:
-          "Bạn hãy cho mình biết lớp cần xem điểm danh, ví dụ: **Hôm nay lớp Ấu 1 điểm danh thế nào?**",
+        reply,
+        answer: reply,
+        data: null,
       };
     }
 
     const result = await getAttendanceSummary({
       user,
-
       classId: classInfo.id,
-
       date,
-
       attendanceType: "catechism",
     });
+
+    const reply = buildAttendanceResponse(result);
 
     return {
       success: true,
       intent,
-      reply: buildAttendanceResponse(result),
+      reply,
+      answer: reply,
       data: result,
     };
   }
@@ -1274,10 +1373,14 @@ async function chat({ user, message }) {
   // UNKNOWN
   // ==========================================================
 
+  const reply = buildUnknownResponse();
+
   return {
     success: true,
     intent: "unknown",
-    reply: buildUnknownResponse(),
+    reply,
+    answer: reply,
+    data: null,
   };
 }
 
@@ -1290,9 +1393,13 @@ module.exports = {
 
   detectIntent,
   detectDate,
+  detectMonthRange,
+
   detectAttendanceType,
   detectAttendanceStatus,
 
   extractClassKeyword,
   extractStudentKeyword,
+
+  resolveClassFromMessage,
 };

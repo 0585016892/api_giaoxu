@@ -29,7 +29,6 @@ router.use(verifyToken);
  */
 router.get(
   "/registration/config",
-  requireSystemAdmin,
   globalApiLimiter,
   controller.getRegistrationConfig,
 );
@@ -37,19 +36,13 @@ router.get(
 /**
  * Lịch sử đăng ký của giáo xứ hiện tại
  */
-router.get(
-  "/registration/me",
-  requireSystemAdmin,
-  globalApiLimiter,
-  controller.getMyRegistrations,
-);
+router.get("/registration/me", globalApiLimiter, controller.getMyRegistrations);
 
 /**
  * Chi tiết đăng ký của giáo xứ hiện tại
  */
 router.get(
   "/registration/:id",
-  requireSystemAdmin,
   globalApiLimiter,
   controller.getRegistrationById,
 );
@@ -65,7 +58,6 @@ router.get(
  */
 router.post(
   "/registration",
-  requireSystemAdmin,
   globalApiLimiter,
   uploadLicensePayment.single("payment_image"),
   controller.createRegistration,
@@ -76,7 +68,6 @@ router.post(
  */
 router.delete(
   "/registration/:id",
-  requireSystemAdmin,
   globalApiLimiter,
   controller.deleteMyRegistration,
 );

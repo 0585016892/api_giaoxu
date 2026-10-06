@@ -18,7 +18,12 @@ router.post(
   globalApiLimiter,
   adminController.createAdmin,
 );
-
+router.patch(
+  "/:id/role",
+  verifyToken,
+  globalApiLimiter,
+  adminController.updateCatechistRole,
+);
 // UPDATE (có upload avatar)
 router.put(
   "/:id",
@@ -26,12 +31,7 @@ router.put(
   verifyToken,
   adminController.updateAdmin,
 );
-router.patch(
-  "/:id/role",
-  verifyToken,
-  globalApiLimiter,
-  adminController.updateCatechistRole,
-);
+
 router.get(
   "/",
   verifyToken,

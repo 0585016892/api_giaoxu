@@ -26,7 +26,12 @@ router.put(
   verifyToken,
   adminController.updateAdmin,
 );
-
+router.patch(
+  "/:id/role",
+  verifyToken,
+  globalApiLimiter,
+  adminController.updateCatechistRole,
+);
 router.get(
   "/",
   verifyToken,

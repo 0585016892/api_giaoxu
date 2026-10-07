@@ -56,7 +56,7 @@ const dioceseRoutes = require("./routes/dioceseRoutes");
 const deaneryRoutes = require("./routes/deaneryRoutes");
 const settingChurchRoutes = require("./routes/settingChurchRoutes");
 const assistantRoutes = require("./routes/assistantRoutes");
-
+const classPromotionRoutes = require("./routes/classPromotionRoutes");
 // ===============================
 // APP
 // ===============================
@@ -143,7 +143,7 @@ app.use("/api/dioceses", dioceseRoutes);
 app.use("/api/deaneries", deaneryRoutes);
 app.use("/api/settings_church", settingChurchRoutes);
 app.use("/api/assistant", assistantRoutes);
-
+app.use("/api/class-promotions", classPromotionRoutes);
 // ===============================
 // CORS MANAGEMENT
 // ===============================

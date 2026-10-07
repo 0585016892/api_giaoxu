@@ -9,6 +9,37 @@ const getChurchId = (req) => {
   return req.user?.church_id;
 };
 
+// =========================================================
+// VALIDATE ACADEMIC YEAR
+// Ví dụ hợp lệ:
+// 2025-2026
+// 2026-2027
+// =========================================================
+
+const validateAcademicYear = (academic_year) => {
+  if (!academic_year) {
+    return "Năm học là bắt buộc.";
+  }
+
+  const value = String(academic_year).trim();
+
+  if (!/^\d{4}-\d{4}$/.test(value)) {
+    return "Năm học không hợp lệ. Ví dụ: 2026-2027.";
+  }
+
+  const [startYear, endYear] = value.split("-").map(Number);
+
+  if (endYear !== startYear + 1) {
+    return "Năm học không hợp lệ. Năm kết thúc phải lớn hơn năm bắt đầu 1 năm.";
+  }
+
+  return null;
+};
+
+// =========================================================
+// VALIDATE SCHEDULE
+// =========================================================
+
 const validateSchedule = (schedule) => {
   const { day_of_week, start_time, end_time } = schedule || {};
 
@@ -29,6 +60,10 @@ const validateSchedule = (schedule) => {
   return null;
 };
 
+// =========================================================
+// FORMAT SCHEDULE
+// =========================================================
+
 const formatSchedule = (item) => ({
   id: Number(item.id),
   class_id: Number(item.class_id),
@@ -39,6 +74,10 @@ const formatSchedule = (item) => ({
   created_at: item.created_at,
   updated_at: item.updated_at,
 });
+
+// =========================================================
+// GET SCHEDULES BY CLASS IDS
+// =========================================================
 
 const getSchedulesByClassIds = async (classIds) => {
   if (!classIds.length) {
@@ -73,8 +112,10 @@ const getSchedulesByClassIds = async (classIds) => {
 
 // =========================================================
 // LẤY DANH SÁCH LỚP
+//
 // GET /api/classes
 // =========================================================
+
 exports.getClasses = async (req, res) => {
   console.log("");
   console.log("============================================================");
@@ -199,19 +240,18 @@ exports.getClasses = async (req, res) => {
     console.log("CLASSES RAW COUNT:", rows.length);
 
     // =====================================================
-    // 2. LẤY SCHEDULE CỦA TOÀN BỘ LỚP
+    // 2. LẤY SCHEDULE
     // =====================================================
 
     const classIds = rows.map((item) => Number(item.id));
 
-    console.log("CLASS IDS:", classIds);
-
     const schedules = await getSchedulesByClassIds(classIds);
 
+    console.log("CLASS IDS:", classIds);
     console.log("SCHEDULE COUNT:", schedules.length);
 
     // =====================================================
-    // 3. MAP SCHEDULE THEO CLASS ID
+    // 3. MAP SCHEDULE
     // =====================================================
 
     const schedulesMap = {};
@@ -227,7 +267,7 @@ exports.getClasses = async (req, res) => {
     }
 
     // =====================================================
-    // 4. FORMAT DATA
+    // 4. FORMAT
     // =====================================================
 
     const formattedRows = rows.map((item) => {
@@ -266,9 +306,6 @@ exports.getClasses = async (req, res) => {
         name: item.name,
         code: item.code,
 
-        // =================================================
-        // NĂM HỌC
-        // =================================================
         academic_year: item.academic_year || null,
 
         category: item.category,
@@ -292,10 +329,6 @@ exports.getClasses = async (req, res) => {
         schedules: schedulesMap[Number(item.id)] || [],
       };
     });
-
-    // =====================================================
-    // 5. LOG KIỂM TRA NĂM HỌC
-    // =====================================================
 
     console.log("ACADEMIC YEARS:", [
       ...new Set(
@@ -335,6 +368,7 @@ exports.getClasses = async (req, res) => {
 
 // =========================================================
 // CHI TIẾT LỚP
+//
 // GET /api/classes/:id
 // =========================================================
 
@@ -471,6 +505,8 @@ exports.getClassById = async (req, res) => {
         id: Number(classData.id),
         church_id: Number(classData.church_id),
 
+        academic_year: classData.academic_year || null,
+
         catechist_id: classData.catechist_id
           ? Number(classData.catechist_id)
           : null,
@@ -495,6 +531,7 @@ exports.getClassById = async (req, res) => {
 
 // =========================================================
 // LỚP CỦA GIÁO LÝ VIÊN ĐĂNG NHẬP
+//
 // GET /api/classes/teacher-class
 // =========================================================
 
@@ -578,7 +615,8 @@ exports.getClassesByTeacherId = async (req, res) => {
 
       WHERE c.church_id = ?
 
-      ORDER BY c.id DESC
+      ORDER BY
+        c.id DESC
     `;
 
     const [rows] = await db.query(classSql, [catechist_id, church_id]);
@@ -594,11 +632,13 @@ exports.getClassesByTeacherId = async (req, res) => {
     const schedulesMap = {};
 
     for (const schedule of schedules) {
-      if (!schedulesMap[schedule.class_id]) {
-        schedulesMap[schedule.class_id] = [];
+      const classId = Number(schedule.class_id);
+
+      if (!schedulesMap[classId]) {
+        schedulesMap[classId] = [];
       }
 
-      schedulesMap[schedule.class_id].push(schedule);
+      schedulesMap[classId].push(schedule);
     }
 
     // =====================================================
@@ -620,6 +660,8 @@ exports.getClassesByTeacherId = async (req, res) => {
 
         id: Number(item.id),
         church_id: Number(item.church_id),
+
+        academic_year: item.academic_year || null,
 
         catechist_id: item.catechist_id ? Number(item.catechist_id) : null,
 
@@ -643,9 +685,6 @@ exports.getClassesByTeacherId = async (req, res) => {
 // LẤY TOÀN BỘ LỊCH HỌC CỦA GIÁO XỨ
 //
 // GET /api/classes/schedules
-//
-// Dùng cho trang:
-// Thứ 2 | Thứ 3 | ... | Chủ nhật
 // =========================================================
 
 exports.getClassSchedules = async (req, res) => {
@@ -667,6 +706,7 @@ exports.getClassSchedules = async (req, res) => {
         c.church_id,
         c.name AS class_name,
         c.code AS class_code,
+        c.academic_year,
         c.category AS class_category,
         c.status AS class_status,
 
@@ -705,6 +745,9 @@ exports.getClassSchedules = async (req, res) => {
 
         class_name: item.class_name,
         class_code: item.class_code,
+
+        academic_year: item.academic_year || null,
+
         class_category: item.class_category,
         class_status: item.class_status,
 
@@ -734,25 +777,6 @@ exports.getClassSchedules = async (req, res) => {
 // TẠO LỚP
 //
 // POST /api/classes
-//
-// Body:
-// {
-//   name,
-//   category,
-//   catechist_id,
-//   description,
-//   start_date,
-//   end_date,
-//   status,
-//   schedules: [
-//     {
-//       day_of_week,
-//       start_time,
-//       end_time,
-//       room
-//     }
-//   ]
-// }
 // =========================================================
 
 exports.createClass = async (req, res) => {
@@ -761,6 +785,7 @@ exports.createClass = async (req, res) => {
   try {
     const {
       name,
+      academic_year,
       category,
       catechist_id,
       description,
@@ -771,6 +796,16 @@ exports.createClass = async (req, res) => {
     } = req.body;
 
     const church_id = getChurchId(req);
+
+    console.log("");
+    console.log("============================================================");
+    console.log("                    CREATE CLASS");
+    console.log("============================================================");
+
+    console.log("CHURCH ID:", church_id);
+    console.log("NAME:", name);
+    console.log("ACADEMIC YEAR:", academic_year);
+    console.log("CATEGORY:", category);
 
     if (!church_id) {
       return res.status(403).json({
@@ -787,6 +822,15 @@ exports.createClass = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Tên lớp là bắt buộc",
+      });
+    }
+
+    const academicYearError = validateAcademicYear(academic_year);
+
+    if (academicYearError) {
+      return res.status(400).json({
+        success: false,
+        message: academicYearError,
       });
     }
 
@@ -855,10 +899,12 @@ exports.createClass = async (req, res) => {
         `
         SELECT id
         FROM classes
-        WHERE code = ?
+        WHERE church_id = ?
+          AND code = ?
+          AND academic_year = ?
         LIMIT 1
         `,
-        [randomCode],
+        [church_id, randomCode, academic_year.trim()],
       );
 
       if (!existing.length) {
@@ -892,6 +938,7 @@ exports.createClass = async (req, res) => {
         church_id,
         name,
         code,
+        academic_year,
         category,
         catechist_id,
         description,
@@ -899,12 +946,13 @@ exports.createClass = async (req, res) => {
         end_date,
         status
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         church_id,
         name.trim(),
         code,
+        academic_year.trim(),
         category || "Giáo lý Thiếu Nhi",
         catechist_id || null,
         description?.trim() || null,
@@ -958,9 +1006,11 @@ exports.createClass = async (req, res) => {
 
         target_id: classId,
 
-        description: `Tạo lớp "${name.trim()}" (${code}), loại ${
-          category || "Giáo lý Thiếu Nhi"
-        }, thuộc giáo xứ #${church_id}`,
+        description:
+          `Tạo lớp "${name.trim()}" (${code}), ` +
+          `năm học ${academic_year.trim()}, ` +
+          `loại ${category || "Giáo lý Thiếu Nhi"}, ` +
+          `thuộc giáo xứ #${church_id}`,
 
         ip_address: req.ip,
       });
@@ -980,6 +1030,12 @@ exports.createClass = async (req, res) => {
         id: classId,
         code,
         church_id: Number(church_id),
+
+        academic_year: academic_year.trim(),
+
+        name: name.trim(),
+
+        category: category || "Giáo lý Thiếu Nhi",
 
         schedules: schedules.map((item) => ({
           day_of_week: Number(item.day_of_week),
@@ -1001,7 +1057,7 @@ exports.createClass = async (req, res) => {
     if (error.code === "ER_DUP_ENTRY") {
       return res.status(409).json({
         success: false,
-        message: "Mã lớp hoặc lịch học đã tồn tại",
+        message: "Mã lớp đã tồn tại trong năm học này hoặc lịch học bị trùng",
       });
     }
 
@@ -1019,8 +1075,6 @@ exports.createClass = async (req, res) => {
 // CẬP NHẬT LỚP
 //
 // PUT /api/classes/:id
-//
-// schedules gửi lên là TOÀN BỘ lịch mới của lớp.
 // =========================================================
 
 exports.updateClass = async (req, res) => {
@@ -1033,6 +1087,7 @@ exports.updateClass = async (req, res) => {
 
     const {
       name,
+      academic_year,
       category,
       catechist_id,
       description,
@@ -1043,6 +1098,15 @@ exports.updateClass = async (req, res) => {
     } = req.body;
 
     const church_id = getChurchId(req);
+
+    console.log("");
+    console.log("============================================================");
+    console.log("                    UPDATE CLASS");
+    console.log("============================================================");
+
+    console.log("CLASS ID:", classId);
+    console.log("CHURCH ID:", church_id);
+    console.log("ACADEMIC YEAR:", academic_year);
 
     if (!church_id) {
       return res.status(403).json({
@@ -1062,6 +1126,15 @@ exports.updateClass = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Tên lớp là bắt buộc",
+      });
+    }
+
+    const academicYearError = validateAcademicYear(academic_year);
+
+    if (academicYearError) {
+      return res.status(400).json({
+        success: false,
+        message: academicYearError,
       });
     }
 
@@ -1095,7 +1168,8 @@ exports.updateClass = async (req, res) => {
         id,
         code,
         name,
-        category
+        category,
+        academic_year
       FROM classes
       WHERE id = ?
         AND church_id = ?
@@ -1128,6 +1202,7 @@ exports.updateClass = async (req, res) => {
       UPDATE classes
       SET
         name = ?,
+        academic_year = ?,
         category = ?,
         catechist_id = ?,
         description = ?,
@@ -1139,6 +1214,7 @@ exports.updateClass = async (req, res) => {
       `,
       [
         name.trim(),
+        academic_year.trim(),
         category || "Giáo lý Thiếu Nhi",
         catechist_id || null,
         description?.trim() || null,
@@ -1152,13 +1228,6 @@ exports.updateClass = async (req, res) => {
 
     // =====================================================
     // UPDATE SCHEDULE
-    //
-    // Nếu FE gửi schedules:
-    // Xóa toàn bộ lịch cũ
-    // rồi insert lại lịch mới.
-    //
-    // Nếu không gửi schedules:
-    // Giữ nguyên lịch hiện tại.
     // =====================================================
 
     if (Array.isArray(schedules)) {
@@ -1211,6 +1280,7 @@ exports.updateClass = async (req, res) => {
 
         description:
           `Cập nhật lớp "${name.trim()}" (${oldClass.code}), ` +
+          `năm học ${academic_year.trim()}, ` +
           `thuộc giáo xứ #${church_id}`,
 
         ip_address: req.ip,
@@ -1230,6 +1300,12 @@ exports.updateClass = async (req, res) => {
       data: {
         id: classId,
         code: oldClass.code,
+
+        name: name.trim(),
+
+        academic_year: academic_year.trim(),
+
+        category: category || "Giáo lý Thiếu Nhi",
       },
     });
   } catch (error) {
@@ -1244,7 +1320,7 @@ exports.updateClass = async (req, res) => {
     if (error.code === "ER_DUP_ENTRY") {
       return res.status(409).json({
         success: false,
-        message: "Lịch học bị trùng hoặc dữ liệu đã tồn tại",
+        message: "Mã lớp đã tồn tại trong năm học này hoặc lịch học bị trùng",
       });
     }
 
@@ -1295,6 +1371,7 @@ exports.deleteClass = async (req, res) => {
         id,
         name,
         code,
+        academic_year,
         category,
         church_id
       FROM classes
@@ -1316,8 +1393,6 @@ exports.deleteClass = async (req, res) => {
 
     // =====================================================
     // XÓA LỚP
-    //
-    // class_schedules sẽ tự xóa nhờ ON DELETE CASCADE
     // =====================================================
 
     const [result] = await db.query(
@@ -1352,6 +1427,7 @@ exports.deleteClass = async (req, res) => {
 
         description:
           `Xóa lớp "${classData.name}" (${classData.code}), ` +
+          `năm học ${classData.academic_year || "—"}, ` +
           `loại ${classData.category || "—"}, ` +
           `thuộc giáo xứ #${church_id}`,
 
@@ -1369,6 +1445,7 @@ exports.deleteClass = async (req, res) => {
         id: classData.id,
         name: classData.name,
         code: classData.code,
+        academic_year: classData.academic_year || null,
         category: classData.category,
       },
     });
@@ -1398,14 +1475,6 @@ exports.deleteClass = async (req, res) => {
 // THÊM LỊCH CHO LỚP
 //
 // POST /api/classes/:id/schedules
-//
-// Body:
-// {
-//   day_of_week: 2,
-//   start_time: "19:00",
-//   end_time: "20:30",
-//   room: "Phòng 1"
-// }
 // =========================================================
 
 exports.createClassSchedule = async (req, res) => {
@@ -1457,7 +1526,8 @@ exports.createClassSchedule = async (req, res) => {
       SELECT
         id,
         name,
-        code
+        code,
+        academic_year
       FROM classes
       WHERE id = ?
         AND church_id = ?
@@ -1513,7 +1583,9 @@ exports.createClassSchedule = async (req, res) => {
 
         description:
           `Thêm lịch học cho lớp "${classRows[0].name}" ` +
-          `(${classRows[0].code}), thuộc giáo xứ #${church_id}`,
+          `(${classRows[0].code}), ` +
+          `năm học ${classRows[0].academic_year || "—"}, ` +
+          `thuộc giáo xứ #${church_id}`,
 
         ip_address: req.ip,
       });
@@ -1606,8 +1678,7 @@ exports.updateClassSchedule = async (req, res) => {
     }
 
     // =====================================================
-    // KIỂM TRA SCHEDULE THUỘC LỚP
-    // VÀ LỚP THUỘC GIÁO XỨ
+    // KIỂM TRA SCHEDULE
     // =====================================================
 
     const [scheduleRows] = await db.query(
@@ -1616,7 +1687,8 @@ exports.updateClassSchedule = async (req, res) => {
         cs.id,
         cs.class_id,
         c.name AS class_name,
-        c.code AS class_code
+        c.code AS class_code,
+        c.academic_year
 
       FROM class_schedules cs
 
@@ -1683,6 +1755,7 @@ exports.updateClassSchedule = async (req, res) => {
         description:
           `Cập nhật lịch học của lớp "${scheduleRows[0].class_name}" ` +
           `(${scheduleRows[0].class_code}), ` +
+          `năm học ${scheduleRows[0].academic_year || "—"}, ` +
           `thuộc giáo xứ #${church_id}`,
 
         ip_address: req.ip,
@@ -1771,7 +1844,8 @@ exports.deleteClassSchedule = async (req, res) => {
         cs.room,
 
         c.name AS class_name,
-        c.code AS class_code
+        c.code AS class_code,
+        c.academic_year
 
       FROM class_schedules cs
 
@@ -1834,6 +1908,7 @@ exports.deleteClassSchedule = async (req, res) => {
         description:
           `Xóa lịch học của lớp "${scheduleData.class_name}" ` +
           `(${scheduleData.class_code}), ` +
+          `năm học ${scheduleData.academic_year || "—"}, ` +
           `thuộc giáo xứ #${church_id}`,
 
         ip_address: req.ip,

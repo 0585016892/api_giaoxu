@@ -75,12 +75,16 @@ const getSchedulesByClassIds = async (classIds) => {
 // LẤY DANH SÁCH LỚP
 // GET /api/classes
 // =========================================================
-
 exports.getClasses = async (req, res) => {
-  console.log("🔥 CALL API GET CLASSES");
+  console.log("");
+  console.log("============================================================");
+  console.log("                  🔥 CALL API GET CLASSES");
+  console.log("============================================================");
 
   try {
     const church_id = getChurchId(req);
+
+    console.log("CHURCH ID:", church_id);
 
     if (!church_id) {
       return res.status(403).json({
@@ -99,6 +103,7 @@ exports.getClasses = async (req, res) => {
         c.church_id,
         c.name,
         c.code,
+        c.academic_year,
         c.category,
         c.catechist_id,
         c.description,
@@ -173,6 +178,7 @@ exports.getClasses = async (req, res) => {
         c.church_id,
         c.name,
         c.code,
+        c.academic_year,
         c.category,
         c.catechist_id,
         c.description,
@@ -182,10 +188,15 @@ exports.getClasses = async (req, res) => {
         c.created_at,
         c.updated_at
 
-      ORDER BY c.created_at DESC
+      ORDER BY
+        c.created_at DESC
     `;
 
+    console.log("EXECUTE GET CLASSES SQL");
+
     const [rows] = await db.query(sql, [church_id]);
+
+    console.log("CLASSES RAW COUNT:", rows.length);
 
     // =====================================================
     // 2. LẤY SCHEDULE CỦA TOÀN BỘ LỚP
@@ -193,7 +204,11 @@ exports.getClasses = async (req, res) => {
 
     const classIds = rows.map((item) => Number(item.id));
 
+    console.log("CLASS IDS:", classIds);
+
     const schedules = await getSchedulesByClassIds(classIds);
+
+    console.log("SCHEDULE COUNT:", schedules.length);
 
     // =====================================================
     // 3. MAP SCHEDULE THEO CLASS ID
@@ -202,11 +217,13 @@ exports.getClasses = async (req, res) => {
     const schedulesMap = {};
 
     for (const schedule of schedules) {
-      if (!schedulesMap[schedule.class_id]) {
-        schedulesMap[schedule.class_id] = [];
+      const classId = Number(schedule.class_id);
+
+      if (!schedulesMap[classId]) {
+        schedulesMap[classId] = [];
       }
 
-      schedulesMap[schedule.class_id].push(schedule);
+      schedulesMap[classId].push(schedule);
     }
 
     // =====================================================
@@ -245,14 +262,26 @@ exports.getClasses = async (req, res) => {
       return {
         id: Number(item.id),
         church_id: Number(item.church_id),
+
         name: item.name,
         code: item.code,
+
+        // =================================================
+        // NĂM HỌC
+        // =================================================
+        academic_year: item.academic_year || null,
+
         category: item.category,
+
         catechist_id: item.catechist_id ? Number(item.catechist_id) : null,
+
         description: item.description,
+
         start_date: item.start_date,
         end_date: item.end_date,
+
         status: item.status,
+
         created_at: item.created_at,
         updated_at: item.updated_at,
 
@@ -265,6 +294,18 @@ exports.getClasses = async (req, res) => {
     });
 
     // =====================================================
+    // 5. LOG KIỂM TRA NĂM HỌC
+    // =====================================================
+
+    console.log("ACADEMIC YEARS:", [
+      ...new Set(
+        formattedRows.map((item) => item.academic_year).filter(Boolean),
+      ),
+    ]);
+
+    console.log("FIRST CLASS:", formattedRows[0] || null);
+
+    // =====================================================
     // RESPONSE
     // =====================================================
 
@@ -274,7 +315,15 @@ exports.getClasses = async (req, res) => {
       data: formattedRows,
     });
   } catch (error) {
-    console.error("❌ getClasses error:", error);
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("                  ❌ GET CLASSES ERROR");
+    console.error(
+      "============================================================",
+    );
+    console.error(error);
 
     return res.status(500).json({
       success: false,

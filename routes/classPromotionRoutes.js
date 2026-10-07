@@ -2,28 +2,45 @@ const express = require("express");
 
 const router = express.Router();
 
-const classPromotionController = require("../controllers/classPromotionController");
+const academicYearController = require("../controllers/academicYearController");
 
 // ============================================================
-// AUTH MIDDLEWARE
+// AUTH
 // ============================================================
 //
-// Đổi đường dẫn middleware dưới đây theo project hiện tại
-// nếu project của anh đang dùng tên khác.
+// Thay authMiddleware bằng middleware auth JWT hiện tại
+// của project nếu tên file/function của bạn khác.
+//
 // ============================================================
 
 const { verifyToken } = require("../middleware/authMiddleware");
 
 // ============================================================
-// PREVIEW
+// ACADEMIC YEAR
 // ============================================================
 
-router.post("/preview", verifyToken, classPromotionController.previewPromotion);
+// 1. Preview khởi tạo năm học
+router.post(
+  "/preview-create",
+  verifyToken,
+  academicYearController.previewCreateAcademicYear,
+);
 
-// ============================================================
-// CONFIRM
-// ============================================================
+// 2. Khởi tạo năm học
+router.post("", verifyToken, academicYearController.createAcademicYear);
 
-router.post("/confirm", verifyToken, classPromotionController.confirmPromotion);
+// 3. Preview phân lớp
+router.post(
+  "/preview-promotion",
+  verifyToken,
+  academicYearController.previewPromotion,
+);
+
+// 4. Chốt phân lớp
+router.post(
+  "/confirm-promotion",
+  verifyToken,
+  academicYearController.confirmPromotion,
+);
 
 module.exports = router;

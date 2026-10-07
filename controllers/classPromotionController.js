@@ -1,1212 +1,1827 @@
 const db = require("../config/db");
+const {
+  writeLog,
+  getChurchId,
+  getAdminId,
+} = require("../utils/activityLogger");
 
-/**
- * ============================================================
- * CLASS PROMOTION CONTROLLER
- * ============================================================
- *
- * Chức năng:
- * 1. Preview lên lớp
- * 2. Confirm lên lớp
- *
- * Không tạo log ở giai đoạn này.
- *
- * Quy tắc:
- * - class_id cũ giữ nguyên
- * - class_students cũ được cập nhật status
- * - tạo class_students mới cho năm học mới
- * - attendance cũ vẫn giữ nguyên class_id cũ
- * ============================================================
- */
+// ============================================================
+// ACADEMIC YEAR CONTROLLER
+// ============================================================
+//
+// API:
+//
+// 1. POST /academic-years/preview-create
+// 2. POST /academic-years
+// 3. POST /academic-years/preview-promotion
+// 4. POST /academic-years/confirm-promotion
+//
+// Không tạo thêm bảng lịch sử.
+// Lịch sử học sinh được xác định bằng:
+//
+//      class_students
+//              ↓
+//          classes
+//              ↓
+//      academic_year
+//
+// Audit log:
+//
+//      activity_church_logs
+//
+// ============================================================
 
-/**
- * ============================================================
- * GET CHURCH ID
- * ============================================================
- */
-const getChurchId = (req) => {
-  const churchId =
-    req.user?.church_id ??
-    req.user?.parish_id ??
-    req.auth?.church_id ??
-    req.auth?.parish_id;
+// ============================================================
+// HELPER
+// ============================================================
 
-  const id = Number(churchId);
-
-  if (!Number.isInteger(id) || id <= 0) {
+const normalizeAcademicYear = (value) => {
+  if (!value) {
     return null;
   }
 
-  return id;
-};
+  const year = String(value).trim();
 
-/**
- * ============================================================
- * NORMALIZE ACTION
- * ============================================================
- */
-const normalizeAction = (value) => {
-  if (!value) return null;
-
-  const action = String(value).trim().toLowerCase();
-
-  if (action === "promote") {
-    return "promote";
+  if (!/^\d{4}-\d{4}$/.test(year)) {
+    return null;
   }
 
-  if (action === "stay") {
-    return "stay";
+  const [start, end] = year.split("-").map(Number);
+
+  if (end !== start + 1) {
+    return null;
   }
 
-  return null;
+  return year;
 };
 
-/**
- * ============================================================
- * PREVIEW PROMOTION
- * ============================================================
- *
- * POST /api/class-promotions/preview
- *
- * Body:
- *
- * {
- *   "fromClassId": 101,
- *   "toClassId": 102
- * }
- *
- * ============================================================
- */
+// ============================================================
+// PARSE ACADEMIC YEAR
+// ============================================================
+
+const parseAcademicYear = (value) => {
+  const year = normalizeAcademicYear(value);
+
+  if (!year) {
+    return null;
+  }
+
+  const [start, end] = year.split("-").map(Number);
+
+  return {
+    value: year,
+    start,
+    end,
+  };
+};
+
+// ============================================================
+// VALIDATE TRANSITION
+// ============================================================
+
+const validateYearTransition = (fromAcademicYear, toAcademicYear) => {
+  const from = parseAcademicYear(fromAcademicYear);
+
+  const to = parseAcademicYear(toAcademicYear);
+
+  if (!from || !to) {
+    return {
+      valid: false,
+      message: "Năm học không hợp lệ. Định dạng phải là YYYY-YYYY.",
+    };
+  }
+
+  if (to.start !== from.start + 1) {
+    return {
+      valid: false,
+      message:
+        `Chỉ được chuyển sang năm học kế tiếp. ` +
+        `${from.value} → ${from.start + 1}-${from.end + 1}.`,
+    };
+  }
+
+  return {
+    valid: true,
+    from,
+    to,
+  };
+};
+
+// ============================================================
+// GET TARGET CLASS
+// ============================================================
+//
+// Ưu tiên:
+//
+// 1. level_order + 1
+//
+// Không tự đoán bằng tên lớp.
+//
+// ============================================================
+
+const findTargetClass = (sourceClass, targetClasses) => {
+  if (
+    sourceClass.level_order === null ||
+    sourceClass.level_order === undefined
+  ) {
+    return null;
+  }
+
+  const nextLevel = Number(sourceClass.level_order) + 1;
+
+  const candidates = targetClasses.filter(
+    (item) => Number(item.level_order) === nextLevel,
+  );
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  /**
+   * Nếu có nhiều lớp cùng level_order
+   * thì ưu tiên cùng category.
+   */
+
+  const sameCategory = candidates.find(
+    (item) =>
+      String(item.category || "") === String(sourceClass.category || ""),
+  );
+
+  return sameCategory || candidates[0];
+};
+
+// ============================================================
+// GET CLASS BY IDS
+// ============================================================
+
+const getClassesByIds = async (connection, churchId, classIds) => {
+  if (!Array.isArray(classIds) || classIds.length === 0) {
+    return [];
+  }
+
+  const ids = [
+    ...new Set(
+      classIds.map(Number).filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  ];
+
+  if (ids.length === 0) {
+    return [];
+  }
+
+  const placeholders = ids.map(() => "?").join(",");
+
+  const [rows] = await connection.query(
+    `
+        SELECT
+          id,
+          church_id,
+          name,
+          code,
+          category,
+          level_order,
+          academic_year,
+          status
+        FROM classes
+        WHERE church_id = ?
+          AND id IN (${placeholders})
+      `,
+    [churchId, ...ids],
+  );
+
+  return rows;
+};
+
+// ============================================================
+// 1. PREVIEW CREATE ACADEMIC YEAR
+// ============================================================
+//
+// POST /academic-years/preview-create
+//
+// BODY:
+//
+// {
+//   "fromAcademicYear": "2025-2026",
+//   "toAcademicYear": "2026-2027"
+// }
+//
+// ============================================================
+
+exports.previewCreateAcademicYear = async (req, res) => {
+  console.log("");
+  console.log("============================================================");
+  console.log("          PREVIEW CREATE ACADEMIC YEAR");
+  console.log("============================================================");
+
+  try {
+    const churchId = getChurchId(req);
+
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ.",
+        code: "CHURCH_ID_REQUIRED",
+      });
+    }
+
+    const { fromAcademicYear, toAcademicYear } = req.body || {};
+
+    console.log("CHURCH ID:", churchId);
+
+    console.log("FROM:", fromAcademicYear);
+
+    console.log("TO:", toAcademicYear);
+
+    // ========================================================
+    // VALIDATE
+    // ========================================================
+
+    const validation = validateYearTransition(fromAcademicYear, toAcademicYear);
+
+    if (!validation.valid) {
+      return res.status(400).json({
+        success: false,
+        message: validation.message,
+        code: "INVALID_ACADEMIC_YEAR",
+      });
+    }
+
+    const fromYear = validation.from.value;
+
+    const toYear = validation.to.value;
+
+    // ========================================================
+    // SOURCE CLASSES
+    // ========================================================
+
+    const [classes] = await db.query(
+      `
+          SELECT
+            c.id,
+            c.name,
+            c.code,
+            c.category,
+            c.level_order,
+            c.description,
+            c.status,
+            c.academic_year,
+
+            COUNT(
+              DISTINCT CASE
+                WHEN cs.status = 'studying'
+                THEN cs.student_id
+              END
+            ) AS student_count
+
+          FROM classes c
+
+          LEFT JOIN class_students cs
+            ON cs.class_id = c.id
+
+          WHERE c.church_id = ?
+            AND c.academic_year = ?
+
+          GROUP BY
+            c.id,
+            c.name,
+            c.code,
+            c.category,
+            c.level_order,
+            c.description,
+            c.status,
+            c.academic_year
+
+          ORDER BY
+            c.level_order ASC,
+            c.name ASC,
+            c.id ASC
+        `,
+      [churchId, fromYear],
+    );
+
+    // ========================================================
+    // TARGET YEAR EXISTS?
+    // ========================================================
+
+    const [existingTargetRows] = await db.query(
+      `
+        SELECT
+          id,
+          name,
+          code,
+          level_order
+        FROM classes
+        WHERE church_id = ?
+          AND academic_year = ?
+        ORDER BY
+          level_order ASC,
+          name ASC
+      `,
+      [churchId, toYear],
+    );
+
+    const targetExists = existingTargetRows.length > 0;
+
+    // ========================================================
+    // WARNINGS
+    // ========================================================
+
+    const warnings = [];
+
+    if (classes.length === 0) {
+      warnings.push({
+        code: "SOURCE_YEAR_EMPTY",
+        message: `Không có lớp nào trong năm học ${fromYear}.`,
+      });
+    }
+
+    const classesWithoutLevel = classes.filter(
+      (item) => item.level_order === null || item.level_order === undefined,
+    );
+
+    if (classesWithoutLevel.length > 0) {
+      warnings.push({
+        code: "CLASS_MISSING_LEVEL_ORDER",
+        message: `${classesWithoutLevel.length} lớp chưa có level_order.`,
+        class_ids: classesWithoutLevel.map((item) => item.id),
+      });
+    }
+
+    if (targetExists) {
+      warnings.push({
+        code: "TARGET_YEAR_EXISTS",
+        message: `Năm học ${toYear} đã tồn tại.`,
+      });
+    }
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
+
+    return res.json({
+      success: true,
+
+      can_create: classes.length > 0 && !targetExists,
+
+      from_academic_year: fromYear,
+
+      to_academic_year: toYear,
+
+      source: {
+        class_count: classes.length,
+
+        student_count: classes.reduce(
+          (total, item) => total + Number(item.student_count || 0),
+          0,
+        ),
+
+        classes,
+      },
+
+      target: {
+        exists: targetExists,
+
+        class_count: existingTargetRows.length,
+
+        classes: existingTargetRows,
+      },
+
+      warnings,
+    });
+  } catch (error) {
+    console.error("PREVIEW CREATE ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể kiểm tra khởi tạo năm học.",
+      code: "PREVIEW_ACADEMIC_YEAR_ERROR",
+      error: error.message,
+    });
+  }
+};
+
+// ============================================================
+// 2. CREATE ACADEMIC YEAR
+// ============================================================
+//
+// POST /academic-years
+//
+// Tạo toàn bộ cơ cấu lớp từ năm cũ sang năm mới.
+//
+// KHÔNG copy:
+// - học sinh
+// - giáo lý viên
+// - lịch học
+//
+// Vì những phần đó sẽ xử lý ở bước phân lớp.
+//
+// ============================================================
+
+exports.createAcademicYear = async (req, res) => {
+  console.log("");
+  console.log("============================================================");
+  console.log("               CREATE ACADEMIC YEAR");
+  console.log("============================================================");
+
+  const connection = await db.getConnection();
+
+  try {
+    const churchId = getChurchId(req);
+
+    const adminId = getAdminId(req);
+
+    if (!churchId) {
+      connection.release();
+
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ.",
+        code: "CHURCH_ID_REQUIRED",
+      });
+    }
+
+    const { fromAcademicYear, toAcademicYear } = req.body || {};
+
+    console.log("CHURCH ID:", churchId);
+
+    console.log("ADMIN ID:", adminId);
+
+    console.log("FROM:", fromAcademicYear);
+
+    console.log("TO:", toAcademicYear);
+
+    // ========================================================
+    // VALIDATE
+    // ========================================================
+
+    const validation = validateYearTransition(fromAcademicYear, toAcademicYear);
+
+    if (!validation.valid) {
+      connection.release();
+
+      return res.status(400).json({
+        success: false,
+        message: validation.message,
+        code: "INVALID_ACADEMIC_YEAR",
+      });
+    }
+
+    const fromYear = validation.from.value;
+
+    const toYear = validation.to.value;
+
+    // ========================================================
+    // BEGIN
+    // ========================================================
+
+    await connection.beginTransaction();
+
+    // ========================================================
+    // CHECK TARGET YEAR
+    // ========================================================
+
+    const [targetRows] = await connection.query(
+      `
+        SELECT
+          id
+        FROM classes
+        WHERE church_id = ?
+          AND academic_year = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [churchId, toYear],
+    );
+
+    if (targetRows.length > 0) {
+      await connection.rollback();
+      connection.release();
+
+      return res.status(409).json({
+        success: false,
+        message: `Năm học ${toYear} đã được khởi tạo.`,
+        code: "ACADEMIC_YEAR_ALREADY_EXISTS",
+      });
+    }
+
+    // ========================================================
+    // SOURCE CLASSES
+    // ========================================================
+
+    const [sourceClasses] = await connection.query(
+      `
+        SELECT
+          id,
+          name,
+          code,
+          category,
+          level_order,
+          description,
+          status
+        FROM classes
+        WHERE church_id = ?
+          AND academic_year = ?
+        ORDER BY
+          level_order ASC,
+          name ASC,
+          id ASC
+      `,
+      [churchId, fromYear],
+    );
+
+    if (sourceClasses.length === 0) {
+      await connection.rollback();
+      connection.release();
+
+      return res.status(400).json({
+        success: false,
+        message: `Không có lớp nào trong năm học ${fromYear}.`,
+        code: "SOURCE_ACADEMIC_YEAR_EMPTY",
+      });
+    }
+
+    // ========================================================
+    // CREATE CLASSES
+    // ========================================================
+
+    const createdClasses = [];
+
+    for (const sourceClass of sourceClasses) {
+      const [result] = await connection.execute(
+        `
+          INSERT INTO classes (
+            church_id,
+            name,
+            code,
+            category,
+            level_order,
+            catechist_id,
+            description,
+            room,
+            day_of_week,
+            start_time,
+            end_time,
+            start_date,
+            end_date,
+            academic_year,
+            status
+          )
+          VALUES (
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            NULL,
+            ?,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            ?,
+            'active'
+          )
+        `,
+        [
+          churchId,
+          sourceClass.name,
+          sourceClass.code,
+          sourceClass.category,
+          sourceClass.level_order,
+          sourceClass.description,
+          toYear,
+        ],
+      );
+
+      createdClasses.push({
+        source_class_id: sourceClass.id,
+
+        source_name: sourceClass.name,
+
+        new_class_id: result.insertId,
+
+        new_name: sourceClass.name,
+
+        code: sourceClass.code,
+
+        level_order: sourceClass.level_order,
+      });
+    }
+
+    // ========================================================
+    // COMMIT
+    // ========================================================
+
+    await connection.commit();
+
+    connection.release();
+
+    // ========================================================
+    // ACTIVITY LOG
+    // ========================================================
+
+    await writeLog({
+      req,
+
+      action: "CREATE_ACADEMIC_YEAR",
+
+      target_type: "academic_year",
+
+      target_id: null,
+
+      description: `Khởi tạo năm học ${toYear} ` + `từ ${fromYear}.`,
+
+      metadata: {
+        fromAcademicYear: fromYear,
+
+        toAcademicYear: toYear,
+
+        sourceClassCount: sourceClasses.length,
+
+        createdClassCount: createdClasses.length,
+
+        classes: createdClasses,
+      },
+    });
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
+
+    return res.status(201).json({
+      success: true,
+
+      message: `Đã khởi tạo năm học ${toYear}.`,
+
+      from_academic_year: fromYear,
+
+      to_academic_year: toYear,
+
+      class_count: createdClasses.length,
+
+      classes: createdClasses,
+    });
+  } catch (error) {
+    try {
+      await connection.rollback();
+    } catch (_) {}
+
+    connection.release();
+
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("          CREATE ACADEMIC YEAR ERROR");
+    console.error(
+      "============================================================",
+    );
+    console.error("MESSAGE:", error.message);
+    console.error("CODE:", error.code);
+    console.error("SQL MESSAGE:", error.sqlMessage);
+    console.error(
+      "============================================================",
+    );
+
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        success: false,
+        message: "Mã lớp đã tồn tại trong năm học mới.",
+        code: "ACADEMIC_YEAR_CLASS_DUPLICATE",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể khởi tạo năm học.",
+      code: "CREATE_ACADEMIC_YEAR_ERROR",
+      error: error.message,
+    });
+  }
+};
+
+// ============================================================
+// 3. PREVIEW PROMOTION
+// ============================================================
+//
+// POST /academic-years/preview-promotion
+//
+// BODY:
+//
+// {
+//   "fromAcademicYear": "2025-2026",
+//   "toAcademicYear": "2026-2027"
+// }
+//
+// ============================================================
+
 exports.previewPromotion = async (req, res) => {
   console.log("");
   console.log("============================================================");
-  console.log("              PREVIEW CLASS PROMOTION");
+  console.log("              PREVIEW ACADEMIC PROMOTION");
   console.log("============================================================");
 
-  const churchId = getChurchId(req);
-
-  console.log("CHURCH ID:", churchId);
-
-  if (!churchId) {
-    return res.status(403).json({
-      success: false,
-      message: "Không xác định được giáo xứ.",
-      code: "CHURCH_ID_REQUIRED",
-    });
-  }
-
   try {
-    const fromClassId = Number(req.body?.fromClassId);
-    const toClassId = Number(req.body?.toClassId);
+    const churchId = getChurchId(req);
 
-    console.log("FROM CLASS ID:", fromClassId);
-    console.log("TO CLASS ID:", toClassId);
-
-    if (
-      !Number.isInteger(fromClassId) ||
-      !Number.isInteger(toClassId) ||
-      fromClassId <= 0 ||
-      toClassId <= 0
-    ) {
-      return res.status(400).json({
+    if (!churchId) {
+      return res.status(403).json({
         success: false,
-        message: "fromClassId và toClassId không hợp lệ.",
-        code: "INVALID_CLASS_ID",
+        message: "Không xác định được giáo xứ.",
+        code: "CHURCH_ID_REQUIRED",
       });
     }
 
-    if (fromClassId === toClassId) {
+    const { fromAcademicYear, toAcademicYear } = req.body || {};
+
+    // ========================================================
+    // VALIDATE
+    // ========================================================
+
+    const validation = validateYearTransition(fromAcademicYear, toAcademicYear);
+
+    if (!validation.valid) {
       return res.status(400).json({
         success: false,
-        message: "Lớp nguồn và lớp đích không được giống nhau.",
-        code: "SAME_CLASS",
+        message: validation.message,
+        code: "INVALID_ACADEMIC_YEAR",
       });
     }
 
+    const fromYear = validation.from.value;
+
+    const toYear = validation.to.value;
+
     // ========================================================
-    // 1. LOAD SOURCE CLASS
+    // LOAD SOURCE CLASSES
     // ========================================================
 
-    const [sourceRows] = await db.execute(
+    const [sourceClasses] = await db.query(
       `
         SELECT
           id,
-          church_id,
           name,
           code,
-          academic_year,
           category,
+          level_order,
+          academic_year,
           status
         FROM classes
-        WHERE id = ?
-          AND church_id = ?
-        LIMIT 1
+        WHERE church_id = ?
+          AND academic_year = ?
+        ORDER BY
+          level_order ASC,
+          name ASC,
+          id ASC
       `,
-      [fromClassId, churchId],
+      [churchId, fromYear],
     );
 
-    if (!sourceRows.length) {
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy lớp nguồn.",
-        code: "SOURCE_CLASS_NOT_FOUND",
-      });
-    }
-
-    const sourceClass = sourceRows[0];
-
-    console.log("SOURCE CLASS:", sourceClass);
-
-    if (!sourceClass.academic_year) {
-      return res.status(400).json({
-        success: false,
-        message: "Lớp nguồn chưa có năm học.",
-        code: "SOURCE_ACADEMIC_YEAR_REQUIRED",
-      });
-    }
-
     // ========================================================
-    // 2. LOAD TARGET CLASS
+    // LOAD TARGET CLASSES
     // ========================================================
 
-    const [targetRows] = await db.execute(
+    const [targetClasses] = await db.query(
       `
         SELECT
           id,
-          church_id,
           name,
           code,
-          academic_year,
           category,
+          level_order,
+          academic_year,
           status
         FROM classes
-        WHERE id = ?
-          AND church_id = ?
-        LIMIT 1
+        WHERE church_id = ?
+          AND academic_year = ?
+        ORDER BY
+          level_order ASC,
+          name ASC,
+          id ASC
       `,
-      [toClassId, churchId],
+      [churchId, toYear],
     );
 
-    if (!targetRows.length) {
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy lớp đích.",
-        code: "TARGET_CLASS_NOT_FOUND",
-      });
-    }
-
-    const targetClass = targetRows[0];
-
-    console.log("TARGET CLASS:", targetClass);
-
-    if (!targetClass.academic_year) {
+    if (targetClasses.length === 0) {
       return res.status(400).json({
         success: false,
-        message: "Lớp đích chưa có năm học.",
-        code: "TARGET_ACADEMIC_YEAR_REQUIRED",
-      });
-    }
-
-    if (sourceClass.academic_year === targetClass.academic_year) {
-      return res.status(400).json({
-        success: false,
-        message: "Lớp nguồn và lớp đích phải thuộc hai năm học khác nhau.",
-        code: "SAME_ACADEMIC_YEAR",
+        message:
+          `Chưa có lớp nào trong năm học ${toYear}. ` +
+          `Hãy khởi tạo năm học mới trước.`,
+        code: "TARGET_ACADEMIC_YEAR_EMPTY",
       });
     }
 
     // ========================================================
-    // 3. TÌM LỚP CÙNG KHỐI Ở NĂM MỚI
-    // ========================================================
-    //
-    // Dùng code trước.
-    // Nếu không có code thì fallback theo name.
-    //
-    // Đây chính là lớp để "Ở lại".
-    //
-    // Ví dụ:
-    //
-    // 1A 2025-2026
-    // 2A 2025-2026
-    //
-    // target:
-    // 2A 2026-2027
-    //
-    // stay:
-    // 1A 2026-2027
+    // SOURCE CLASS IDS
     // ========================================================
 
-    let stayClass = null;
+    const sourceClassIds = sourceClasses.map((item) => item.id);
 
-    if (sourceClass.code) {
-      const [stayRowsByCode] = await db.execute(
-        `
-          SELECT
-            id,
-            church_id,
-            name,
-            code,
-            academic_year,
-            category,
-            status
-          FROM classes
-          WHERE church_id = ?
-            AND code = ?
-            AND academic_year = ?
-          LIMIT 1
-        `,
-        [churchId, sourceClass.code, targetClass.academic_year],
-      );
+    if (sourceClassIds.length === 0) {
+      return res.json({
+        success: true,
 
-      if (stayRowsByCode.length) {
-        stayClass = stayRowsByCode[0];
-      }
+        from_academic_year: fromYear,
+
+        to_academic_year: toYear,
+
+        summary: {
+          source_class_count: 0,
+          student_count: 0,
+          promote_count: 0,
+          unassigned_count: 0,
+        },
+
+        classes: [],
+
+        warnings: [
+          {
+            code: "SOURCE_ACADEMIC_YEAR_EMPTY",
+            message: `Không có lớp nào trong năm học ${fromYear}.`,
+          },
+        ],
+      });
     }
 
-    // Fallback theo tên lớp
-    if (!stayClass) {
-      const [stayRowsByName] = await db.execute(
-        `
-          SELECT
-            id,
-            church_id,
-            name,
-            code,
-            academic_year,
-            category,
-            status
-          FROM classes
-          WHERE church_id = ?
-            AND name = ?
-            AND academic_year = ?
-          ORDER BY id ASC
-          LIMIT 1
-        `,
-        [churchId, sourceClass.name, targetClass.academic_year],
-      );
-
-      if (stayRowsByName.length) {
-        stayClass = stayRowsByName[0];
-      }
-    }
-
-    console.log("STAY CLASS:", stayClass);
-
     // ========================================================
-    // 4. SNAPSHOT STUDENTS
-    // ========================================================
-    //
-    // QUAN TRỌNG:
-    // Chỉ lấy status = studying.
-    //
-    // Không lấy học sinh đã completed / transferred.
+    // LOAD STUDENTS
     // ========================================================
 
-    const [studentRows] = await db.execute(
+    const placeholders = sourceClassIds.map(() => "?").join(",");
+
+    const [studentRows] = await db.query(
       `
         SELECT
           cs.id AS class_student_id,
+
           cs.class_id,
+
           cs.student_id,
-          cs.status,
+
           cs.joined_at,
 
-          s.name,
+          cs.status AS class_student_status,
+
           s.code,
-          s.qr_token,
+
+          s.name,
+
+          s.saint_name,
+
           s.avatar,
+
           s.gender,
+
           s.date_of_birth,
 
-          c.name AS class_name,
-          c.code AS class_code,
-          c.academic_year
+          c.name AS source_class_name,
+
+          c.code AS source_class_code,
+
+          c.category AS source_category,
+
+          c.level_order AS source_level_order
 
         FROM class_students cs
 
         INNER JOIN students s
           ON s.id = cs.student_id
+         AND s.church_id = ?
 
         INNER JOIN classes c
           ON c.id = cs.class_id
+         AND c.church_id = ?
 
-        WHERE cs.class_id = ?
+        WHERE cs.class_id IN (${placeholders})
+
           AND cs.status = 'studying'
-          AND c.church_id = ?
+
+          AND c.academic_year = ?
 
         ORDER BY
+          c.level_order ASC,
+          c.name ASC,
           s.name ASC,
           s.id ASC
       `,
-      [fromClassId, churchId],
+      [churchId, churchId, ...sourceClassIds, fromYear],
     );
 
-    console.log("SOURCE STUDENT COUNT:", studentRows.length);
-
     // ========================================================
-    // 5. FORMAT STUDENTS
+    // GROUP STUDENTS
     // ========================================================
 
-    const students = studentRows.map((student) => ({
-      class_student_id: student.class_student_id,
+    const studentsByClass = new Map();
 
-      student_id: student.student_id,
+    for (const student of studentRows) {
+      if (!studentsByClass.has(student.class_id)) {
+        studentsByClass.set(student.class_id, []);
+      }
 
-      name: student.name,
-      code: student.code,
-      qr_token: student.qr_token,
-
-      avatar: student.avatar || null,
-
-      gender: student.gender,
-      date_of_birth: student.date_of_birth,
-
-      source_class_id: fromClassId,
-      source_class_name: sourceClass.name,
-
-      action: "promote",
-
-      destination_class_id: toClassId,
-      destination_class_name: targetClass.name,
-
-      stay_class_id: stayClass?.id || null,
-      stay_class_name: stayClass?.name || null,
-    }));
+      studentsByClass.get(student.class_id).push(student);
+    }
 
     // ========================================================
-    // 6. RESPONSE
+    // BUILD PREVIEW
     // ========================================================
 
-    return res.status(200).json({
-      success: true,
+    const warnings = [];
 
-      data: {
-        sourceClass: {
+    const classes = [];
+
+    const allStudents = [];
+
+    let promoteCount = 0;
+
+    let unassignedCount = 0;
+
+    for (const sourceClass of sourceClasses) {
+      const students = studentsByClass.get(sourceClass.id) || [];
+
+      // ------------------------------------------------------
+      // FIND TARGET
+      // ------------------------------------------------------
+
+      const targetClass = findTargetClass(sourceClass, targetClasses);
+
+      const classStudents = students.map((student) => {
+        const canPromote = !!targetClass;
+
+        const action = canPromote ? "promote" : "unassigned";
+
+        if (canPromote) {
+          promoteCount++;
+        } else {
+          unassignedCount++;
+        }
+
+        const item = {
+          student_id: student.student_id,
+
+          class_student_id: student.class_student_id,
+
+          code: student.code,
+
+          name: student.name,
+
+          saint_name: student.saint_name,
+
+          avatar: student.avatar,
+
+          gender: student.gender,
+
+          date_of_birth: student.date_of_birth,
+
+          source_class_id: sourceClass.id,
+
+          source_class_name: sourceClass.name,
+
+          source_class_code: sourceClass.code,
+
+          source_level_order: sourceClass.level_order,
+
+          destination_class_id: targetClass ? targetClass.id : null,
+
+          destination_class_name: targetClass ? targetClass.name : null,
+
+          destination_class_code: targetClass ? targetClass.code : null,
+
+          destination_level_order: targetClass ? targetClass.level_order : null,
+
+          action,
+
+          reason: canPromote ? "AUTO_LEVEL_ORDER" : "NO_TARGET_CLASS",
+        };
+
+        allStudents.push(item);
+
+        return item;
+      });
+
+      if (!targetClass) {
+        warnings.push({
+          code: "NO_TARGET_CLASS",
+
+          source_class_id: sourceClass.id,
+
+          source_class_name: sourceClass.name,
+
+          source_level_order: sourceClass.level_order,
+
+          student_count: students.length,
+
+          message: `Không tìm thấy lớp đích cho ` + `${sourceClass.name}.`,
+        });
+      }
+
+      classes.push({
+        source: {
           id: sourceClass.id,
-          church_id: sourceClass.church_id,
+
           name: sourceClass.name,
+
           code: sourceClass.code,
-          academic_year: sourceClass.academic_year,
+
           category: sourceClass.category,
-          status: sourceClass.status,
+
+          level_order: sourceClass.level_order,
+
+          student_count: students.length,
         },
 
-        targetClass: {
-          id: targetClass.id,
-          church_id: targetClass.church_id,
-          name: targetClass.name,
-          code: targetClass.code,
-          academic_year: targetClass.academic_year,
-          category: targetClass.category,
-          status: targetClass.status,
-        },
-
-        stayClass: stayClass
+        destination: targetClass
           ? {
-              id: stayClass.id,
-              church_id: stayClass.church_id,
-              name: stayClass.name,
-              code: stayClass.code,
-              academic_year: stayClass.academic_year,
-              category: stayClass.category,
-              status: stayClass.status,
+              id: targetClass.id,
+
+              name: targetClass.name,
+
+              code: targetClass.code,
+
+              category: targetClass.category,
+
+              level_order: targetClass.level_order,
             }
           : null,
 
-        students,
+        student_count: students.length,
 
-        summary: {
-          total: students.length,
-          promote: students.length,
-          stay: 0,
-        },
+        students: classStudents,
+      });
+    }
+
+    // ========================================================
+    // SUMMARY
+    // ========================================================
+
+    const summary = {
+      source_class_count: sourceClasses.length,
+
+      target_class_count: targetClasses.length,
+
+      student_count: studentRows.length,
+
+      promote_count: promoteCount,
+
+      unassigned_count: unassignedCount,
+    };
+
+    console.log("CHURCH ID:", churchId);
+
+    console.log("FROM:", fromYear);
+
+    console.log("TO:", toYear);
+
+    console.log("SOURCE CLASSES:", sourceClasses.length);
+
+    console.log("TARGET CLASSES:", targetClasses.length);
+
+    console.log("STUDENTS:", studentRows.length);
+
+    console.log("PROMOTE:", promoteCount);
+
+    console.log("UNASSIGNED:", unassignedCount);
+
+    // ========================================================
+    // LOG PREVIEW
+    // ========================================================
+
+    await writeLog({
+      req,
+
+      action: "PREVIEW_ACADEMIC_YEAR_PROMOTION",
+
+      target_type: "academic_year",
+
+      description: `Xem trước phân lớp ${fromYear} → ${toYear}.`,
+
+      metadata: {
+        fromAcademicYear: fromYear,
+
+        toAcademicYear: toYear,
+
+        sourceClassCount: sourceClasses.length,
+
+        targetClassCount: targetClasses.length,
+
+        studentCount: studentRows.length,
+
+        promoteCount,
+
+        unassignedCount,
       },
+    });
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
+
+    return res.json({
+      success: true,
+
+      from_academic_year: fromYear,
+
+      to_academic_year: toYear,
+
+      summary,
+
+      classes,
+
+      students: allStudents,
+
+      warnings,
     });
   } catch (error) {
     console.error("");
     console.error(
       "============================================================",
     );
-    console.error("             PREVIEW PROMOTION ERROR");
+    console.error("        PREVIEW PROMOTION ERROR");
     console.error(
       "============================================================",
     );
-    console.error(error);
+    console.error("MESSAGE:", error.message);
+    console.error("CODE:", error.code);
+    console.error("SQL MESSAGE:", error.sqlMessage);
+    console.error(
+      "============================================================",
+    );
 
     return res.status(500).json({
       success: false,
-      message: "Không thể xem trước danh sách lên lớp.",
+      message: "Không thể tạo dữ liệu xem trước phân lớp.",
       code: "PREVIEW_PROMOTION_ERROR",
-      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+      error: error.message,
     });
   }
 };
 
-/**
- * ============================================================
- * CONFIRM PROMOTION
- * ============================================================
- *
- * POST /api/class-promotions/confirm
- *
- * Body:
- *
- * {
- *   "fromClassId": 101,
- *   "toClassId": 102,
- *   "stayClassId": 201,
- *
- *   "students": [
- *     {
- *       "student_id": 1,
- *       "action": "promote"
- *     },
- *     {
- *       "student_id": 2,
- *       "action": "stay"
- *     }
- *   ]
- * }
- *
- * ============================================================
- */
+// ============================================================
+// 4. CONFIRM PROMOTION
+// ============================================================
+//
+// POST /academic-years/confirm-promotion
+//
+// BODY:
+//
+// {
+//   "fromAcademicYear": "2025-2026",
+//   "toAcademicYear": "2026-2027",
+//
+//   "students": [
+//     {
+//       "student_id": 1,
+//       "from_class_id": 10,
+//       "to_class_id": 20,
+//       "action": "promote"
+//     }
+//   ]
+// }
+//
+// action:
+//
+// promote
+// stay
+// unassigned
+//
+// Với:
+// - promote → sang lớp mới
+// - stay → ở lại lớp mới do FE chỉ định
+// - unassigned → chưa xếp lớp
+//
+// ============================================================
+
 exports.confirmPromotion = async (req, res) => {
   console.log("");
   console.log("============================================================");
-  console.log("              CONFIRM CLASS PROMOTION");
+  console.log("             CONFIRM ACADEMIC PROMOTION");
   console.log("============================================================");
 
-  const churchId = getChurchId(req);
-
-  console.log("CHURCH ID:", churchId);
-
-  if (!churchId) {
-    return res.status(403).json({
-      success: false,
-      message: "Không xác định được giáo xứ.",
-      code: "CHURCH_ID_REQUIRED",
-    });
-  }
-
-  const fromClassId = Number(req.body?.fromClassId);
-  const toClassId = Number(req.body?.toClassId);
-
-  const stayClassId = req.body?.stayClassId
-    ? Number(req.body.stayClassId)
-    : null;
-
-  const students = Array.isArray(req.body?.students) ? req.body.students : [];
-
-  console.log("FROM CLASS ID:", fromClassId);
-  console.log("TO CLASS ID:", toClassId);
-  console.log("STAY CLASS ID:", stayClassId);
-  console.log("REQUEST STUDENTS:", students.length);
-
-  if (
-    !Number.isInteger(fromClassId) ||
-    !Number.isInteger(toClassId) ||
-    fromClassId <= 0 ||
-    toClassId <= 0
-  ) {
-    return res.status(400).json({
-      success: false,
-      message: "Thông tin lớp không hợp lệ.",
-      code: "INVALID_CLASS_ID",
-    });
-  }
-
-  if (fromClassId === toClassId) {
-    return res.status(400).json({
-      success: false,
-      message: "Lớp nguồn và lớp đích không được giống nhau.",
-      code: "SAME_CLASS",
-    });
-  }
-
-  if (!students.length) {
-    return res.status(400).json({
-      success: false,
-      message: "Chưa có danh sách học sinh cần xử lý.",
-      code: "STUDENTS_REQUIRED",
-    });
-  }
-
-  let connection;
+  const connection = await db.getConnection();
 
   try {
+    const churchId = getChurchId(req);
+
+    const adminId = getAdminId(req);
+
+    if (!churchId) {
+      connection.release();
+
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ.",
+        code: "CHURCH_ID_REQUIRED",
+      });
+    }
+
+    const { fromAcademicYear, toAcademicYear, students } = req.body || {};
+
     // ========================================================
-    // 1. GET CONNECTION
+    // VALIDATE YEAR
     // ========================================================
 
-    connection = await db.getConnection();
+    const validation = validateYearTransition(fromAcademicYear, toAcademicYear);
+
+    if (!validation.valid) {
+      connection.release();
+
+      return res.status(400).json({
+        success: false,
+        message: validation.message,
+        code: "INVALID_ACADEMIC_YEAR",
+      });
+    }
+
+    const fromYear = validation.from.value;
+
+    const toYear = validation.to.value;
+
+    // ========================================================
+    // VALIDATE STUDENT LIST
+    // ========================================================
+
+    if (!Array.isArray(students)) {
+      connection.release();
+
+      return res.status(400).json({
+        success: false,
+        message: "Danh sách học sinh không hợp lệ.",
+        code: "STUDENTS_ARRAY_REQUIRED",
+      });
+    }
+
+    if (students.length === 0) {
+      connection.release();
+
+      return res.status(400).json({
+        success: false,
+        message: "Chưa có học sinh nào để phân lớp.",
+        code: "NO_STUDENTS",
+      });
+    }
+
+    console.log("CHURCH ID:", churchId);
+
+    console.log("ADMIN ID:", adminId);
+
+    console.log("FROM:", fromYear);
+
+    console.log("TO:", toYear);
+
+    console.log("STUDENT COUNT:", students.length);
+
+    // ========================================================
+    // BEGIN
+    // ========================================================
 
     await connection.beginTransaction();
 
-    console.log("TRANSACTION STARTED");
-
     // ========================================================
-    // 2. LOCK SOURCE CLASS
+    // LOAD SOURCE CLASSES
     // ========================================================
 
-    const [sourceRows] = await connection.execute(
+    const [sourceClasses] = await connection.query(
       `
         SELECT
           id,
-          church_id,
           name,
           code,
-          academic_year,
           category,
-          status
+          level_order,
+          academic_year
         FROM classes
-        WHERE id = ?
-          AND church_id = ?
-        LIMIT 1
+        WHERE church_id = ?
+          AND academic_year = ?
         FOR UPDATE
       `,
-      [fromClassId, churchId],
+      [churchId, fromYear],
     );
 
-    if (!sourceRows.length) {
-      throw new Error("SOURCE_CLASS_NOT_FOUND");
+    if (sourceClasses.length === 0) {
+      await connection.rollback();
+      connection.release();
+
+      return res.status(400).json({
+        success: false,
+        message: `Không có lớp nguồn trong năm ${fromYear}.`,
+        code: "SOURCE_CLASSES_NOT_FOUND",
+      });
     }
 
-    const sourceClass = sourceRows[0];
-
     // ========================================================
-    // 3. LOCK TARGET CLASS
+    // LOAD TARGET CLASSES
     // ========================================================
 
-    const [targetRows] = await connection.execute(
+    const [targetClasses] = await connection.query(
       `
         SELECT
           id,
-          church_id,
           name,
           code,
-          academic_year,
           category,
-          status
+          level_order,
+          academic_year
         FROM classes
-        WHERE id = ?
-          AND church_id = ?
-        LIMIT 1
+        WHERE church_id = ?
+          AND academic_year = ?
         FOR UPDATE
       `,
-      [toClassId, churchId],
+      [churchId, toYear],
     );
 
-    if (!targetRows.length) {
-      throw new Error("TARGET_CLASS_NOT_FOUND");
+    if (targetClasses.length === 0) {
+      await connection.rollback();
+      connection.release();
+
+      return res.status(400).json({
+        success: false,
+        message: `Không có lớp đích trong năm ${toYear}.`,
+        code: "TARGET_CLASSES_NOT_FOUND",
+      });
     }
 
-    const targetClass = targetRows[0];
+    const sourceClassMap = new Map(
+      sourceClasses.map((item) => [Number(item.id), item]),
+    );
 
-    if (!sourceClass.academic_year) {
-      throw new Error("SOURCE_ACADEMIC_YEAR_REQUIRED");
-    }
-
-    if (!targetClass.academic_year) {
-      throw new Error("TARGET_ACADEMIC_YEAR_REQUIRED");
-    }
-
-    if (sourceClass.academic_year === targetClass.academic_year) {
-      throw new Error("SAME_ACADEMIC_YEAR");
-    }
+    const targetClassMap = new Map(
+      targetClasses.map((item) => [Number(item.id), item]),
+    );
 
     // ========================================================
-    // 4. FIND / LOCK STAY CLASS
+    // VALIDATE INPUT
     // ========================================================
 
-    let resolvedStayClass = null;
+    const normalizedStudents = [];
 
-    if (stayClassId) {
-      const [stayRows] = await connection.execute(
-        `
-          SELECT
-            id,
-            church_id,
-            name,
-            code,
-            academic_year,
-            category,
-            status
-          FROM classes
-          WHERE id = ?
-            AND church_id = ?
-          LIMIT 1
-          FOR UPDATE
-        `,
-        [stayClassId, churchId],
-      );
+    const seenStudentIds = new Set();
 
-      if (!stayRows.length) {
-        throw new Error("STAY_CLASS_NOT_FOUND");
+    for (const item of students) {
+      const studentId = Number(item?.student_id);
+
+      const fromClassId = Number(item?.from_class_id);
+
+      const toClassId =
+        item?.to_class_id === null ||
+        item?.to_class_id === undefined ||
+        item?.to_class_id === ""
+          ? null
+          : Number(item.to_class_id);
+
+      const action = String(item?.action || "")
+        .trim()
+        .toLowerCase();
+
+      // ------------------------------------------------------
+      // BASIC
+      // ------------------------------------------------------
+
+      if (!Number.isInteger(studentId) || studentId <= 0) {
+        throw new Error(`student_id không hợp lệ: ${item?.student_id}`);
       }
 
-      resolvedStayClass = stayRows[0];
-    } else {
-      // Tìm theo code
-      if (sourceClass.code) {
-        const [stayRows] = await connection.execute(
-          `
-            SELECT
-              id,
-              church_id,
-              name,
-              code,
-              academic_year,
-              category,
-              status
-            FROM classes
-            WHERE church_id = ?
-              AND code = ?
-              AND academic_year = ?
-            LIMIT 1
-            FOR UPDATE
-          `,
-          [churchId, sourceClass.code, targetClass.academic_year],
+      if (seenStudentIds.has(studentId)) {
+        throw new Error(`Học sinh ${studentId} xuất hiện nhiều lần.`);
+      }
+
+      seenStudentIds.add(studentId);
+
+      if (!Number.isInteger(fromClassId) || fromClassId <= 0) {
+        throw new Error(
+          `from_class_id không hợp lệ của học sinh ${studentId}.`,
         );
-
-        if (stayRows.length) {
-          resolvedStayClass = stayRows[0];
-        }
       }
 
-      // Fallback theo tên
-      if (!resolvedStayClass) {
-        const [stayRows] = await connection.execute(
-          `
-            SELECT
-              id,
-              church_id,
-              name,
-              code,
-              academic_year,
-              category,
-              status
-            FROM classes
-            WHERE church_id = ?
-              AND name = ?
-              AND academic_year = ?
-            ORDER BY id ASC
-            LIMIT 1
-            FOR UPDATE
-          `,
-          [churchId, sourceClass.name, targetClass.academic_year],
+      // ------------------------------------------------------
+      // SOURCE CLASS
+      // ------------------------------------------------------
+
+      const sourceClass = sourceClassMap.get(fromClassId);
+
+      if (!sourceClass) {
+        throw new Error(
+          `Lớp nguồn ${fromClassId} không thuộc giáo xứ hoặc năm học ${fromYear}.`,
         );
-
-        if (stayRows.length) {
-          resolvedStayClass = stayRows[0];
-        }
       }
+
+      // ------------------------------------------------------
+      // ACTION
+      // ------------------------------------------------------
+
+      if (!["promote", "stay", "unassigned"].includes(action)) {
+        throw new Error(`Action không hợp lệ của học sinh ${studentId}.`);
+      }
+
+      // ------------------------------------------------------
+      // UNASSIGNED
+      // ------------------------------------------------------
+
+      if (action === "unassigned") {
+        normalizedStudents.push({
+          student_id: studentId,
+
+          from_class_id: fromClassId,
+
+          to_class_id: null,
+
+          action,
+        });
+
+        continue;
+      }
+
+      // ------------------------------------------------------
+      // TARGET REQUIRED
+      // ------------------------------------------------------
+
+      if (!Number.isInteger(toClassId) || toClassId <= 0) {
+        throw new Error(`Học sinh ${studentId} chưa có lớp đích.`);
+      }
+
+      // ------------------------------------------------------
+      // TARGET CLASS
+      // ------------------------------------------------------
+
+      const targetClass = targetClassMap.get(toClassId);
+
+      if (!targetClass) {
+        throw new Error(
+          `Lớp đích ${toClassId} không thuộc năm học ${toYear} của giáo xứ này.`,
+        );
+      }
+
+      normalizedStudents.push({
+        student_id: studentId,
+
+        from_class_id: fromClassId,
+
+        to_class_id: toClassId,
+
+        action,
+      });
     }
 
-    console.log("RESOLVED STAY CLASS:", resolvedStayClass);
-
     // ========================================================
-    // 5. SNAPSHOT SOURCE STUDENTS
+    // LOAD REAL SOURCE MEMBERSHIP
     // ========================================================
     //
-    // Đây là bước cực kỳ quan trọng.
+    // Không tin from_class_id từ FE.
     //
-    // Snapshot trước khi update.
+    // Phải kiểm tra học sinh thực sự đang ở lớp nguồn.
     //
     // ========================================================
 
-    const [sourceStudents] = await connection.execute(
+    const studentIds = normalizedStudents.map((item) => item.student_id);
+
+    const studentPlaceholders = studentIds.map(() => "?").join(",");
+
+    const [sourceMemberships] = await connection.query(
       `
         SELECT
           cs.id AS class_student_id,
-          cs.class_id,
+
           cs.student_id,
-          cs.status
+
+          cs.class_id,
+
+          cs.status,
+
+          c.academic_year,
+
+          c.church_id
+
         FROM class_students cs
 
         INNER JOIN classes c
           ON c.id = cs.class_id
 
-        WHERE cs.class_id = ?
+        WHERE c.church_id = ?
+
+          AND c.academic_year = ?
+
           AND cs.status = 'studying'
-          AND c.church_id = ?
+
+          AND cs.student_id IN (${studentPlaceholders})
 
         FOR UPDATE
       `,
-      [fromClassId, churchId],
+      [churchId, fromYear, ...studentIds],
     );
 
-    console.log("SOURCE SNAPSHOT COUNT:", sourceStudents.length);
+    const membershipMap = new Map();
 
-    if (!sourceStudents.length) {
-      throw new Error("SOURCE_CLASS_HAS_NO_STUDENTS");
+    for (const membership of sourceMemberships) {
+      membershipMap.set(Number(membership.student_id), membership);
     }
 
     // ========================================================
-    // 6. CREATE SNAPSHOT MAP
+    // CHECK MEMBERSHIP
     // ========================================================
 
-    const sourceStudentMap = new Map();
+    for (const item of normalizedStudents) {
+      const membership = membershipMap.get(item.student_id);
 
-    for (const row of sourceStudents) {
-      sourceStudentMap.set(Number(row.student_id), row);
-    }
-
-    // ========================================================
-    // 7. VALIDATE REQUEST
-    // ========================================================
-
-    const requestStudentMap = new Map();
-
-    for (const item of students) {
-      const studentId = Number(item?.student_id);
-      const action = normalizeAction(item?.action);
-
-      if (!Number.isInteger(studentId) || studentId <= 0) {
-        throw new Error("INVALID_STUDENT_ID");
-      }
-
-      if (!action) {
-        throw new Error(`INVALID_ACTION_${studentId}`);
-      }
-
-      if (requestStudentMap.has(studentId)) {
-        throw new Error(`DUPLICATE_STUDENT_${studentId}`);
-      }
-
-      requestStudentMap.set(studentId, {
-        student_id: studentId,
-        action,
-        destination_class_id: item?.destination_class_id
-          ? Number(item.destination_class_id)
-          : null,
-      });
-    }
-
-    // ========================================================
-    // 8. ĐẢM BẢO REQUEST ĐỦ TOÀN BỘ HỌC SINH
-    // ========================================================
-
-    if (requestStudentMap.size !== sourceStudentMap.size) {
-      throw new Error("STUDENT_SNAPSHOT_MISMATCH");
-    }
-
-    for (const sourceStudent of sourceStudents) {
-      const studentId = Number(sourceStudent.student_id);
-
-      if (!requestStudentMap.has(studentId)) {
-        throw new Error(`MISSING_STUDENT_${studentId}`);
-      }
-    }
-
-    // ========================================================
-    // 9. PREPARE OPERATIONS
-    // ========================================================
-
-    const operations = [];
-
-    for (const sourceStudent of sourceStudents) {
-      const studentId = Number(sourceStudent.student_id);
-
-      const request = requestStudentMap.get(studentId);
-
-      let destinationClassId = null;
-
-      if (request.action === "promote") {
-        destinationClassId = request.destination_class_id || toClassId;
-      }
-
-      if (request.action === "stay") {
-        destinationClassId =
-          request.destination_class_id || resolvedStayClass?.id || null;
-      }
-
-      if (!destinationClassId) {
-        throw new Error(`DESTINATION_CLASS_REQUIRED_${studentId}`);
-      }
-
-      operations.push({
-        student_id: studentId,
-        class_student_id: sourceStudent.class_student_id,
-        action: request.action,
-        destination_class_id: destinationClassId,
-      });
-    }
-
-    console.log("OPERATIONS:", operations);
-
-    // ========================================================
-    // 10. LOAD ALL DESTINATION CLASSES
-    // ========================================================
-
-    const destinationClassIds = [
-      ...new Set(operations.map((item) => item.destination_class_id)),
-    ];
-
-    const destinationClasses = new Map();
-
-    for (const classId of destinationClassIds) {
-      const [rows] = await connection.execute(
-        `
-          SELECT
-            id,
-            church_id,
-            name,
-            code,
-            academic_year,
-            category,
-            status
-          FROM classes
-          WHERE id = ?
-            AND church_id = ?
-          LIMIT 1
-          FOR UPDATE
-        `,
-        [classId, churchId],
-      );
-
-      if (!rows.length) {
-        throw new Error(`DESTINATION_CLASS_NOT_FOUND_${classId}`);
-      }
-
-      const destinationClass = rows[0];
-
-      // Destination phải là năm mới
-      if (destinationClass.academic_year !== targetClass.academic_year) {
-        throw new Error(`INVALID_DESTINATION_ACADEMIC_YEAR_${classId}`);
-      }
-
-      destinationClasses.set(classId, destinationClass);
-    }
-
-    // ========================================================
-    // 11. KIỂM TRA STUDENT ĐÃ CÓ LỚP TRONG NĂM MỚI
-    // ========================================================
-    //
-    // Một học sinh chỉ được có một membership
-    // studying trong một năm học.
-    //
-    // ========================================================
-
-    for (const operation of operations) {
-      const destinationClass = destinationClasses.get(
-        operation.destination_class_id,
-      );
-
-      const [existingRows] = await connection.execute(
-        `
-            SELECT
-              cs.id,
-              cs.class_id,
-              cs.student_id,
-              cs.status,
-              c.name AS class_name,
-              c.academic_year
-            FROM class_students cs
-
-            INNER JOIN classes c
-              ON c.id = cs.class_id
-
-            WHERE cs.student_id = ?
-              AND cs.status = 'studying'
-              AND c.church_id = ?
-              AND c.academic_year = ?
-            LIMIT 1
-            FOR UPDATE
-          `,
-        [operation.student_id, churchId, targetClass.academic_year],
-      );
-
-      if (existingRows.length) {
-        const existing = existingRows[0];
-
+      if (!membership) {
         throw new Error(
-          `STUDENT_ALREADY_HAS_TARGET_YEAR_CLASS_${operation.student_id}_${existing.class_id}`,
+          `Học sinh ${item.student_id} không có lớp đang học trong năm ${fromYear}.`,
         );
       }
 
-      console.log(
-        `STUDENT ${operation.student_id} -> ${destinationClass.name}`,
-      );
+      if (Number(membership.class_id) !== Number(item.from_class_id)) {
+        throw new Error(
+          `Học sinh ${item.student_id} không thuộc lớp ${item.from_class_id}.`,
+        );
+      }
     }
 
     // ========================================================
-    // 12. PROCESS
+    // LOAD STUDENT CHURCH
     // ========================================================
 
-    let promotedCount = 0;
+    const [validStudents] = await connection.query(
+      `
+        SELECT
+          id
+        FROM students
+        WHERE church_id = ?
+          AND id IN (${studentPlaceholders})
+        FOR UPDATE
+      `,
+      [churchId, ...studentIds],
+    );
+
+    const validStudentIds = new Set(
+      validStudents.map((item) => Number(item.id)),
+    );
+
+    for (const item of normalizedStudents) {
+      if (!validStudentIds.has(item.student_id)) {
+        throw new Error(`Học sinh ${item.student_id} không thuộc giáo xứ này.`);
+      }
+    }
+
+    // ========================================================
+    // CHECK TARGET DUPLICATES
+    // ========================================================
+    //
+    // Một học sinh không được có 2 dòng studying
+    // trong cùng một lớp đích.
+    //
+    // Đồng thời kiểm tra nếu đã phân lớp từ trước.
+    //
+    // ========================================================
+
+    const studentsWithTarget = normalizedStudents.filter(
+      (item) => item.action !== "unassigned" && item.to_class_id,
+    );
+
+    if (studentsWithTarget.length > 0) {
+      const targetStudentIds = studentsWithTarget.map(
+        (item) => item.student_id,
+      );
+
+      const targetStudentPlaceholders = targetStudentIds
+        .map(() => "?")
+        .join(",");
+
+      const [existingTargetRows] = await connection.query(
+        `
+          SELECT
+            cs.id,
+            cs.student_id,
+            cs.class_id,
+            cs.status,
+            c.academic_year
+
+          FROM class_students cs
+
+          INNER JOIN classes c
+            ON c.id = cs.class_id
+
+          WHERE c.church_id = ?
+
+            AND c.academic_year = ?
+
+            AND cs.status = 'studying'
+
+            AND cs.student_id IN (
+              ${targetStudentPlaceholders}
+            )
+
+          FOR UPDATE
+        `,
+        [churchId, toYear, ...targetStudentIds],
+      );
+
+      if (existingTargetRows.length > 0) {
+        /**
+         * Không tự động thêm lần nữa.
+         */
+
+        const existing = existingTargetRows[0];
+
+        throw new Error(
+          `Học sinh ${existing.student_id} đã được phân lớp trong năm ${toYear}.`,
+        );
+      }
+    }
+
+    // ========================================================
+    // INSERT NEW CLASS STUDENTS
+    // ========================================================
+    //
+    // Lưu ý:
+    //
+    // KHÔNG xóa lịch sử lớp cũ.
+    //
+    // Chỉ thêm dòng mới cho năm học mới.
+    //
+    // ========================================================
+
+    let promoteCount = 0;
+
     let stayCount = 0;
 
-    for (const operation of operations) {
-      const destinationClass = destinationClasses.get(
-        operation.destination_class_id,
-      );
+    let unassignedCount = 0;
 
-      // ======================================================
-      // 12.1 Đóng membership cũ
-      // ======================================================
+    const insertedAssignments = [];
 
-      await connection.execute(
-        `
-          UPDATE class_students
-          SET
-            status = ?,
-            left_at = CURDATE(),
-            updated_at = CURRENT_TIMESTAMP
-          WHERE id = ?
-            AND class_id = ?
-            AND student_id = ?
-            AND status = 'studying'
-        `,
-        [
-          operation.action === "promote" ? "transferred" : "completed",
+    for (const item of normalizedStudents) {
+      if (item.action === "unassigned") {
+        unassignedCount++;
 
-          operation.class_student_id,
-          fromClassId,
-          operation.student_id,
-        ],
-      );
-
-      // ======================================================
-      // 12.2 Tạo membership năm mới
-      // ======================================================
+        continue;
+      }
 
       await connection.execute(
         `
           INSERT INTO class_students (
             class_id,
             student_id,
-            status,
             joined_at,
-            left_at
+            left_at,
+            status
           )
           VALUES (
             ?,
             ?,
-            'studying',
-            CURDATE(),
-            NULL
+            NOW(),
+            NULL,
+            'studying'
           )
         `,
-        [operation.destination_class_id, operation.student_id],
+        [item.to_class_id, item.student_id],
       );
 
-      if (operation.action === "promote") {
-        promotedCount++;
-      } else {
+      if (item.action === "promote") {
+        promoteCount++;
+      }
+
+      if (item.action === "stay") {
         stayCount++;
       }
 
-      console.log(
-        `DONE STUDENT ${operation.student_id}: ${sourceClass.name} -> ${destinationClass.name} [${operation.action}]`,
+      insertedAssignments.push({
+        student_id: item.student_id,
+
+        from_class_id: item.from_class_id,
+
+        to_class_id: item.to_class_id,
+
+        action: item.action,
+      });
+    }
+
+    // ========================================================
+    // CLOSE OLD CLASS MEMBERSHIP
+    // ========================================================
+    //
+    // Chỉ đóng bản ghi cũ của những học sinh đã
+    // được phân vào năm mới.
+    //
+    // ========================================================
+
+    const movedStudents = normalizedStudents.filter(
+      (item) => item.action !== "unassigned",
+    );
+
+    for (const item of movedStudents) {
+      const membership = membershipMap.get(item.student_id);
+
+      if (!membership) {
+        continue;
+      }
+
+      await connection.execute(
+        `
+          UPDATE class_students
+          SET
+            left_at = NOW(),
+            status = 'completed'
+          WHERE id = ?
+          LIMIT 1
+        `,
+        [membership.class_student_id],
       );
     }
 
     // ========================================================
-    // 13. COMMIT
+    // COMMIT
     // ========================================================
 
     await connection.commit();
 
-    console.log("TRANSACTION COMMITTED");
+    connection.release();
 
     // ========================================================
-    // 14. RESPONSE
+    // ACTIVITY LOG
     // ========================================================
 
-    return res.status(200).json({
-      success: true,
+    await writeLog({
+      req,
 
-      message: "Đã chốt danh sách lên lớp thành công.",
+      action: "CONFIRM_ACADEMIC_YEAR_PROMOTION",
 
-      data: {
-        sourceClass: {
-          id: sourceClass.id,
-          name: sourceClass.name,
-          code: sourceClass.code,
-          academic_year: sourceClass.academic_year,
-        },
+      target_type: "academic_year",
 
-        targetAcademicYear: targetClass.academic_year,
+      target_id: null,
 
-        summary: {
-          total: operations.length,
-          promote: promotedCount,
-          stay: stayCount,
-        },
+      description: `Chốt phân lớp năm học ${toYear} ` + `từ ${fromYear}.`,
+
+      metadata: {
+        fromAcademicYear: fromYear,
+
+        toAcademicYear: toYear,
+
+        totalStudentCount: normalizedStudents.length,
+
+        promoteCount,
+
+        stayCount,
+
+        unassignedCount,
+
+        insertedCount: insertedAssignments.length,
       },
     });
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
+
+    return res.json({
+      success: true,
+
+      message: `Đã chốt phân lớp năm học ${toYear}.`,
+
+      from_academic_year: fromYear,
+
+      to_academic_year: toYear,
+
+      summary: {
+        total_student_count: normalizedStudents.length,
+
+        promote_count: promoteCount,
+
+        stay_count: stayCount,
+
+        unassigned_count: unassignedCount,
+
+        inserted_count: insertedAssignments.length,
+      },
+
+      assignments: insertedAssignments,
+    });
   } catch (error) {
+    try {
+      await connection.rollback();
+    } catch (_) {}
+
+    connection.release();
+
     console.error("");
     console.error(
       "============================================================",
     );
-    console.error("             CONFIRM PROMOTION ERROR");
+    console.error("          CONFIRM PROMOTION ERROR");
     console.error(
       "============================================================",
     );
-    console.error(error);
+    console.error("MESSAGE:", error.message);
+    console.error("CODE:", error.code);
+    console.error("SQL MESSAGE:", error.sqlMessage);
+    console.error(
+      "============================================================",
+    );
 
-    if (connection) {
-      try {
-        await connection.rollback();
-
-        console.log("TRANSACTION ROLLED BACK");
-      } catch (rollbackError) {
-        console.error("ROLLBACK ERROR:", rollbackError);
-      }
-    }
-
-    // ========================================================
-    // ERROR MAPPING
-    // ========================================================
-
-    const errorCode = String(error?.message || "");
-
-    const errorMap = {
-      SOURCE_CLASS_NOT_FOUND: {
-        status: 404,
-        message: "Không tìm thấy lớp nguồn.",
-      },
-
-      TARGET_CLASS_NOT_FOUND: {
-        status: 404,
-        message: "Không tìm thấy lớp đích.",
-      },
-
-      STAY_CLASS_NOT_FOUND: {
-        status: 404,
-        message: "Không tìm thấy lớp ở lại của năm mới.",
-      },
-
-      SOURCE_ACADEMIC_YEAR_REQUIRED: {
-        status: 400,
-        message: "Lớp nguồn chưa có năm học.",
-      },
-
-      TARGET_ACADEMIC_YEAR_REQUIRED: {
-        status: 400,
-        message: "Lớp đích chưa có năm học.",
-      },
-
-      SAME_ACADEMIC_YEAR: {
-        status: 400,
-        message: "Lớp nguồn và lớp đích phải thuộc hai năm học khác nhau.",
-      },
-
-      SOURCE_CLASS_HAS_NO_STUDENTS: {
-        status: 400,
-        message: "Lớp nguồn hiện không có học sinh đang học.",
-      },
-
-      INVALID_STUDENT_ID: {
-        status: 400,
-        message: "Có học sinh không hợp lệ.",
-      },
-
-      STUDENT_SNAPSHOT_MISMATCH: {
-        status: 409,
-        message:
-          "Danh sách học sinh đã thay đổi. Vui lòng tải lại và xem trước lại.",
-      },
-    };
-
-    // Dynamic error
-    if (errorCode.startsWith("STUDENT_ALREADY_HAS_TARGET_YEAR_CLASS_")) {
-      const parts = errorCode.split("_");
-
-      const studentId = parts[parts.length - 2];
-
-      const classId = parts[parts.length - 1];
-
-      return res.status(409).json({
-        success: false,
-        message: `Học sinh ID ${studentId} đã có lớp học trong năm mới.`,
-        code: "STUDENT_ALREADY_HAS_TARGET_YEAR_CLASS",
-        student_id: Number(studentId),
-        class_id: Number(classId),
-      });
-    }
-
-    if (errorCode.startsWith("DESTINATION_CLASS_NOT_FOUND_")) {
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy một lớp đích.",
-        code: "DESTINATION_CLASS_NOT_FOUND",
-      });
-    }
-
-    if (errorCode.startsWith("INVALID_DESTINATION_ACADEMIC_YEAR_")) {
-      return res.status(400).json({
-        success: false,
-        message: "Lớp đích không thuộc năm học mới.",
-        code: "INVALID_DESTINATION_ACADEMIC_YEAR",
-      });
-    }
-
-    if (errorCode.startsWith("MISSING_STUDENT_")) {
-      return res.status(409).json({
-        success: false,
-        message:
-          "Danh sách học sinh gửi lên không đầy đủ. Vui lòng xem trước lại.",
-        code: "MISSING_STUDENT",
-      });
-    }
-
-    if (errorCode.startsWith("DUPLICATE_STUDENT_")) {
-      return res.status(400).json({
-        success: false,
-        message: "Danh sách có học sinh bị trùng.",
-        code: "DUPLICATE_STUDENT",
-      });
-    }
-
-    if (errorCode.startsWith("INVALID_ACTION_")) {
-      return res.status(400).json({
-        success: false,
-        message: "Có học sinh có thao tác không hợp lệ.",
-        code: "INVALID_ACTION",
-      });
-    }
-
-    if (errorCode.startsWith("DESTINATION_CLASS_REQUIRED_")) {
-      return res.status(400).json({
-        success: false,
-        message: "Có học sinh chưa được xác định lớp đích.",
-        code: "DESTINATION_CLASS_REQUIRED",
-      });
-    }
-
-    if (errorMap[errorCode]) {
-      return res.status(errorMap[errorCode].status).json({
-        success: false,
-        message: errorMap[errorCode].message,
-        code: errorCode,
-      });
-    }
-
-    // ========================================================
-    // MYSQL DUPLICATE
-    // ========================================================
-
-    if (error?.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({
-        success: false,
-        message: "Một hoặc nhiều học sinh đã tồn tại trong lớp đích.",
-        code: "DUPLICATE_CLASS_STUDENT",
-      });
-    }
-
-    return res.status(500).json({
+    return res.status(400).json({
       success: false,
-      message: "Không thể chốt danh sách lên lớp.",
-      code: "CONFIRM_PROMOTION_ERROR",
-      error: process.env.NODE_ENV === "development" ? error.message : undefined,
-    });
-  } finally {
-    if (connection) {
-      connection.release();
 
-      console.log("DATABASE CONNECTION RELEASED");
-    }
+      message: error.message || "Không thể chốt phân lớp.",
+
+      code: "CONFIRM_PROMOTION_ERROR",
+    });
   }
 };

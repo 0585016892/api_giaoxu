@@ -143,7 +143,7 @@ app.use("/api/dioceses", dioceseRoutes);
 app.use("/api/deaneries", deaneryRoutes);
 app.use("/api/settings_church", settingChurchRoutes);
 app.use("/api/assistant", assistantRoutes);
-app.use("/api/class-promotions", classPromotionRoutes);
+app.use("/api/academic-years", classPromotionRoutes);
 // ===============================
 // CORS MANAGEMENT
 // ===============================

@@ -315,7 +315,6 @@ exports.previewPromotion = async (req, res) => {
           s.code,
           s.qr_token,
           s.avatar,
-          s.avatar_url,
           s.gender,
           s.birth_date,
 
@@ -357,7 +356,7 @@ exports.previewPromotion = async (req, res) => {
       code: student.code,
       qr_token: student.qr_token,
 
-      avatar: student.avatar || student.avatar_url || null,
+      avatar: student.avatar || null,
 
       gender: student.gender,
       birth_date: student.birth_date,

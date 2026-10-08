@@ -10,18 +10,18 @@ const forgotPasswordController = require("../controllers/authForgotPasswordContr
 
 // Bước 1:
 // Kiểm tra email đăng ký
-router.post("/forgot-password/request", forgotPasswordController.request);
+router.post("/request", forgotPasswordController.request);
 
 // Bước 2:
 // Nhập email mới và gửi OTP
-router.post("/forgot-password/send-otp", forgotPasswordController.sendOtp);
+router.post("/send-otp", forgotPasswordController.sendOtp);
 
 // Bước 3:
 // Xác minh OTP
-router.post("/forgot-password/verify-otp", forgotPasswordController.verifyOtp);
+router.post("/verify-otp", forgotPasswordController.verifyOtp);
 
 // Bước 4:
 // Đổi mật khẩu + cập nhật email
-router.post("/forgot-password/reset", forgotPasswordController.resetPassword);
+router.post("/reset", forgotPasswordController.resetPassword);
 
 module.exports = router;

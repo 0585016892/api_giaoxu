@@ -3,7 +3,7 @@ const {
   writeLog,
   getChurchId,
   getAdminId,
-} = require("../utils/activityLogger");
+} = require("../utils/activityChurchLogger");
 
 // ============================================================
 // ACADEMIC YEAR CONTROLLER

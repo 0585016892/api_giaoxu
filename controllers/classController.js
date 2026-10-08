@@ -90,42 +90,6 @@ const normalizeAcademicYear = (value) => {
 };
 
 // ============================================================
-// VALIDATE LEVEL ORDER
-// ============================================================
-
-const validateLevelOrder = (value) => {
-  if (value === null || value === undefined || value === "") {
-    return null;
-  }
-
-  const levelOrder = Number(value);
-
-  if (!Number.isInteger(levelOrder) || levelOrder < 1) {
-    return "level_order phải là số nguyên lớn hơn hoặc bằng 1.";
-  }
-
-  return null;
-};
-
-// ============================================================
-// NORMALIZE LEVEL ORDER
-// ============================================================
-
-const normalizeLevelOrder = (value) => {
-  if (value === null || value === undefined || value === "") {
-    return null;
-  }
-
-  const levelOrder = Number(value);
-
-  if (!Number.isInteger(levelOrder) || levelOrder < 1) {
-    return null;
-  }
-
-  return levelOrder;
-};
-
-// ============================================================
 // VALIDATE SCHEDULE
 // ============================================================
 
@@ -194,26 +158,26 @@ const getSchedulesByClassIds = async (classIds, connection = db) => {
 
   const [rows] = await connection.query(
     `
-        SELECT
-          id,
-          class_id,
-          day_of_week,
-          start_time,
-          end_time,
-          room,
-          created_at,
-          updated_at
+      SELECT
+        id,
+        class_id,
+        day_of_week,
+        start_time,
+        end_time,
+        room,
+        created_at,
+        updated_at
 
-        FROM class_schedules
+      FROM class_schedules
 
-        WHERE class_id IN (${placeholders})
+      WHERE class_id IN (${placeholders})
 
-        ORDER BY
-          class_id ASC,
-          day_of_week ASC,
-          start_time ASC,
-          id ASC
-      `,
+      ORDER BY
+        class_id ASC,
+        day_of_week ASC,
+        start_time ASC,
+        id ASC
+    `,
     ids,
   );
 
@@ -227,36 +191,36 @@ const getSchedulesByClassIds = async (classIds, connection = db) => {
 const getClassByIdInternal = async (classId, churchId, connection = db) => {
   const [rows] = await connection.query(
     `
-        SELECT
-          c.id,
-          c.church_id,
-          c.name,
-          c.code,
-          c.academic_year,
-          c.category,
-          c.level_order,
-          c.catechist_id,
-          c.description,
-          c.start_date,
-          c.end_date,
-          c.status,
-          c.created_at,
-          c.updated_at,
+      SELECT
+        c.id,
+        c.church_id,
+        c.name,
+        c.code,
+        c.academic_year,
+        c.category,
+        c.level_order,
+        c.catechist_id,
+        c.description,
+        c.start_date,
+        c.end_date,
+        c.status,
+        c.created_at,
+        c.updated_at,
 
-          (
-            SELECT COUNT(*)
-            FROM class_students cs
-            WHERE cs.class_id = c.id
-              AND cs.status = 'studying'
-          ) AS studentsCount
+        (
+          SELECT COUNT(*)
+          FROM class_students cs
+          WHERE cs.class_id = c.id
+            AND cs.status = 'studying'
+        ) AS studentsCount
 
-        FROM classes c
+      FROM classes c
 
-        WHERE c.id = ?
-          AND c.church_id = ?
+      WHERE c.id = ?
+        AND c.church_id = ?
 
-        LIMIT 1
-      `,
+      LIMIT 1
+    `,
     [classId, churchId],
   );
 
@@ -274,37 +238,37 @@ const getClassByIdInternal = async (classId, churchId, connection = db) => {
 const getClassCatechists = async (classId, churchId, connection = db) => {
   const [rows] = await connection.query(
     `
-        SELECT
-          cc.id AS assignment_id,
+      SELECT
+        cc.id AS assignment_id,
 
-          cc.catechist_id,
-          cc.class_id,
+        cc.catechist_id,
+        cc.class_id,
 
-          cc.role,
-          cc.assigned_date,
-          cc.notes,
+        cc.role,
+        cc.assigned_date,
+        cc.notes,
 
-          ct.catechist_code,
-          ct.holy_name,
-          ct.full_name,
-          ct.gender,
-          ct.phone,
-          ct.email,
-          ct.level,
-          ct.status
+        ct.catechist_code,
+        ct.holy_name,
+        ct.full_name,
+        ct.gender,
+        ct.phone,
+        ct.email,
+        ct.level,
+        ct.status
 
-        FROM catechist_classes cc
+      FROM catechist_classes cc
 
-        INNER JOIN catechists ct
-          ON ct.id = cc.catechist_id
-         AND ct.church_id = ?
+      INNER JOIN catechists ct
+        ON ct.id = cc.catechist_id
+       AND ct.church_id = ?
 
-        WHERE cc.class_id = ?
+      WHERE cc.class_id = ?
 
-        ORDER BY
-          cc.role ASC,
-          ct.full_name ASC
-      `,
+      ORDER BY
+        cc.role ASC,
+        ct.full_name ASC
+    `,
     [churchId, classId],
   );
 
@@ -333,9 +297,14 @@ const getFullClassData = async (classId, churchId, connection = db) => {
 
     church_id: Number(classData.church_id),
 
-    catechist_id: classData.catechist_id
-      ? Number(classData.catechist_id)
-      : null,
+    academic_year: classData.academic_year || null,
+
+    category: classData.category || DEFAULT_CATEGORY,
+
+    catechist_id:
+      classData.catechist_id !== null && classData.catechist_id !== undefined
+        ? Number(classData.catechist_id)
+        : null,
 
     level_order:
       classData.level_order !== null && classData.level_order !== undefined
@@ -348,6 +317,127 @@ const getFullClassData = async (classId, churchId, connection = db) => {
 
     schedules,
   };
+};
+
+// ============================================================
+// GET NEXT LEVEL ORDER
+// ============================================================
+//
+// level_order được quản lý tự động.
+//
+// Phạm vi:
+//
+// church_id
+// academic_year
+// category
+//
+// Ví dụ:
+//
+// Giáo lý Hôn Nhân / 2026-2027
+//
+// 1
+// 2
+// 3
+//
+// Giáo lý Dự Tòng / 2026-2027
+//
+// 1
+// 2
+//
+// ============================================================
+
+const getNextLevelOrder = async (
+  connection,
+  churchId,
+  academicYear,
+  category,
+) => {
+  const [rows] = await connection.query(
+    `
+      SELECT
+        COALESCE(
+          MAX(level_order),
+          0
+        ) + 1 AS next_level_order
+
+      FROM classes
+
+      WHERE church_id = ?
+        AND academic_year = ?
+        AND category = ?
+        AND level_order IS NOT NULL
+    `,
+    [churchId, academicYear, category],
+  );
+
+  const nextLevelOrder = Number(rows[0]?.next_level_order || 1);
+
+  return nextLevelOrder;
+};
+
+// ============================================================
+// GENERATE CLASS CODE
+// ============================================================
+
+const generateClassCode = async (
+  connection,
+  churchId,
+  academicYear,
+  category,
+) => {
+  let prefix = "GL";
+
+  switch (category) {
+    case "Giáo lý Hôn Nhân":
+      prefix = "GLHN";
+      break;
+
+    case "Giáo lý Dự Tòng":
+      prefix = "GLDT";
+      break;
+
+    case "Giáo lý Tân Tòng":
+      prefix = "GLTT";
+      break;
+
+    case "Giáo lý Thiếu Nhi":
+      prefix = "GLTN";
+      break;
+
+    case "Giáo lý Thêm Sức":
+      prefix = "GLTS";
+      break;
+
+    default:
+      prefix = "GL";
+  }
+
+  for (let attempts = 0; attempts < 100; attempts++) {
+    const randomNumber = Math.floor(Math.random() * 1000);
+
+    const code = `${prefix}${String(randomNumber).padStart(3, "0")}`;
+
+    const [existing] = await connection.query(
+      `
+          SELECT id
+
+          FROM classes
+
+          WHERE church_id = ?
+            AND code = ?
+            AND academic_year = ?
+
+          LIMIT 1
+        `,
+      [churchId, code, academicYear],
+    );
+
+    if (!existing.length) {
+      return code;
+    }
+  }
+
+  throw new Error("Không thể tạo mã lớp học ngẫu nhiên.");
 };
 
 // ============================================================
@@ -408,6 +498,7 @@ exports.getClasses = async (req, res) => {
 
           ORDER BY
             c.academic_year DESC,
+            c.category ASC,
             c.level_order ASC,
             c.name ASC,
             c.id ASC
@@ -416,6 +507,10 @@ exports.getClasses = async (req, res) => {
     );
 
     const classIds = rows.map((item) => Number(item.id));
+
+    // ========================================================
+    // LOAD SCHEDULES
+    // ========================================================
 
     const schedules = await getSchedulesByClassIds(classIds);
 
@@ -501,6 +596,10 @@ exports.getClasses = async (req, res) => {
       });
     }
 
+    // ========================================================
+    // NORMALIZE DATA
+    // ========================================================
+
     const data = rows.map((item) => ({
       id: Number(item.id),
 
@@ -519,7 +618,10 @@ exports.getClasses = async (req, res) => {
           ? Number(item.level_order)
           : null,
 
-      catechist_id: item.catechist_id ? Number(item.catechist_id) : null,
+      catechist_id:
+        item.catechist_id !== null && item.catechist_id !== undefined
+          ? Number(item.catechist_id)
+          : null,
 
       description: item.description || null,
 
@@ -544,6 +646,17 @@ exports.getClasses = async (req, res) => {
 
     console.log("SCHEDULE COUNT:", schedules.length);
 
+    console.log(
+      "LEVEL ORDERS:",
+      data.map((item) => ({
+        id: item.id,
+        name: item.name,
+        academic_year: item.academic_year,
+        category: item.category,
+        level_order: item.level_order,
+      })),
+    );
+
     return res.status(200).json({
       success: true,
 
@@ -553,19 +666,26 @@ exports.getClasses = async (req, res) => {
     });
   } catch (error) {
     console.error("");
+
     console.error(
       "============================================================",
     );
+
     console.error("                 GET CLASSES ERROR");
+
     console.error(
       "============================================================",
     );
+
     console.error("MESSAGE:", error.message);
+
     console.error("CODE:", error.code);
 
     return res.status(500).json({
       success: false,
+
       message: "Không thể lấy danh sách lớp học.",
+
       error: error.message,
     });
   }
@@ -653,19 +773,19 @@ exports.getClassesByTeacherId = async (req, res) => {
 
     const [catechistRows] = await db.query(
       `
-        SELECT
-          id,
-          catechist_code,
-          full_name,
-          holy_name
+            SELECT
+              id,
+              catechist_code,
+              full_name,
+              holy_name
 
-        FROM catechists
+            FROM catechists
 
-        WHERE catechist_code = ?
-          AND church_id = ?
+            WHERE catechist_code = ?
+              AND church_id = ?
 
-        LIMIT 1
-      `,
+            LIMIT 1
+          `,
       [username, churchId],
     );
 
@@ -680,34 +800,35 @@ exports.getClassesByTeacherId = async (req, res) => {
 
     const [rows] = await db.query(
       `
-        SELECT
-          c.*,
+            SELECT
+              c.*,
 
-          (
-            SELECT COUNT(*)
-            FROM class_students cs
-            WHERE cs.class_id = c.id
-              AND cs.status = 'studying'
-          ) AS studentsCount,
+              (
+                SELECT COUNT(*)
+                FROM class_students cs
+                WHERE cs.class_id = c.id
+                  AND cs.status = 'studying'
+              ) AS studentsCount,
 
-          cc.id AS assignment_id,
-          cc.role AS catechist_role,
-          cc.assigned_date,
-          cc.notes
+              cc.id AS assignment_id,
+              cc.role AS catechist_role,
+              cc.assigned_date,
+              cc.notes
 
-        FROM classes c
+            FROM classes c
 
-        INNER JOIN catechist_classes cc
-          ON cc.class_id = c.id
-         AND cc.catechist_id = ?
+            INNER JOIN catechist_classes cc
+              ON cc.class_id = c.id
+             AND cc.catechist_id = ?
 
-        WHERE c.church_id = ?
+            WHERE c.church_id = ?
 
-        ORDER BY
-          c.academic_year DESC,
-          c.level_order ASC,
-          c.name ASC
-      `,
+            ORDER BY
+              c.academic_year DESC,
+              c.category ASC,
+              c.level_order ASC,
+              c.name ASC
+          `,
       [catechist.id, churchId],
     );
 
@@ -747,7 +868,14 @@ exports.getClassesByTeacherId = async (req, res) => {
 
         church_id: Number(item.church_id),
 
-        catechist_id: item.catechist_id ? Number(item.catechist_id) : null,
+        academic_year: item.academic_year || null,
+
+        category: item.category || DEFAULT_CATEGORY,
+
+        catechist_id:
+          item.catechist_id !== null && item.catechist_id !== undefined
+            ? Number(item.catechist_id)
+            : null,
 
         level_order:
           item.level_order !== null && item.level_order !== undefined
@@ -791,39 +919,41 @@ exports.getClassSchedules = async (req, res) => {
 
     const [rows] = await db.query(
       `
-        SELECT
-          cs.id,
-          cs.class_id,
+            SELECT
+              cs.id,
+              cs.class_id,
 
-          c.church_id,
-          c.name AS class_name,
-          c.code AS class_code,
-          c.academic_year,
-          c.category AS class_category,
-          c.level_order,
-          c.status AS class_status,
+              c.church_id,
+              c.name AS class_name,
+              c.code AS class_code,
+              c.academic_year,
+              c.category AS class_category,
+              c.level_order,
+              c.status AS class_status,
 
-          cs.day_of_week,
-          cs.start_time,
-          cs.end_time,
-          cs.room,
+              cs.day_of_week,
+              cs.start_time,
+              cs.end_time,
+              cs.room,
 
-          cs.created_at,
-          cs.updated_at
+              cs.created_at,
+              cs.updated_at
 
-        FROM class_schedules cs
+            FROM class_schedules cs
 
-        INNER JOIN classes c
-          ON c.id = cs.class_id
+            INNER JOIN classes c
+              ON c.id = cs.class_id
 
-        WHERE c.church_id = ?
+            WHERE c.church_id = ?
 
-        ORDER BY
-          c.academic_year DESC,
-          cs.day_of_week ASC,
-          cs.start_time ASC,
-          c.name ASC
-      `,
+            ORDER BY
+              c.academic_year DESC,
+              c.category ASC,
+              c.level_order ASC,
+              cs.day_of_week ASC,
+              cs.start_time ASC,
+              c.name ASC
+          `,
       [churchId],
     );
 
@@ -879,71 +1009,6 @@ exports.getClassSchedules = async (req, res) => {
 };
 
 // ============================================================
-// GENERATE CLASS CODE
-// ============================================================
-
-const generateClassCode = async (
-  connection,
-  churchId,
-  academicYear,
-  category,
-) => {
-  let prefix = "GL";
-
-  switch (category) {
-    case "Giáo lý Hôn Nhân":
-      prefix = "GLHN";
-      break;
-
-    case "Giáo lý Dự Tòng":
-      prefix = "GLDT";
-      break;
-
-    case "Giáo lý Tân Tòng":
-      prefix = "GLTT";
-      break;
-
-    case "Giáo lý Thiếu Nhi":
-      prefix = "GLTN";
-      break;
-
-    case "Giáo lý Thêm Sức":
-      prefix = "GLTS";
-      break;
-
-    default:
-      prefix = "GL";
-  }
-
-  for (let attempts = 0; attempts < 100; attempts++) {
-    const randomNumber = Math.floor(Math.random() * 1000);
-
-    const code = `${prefix}${String(randomNumber).padStart(3, "0")}`;
-
-    const [existing] = await connection.query(
-      `
-        SELECT id
-
-        FROM classes
-
-        WHERE church_id = ?
-          AND code = ?
-          AND academic_year = ?
-
-        LIMIT 1
-      `,
-      [churchId, code, academicYear],
-    );
-
-    if (!existing.length) {
-      return code;
-    }
-  }
-
-  throw new Error("Không thể tạo mã lớp học ngẫu nhiên.");
-};
-
-// ============================================================
 // 5. CREATE CLASS
 // ============================================================
 //
@@ -955,7 +1020,6 @@ const generateClassCode = async (
 //   name,
 //   academic_year,
 //   category,
-//   level_order,
 //   catechist_id,
 //   description,
 //   start_date,
@@ -964,6 +1028,11 @@ const generateClassCode = async (
 //   schedules: []
 // }
 //
+// NOTE:
+//
+// level_order KHÔNG NHẬN TỪ FE.
+//
+// Backend tự sinh.
 // ============================================================
 
 exports.createClass = async (req, res) => {
@@ -978,7 +1047,6 @@ exports.createClass = async (req, res) => {
       name,
       academic_year,
       category,
-      level_order,
       catechist_id,
       description,
       start_date,
@@ -988,8 +1056,11 @@ exports.createClass = async (req, res) => {
     } = req.body || {};
 
     console.log("");
+
     console.log("============================================================");
+
     console.log("                    CREATE CLASS");
+
     console.log("============================================================");
 
     console.log("CHURCH ID:", churchId);
@@ -1000,7 +1071,7 @@ exports.createClass = async (req, res) => {
 
     console.log("ACADEMIC YEAR:", academic_year);
 
-    console.log("LEVEL ORDER:", level_order);
+    console.log("CATEGORY:", category);
 
     if (!churchId) {
       return res.status(403).json({
@@ -1026,15 +1097,6 @@ exports.createClass = async (req, res) => {
       });
     }
 
-    const levelError = validateLevelOrder(level_order);
-
-    if (levelError) {
-      return res.status(400).json({
-        success: false,
-        message: levelError,
-      });
-    }
-
     if (!Array.isArray(schedules)) {
       return res.status(400).json({
         success: false,
@@ -1053,8 +1115,6 @@ exports.createClass = async (req, res) => {
       }
     }
 
-    const normalizedLevelOrder = normalizeLevelOrder(level_order);
-
     const normalizedCategory = category?.trim() || DEFAULT_CATEGORY;
 
     const normalizedStatus = status || "active";
@@ -1069,7 +1129,7 @@ exports.createClass = async (req, res) => {
     await connection.beginTransaction();
 
     // ========================================================
-    // GENERATE CODE
+    // GENERATE CLASS CODE
     // ========================================================
 
     const code = await generateClassCode(
@@ -1080,49 +1140,73 @@ exports.createClass = async (req, res) => {
     );
 
     // ========================================================
+    // AUTO GENERATE LEVEL ORDER
+    // ========================================================
+
+    const levelOrder = await getNextLevelOrder(
+      connection,
+      churchId,
+      normalizedYear,
+      normalizedCategory,
+    );
+
+    console.log("AUTO LEVEL ORDER:", levelOrder);
+
+    // ========================================================
     // INSERT CLASS
     // ========================================================
 
     const [result] = await connection.execute(
       `
-        INSERT INTO classes (
-          church_id,
-          name,
-          code,
-          academic_year,
-          category,
-          level_order,
-          catechist_id,
-          description,
-          start_date,
-          end_date,
-          status
-        )
-        VALUES (
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?
-        )
-      `,
+          INSERT INTO classes (
+            church_id,
+            name,
+            code,
+            academic_year,
+            category,
+            level_order,
+            catechist_id,
+            description,
+            start_date,
+            end_date,
+            status
+          )
+
+          VALUES (
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?
+          )
+        `,
       [
         churchId,
+
         name.trim(),
+
         code,
+
         normalizedYear,
+
         normalizedCategory,
-        normalizedLevelOrder,
+
+        levelOrder,
+
         catechist_id || null,
+
         description?.trim() || null,
+
         start_date || null,
+
         end_date || null,
+
         normalizedStatus,
       ],
     );
@@ -1143,13 +1227,18 @@ exports.createClass = async (req, res) => {
             end_time,
             room
           )
+
           VALUES (?, ?, ?, ?, ?)
         `,
         [
           classId,
+
           Number(schedule.day_of_week),
+
           schedule.start_time,
+
           schedule.end_time,
+
           schedule.room?.trim() || null,
         ],
       );
@@ -1172,50 +1261,26 @@ exports.createClass = async (req, res) => {
 
       description:
         `Tạo lớp "${name.trim()}" ` +
-        `(${code}), năm học ` +
-        `${normalizedYear}, ` +
-        `level_order=${normalizedLevelOrder ?? "NULL"}.`,
+        `(${code}), ` +
+        `năm học ${normalizedYear}, ` +
+        `category="${normalizedCategory}", ` +
+        `level_order=${levelOrder}.`,
 
       ip_address: req.ip,
     });
+
+    // ========================================================
+    // GET CREATED CLASS
+    // ========================================================
+
+    const data = await getFullClassData(classId, churchId);
 
     return res.status(201).json({
       success: true,
 
       message: "Tạo lớp học thành công.",
 
-      data: {
-        id: classId,
-
-        church_id: Number(churchId),
-
-        name: name.trim(),
-
-        code,
-
-        academic_year: normalizedYear,
-
-        category: normalizedCategory,
-
-        level_order: normalizedLevelOrder,
-
-        catechist_id: catechist_id ? Number(catechist_id) : null,
-
-        description: description?.trim() || null,
-
-        start_date: start_date || null,
-
-        end_date: end_date || null,
-
-        status: normalizedStatus,
-
-        schedules: schedules.map((item) => ({
-          day_of_week: Number(item.day_of_week),
-          start_time: item.start_time,
-          end_time: item.end_time,
-          room: item.room?.trim() || null,
-        })),
-      },
+      data,
     });
   } catch (error) {
     try {
@@ -1223,15 +1288,21 @@ exports.createClass = async (req, res) => {
     } catch (_) {}
 
     console.error("");
+
     console.error(
       "============================================================",
     );
+
     console.error("                 CREATE CLASS ERROR");
+
     console.error(
       "============================================================",
     );
+
     console.error("MESSAGE:", error.message);
+
     console.error("CODE:", error.code);
+
     console.error("SQL MESSAGE:", error.sqlMessage);
 
     if (error.code === "ER_DUP_ENTRY") {
@@ -1258,6 +1329,15 @@ exports.createClass = async (req, res) => {
 //
 // PUT /api/classes/:id
 //
+// level_order:
+//
+// - KHÔNG nhận từ FE
+// - Nếu giữ nguyên năm học + category:
+//     giữ level_order cũ
+//
+// - Nếu đổi năm học hoặc category:
+//     cấp level_order mới
+//
 // ============================================================
 
 exports.updateClass = async (req, res) => {
@@ -1274,7 +1354,6 @@ exports.updateClass = async (req, res) => {
       name,
       academic_year,
       category,
-      level_order,
       catechist_id,
       description,
       start_date,
@@ -1284,8 +1363,11 @@ exports.updateClass = async (req, res) => {
     } = req.body || {};
 
     console.log("");
+
     console.log("============================================================");
+
     console.log("                    UPDATE CLASS");
+
     console.log("============================================================");
 
     console.log("CLASS ID:", classId);
@@ -1293,8 +1375,6 @@ exports.updateClass = async (req, res) => {
     console.log("CHURCH ID:", churchId);
 
     console.log("ADMIN ID:", adminId);
-
-    console.log("LEVEL ORDER:", level_order);
 
     if (!churchId) {
       return res.status(403).json({
@@ -1326,15 +1406,6 @@ exports.updateClass = async (req, res) => {
       });
     }
 
-    const levelError = validateLevelOrder(level_order);
-
-    if (levelError) {
-      return res.status(400).json({
-        success: false,
-        message: levelError,
-      });
-    }
-
     if (schedules !== undefined && !Array.isArray(schedules)) {
       return res.status(400).json({
         success: false,
@@ -1357,8 +1428,6 @@ exports.updateClass = async (req, res) => {
 
     const normalizedCategory = category?.trim() || DEFAULT_CATEGORY;
 
-    const normalizedLevelOrder = normalizeLevelOrder(level_order);
-
     const normalizedStatus = status || "active";
 
     if (!VALID_CLASS_STATUS.includes(normalizedStatus)) {
@@ -1380,6 +1449,57 @@ exports.updateClass = async (req, res) => {
         message: "Không tìm thấy lớp học trong giáo xứ của bạn.",
       });
     }
+
+    // ========================================================
+    // DETERMINE LEVEL ORDER
+    // ========================================================
+
+    const oldAcademicYear = oldClass.academic_year || null;
+
+    const oldCategory = oldClass.category || DEFAULT_CATEGORY;
+
+    const academicYearChanged = oldAcademicYear !== normalizedYear;
+
+    const categoryChanged = oldCategory !== normalizedCategory;
+
+    let levelOrder =
+      oldClass.level_order !== null && oldClass.level_order !== undefined
+        ? Number(oldClass.level_order)
+        : null;
+
+    // ========================================================
+    // NẾU LỚP CŨ CHƯA CÓ LEVEL_ORDER
+    // ========================================================
+
+    if (levelOrder === null) {
+      levelOrder = await getNextLevelOrder(
+        connection,
+        churchId,
+        normalizedYear,
+        normalizedCategory,
+      );
+
+      console.log("OLD LEVEL ORDER NULL -> AUTO:", levelOrder);
+    }
+
+    // ========================================================
+    // NẾU ĐỔI NĂM HỌC / CATEGORY
+    // ========================================================
+
+    if (academicYearChanged || categoryChanged) {
+      levelOrder = await getNextLevelOrder(
+        connection,
+        churchId,
+        normalizedYear,
+        normalizedCategory,
+      );
+
+      console.log("LEVEL ORDER REASSIGNED:", levelOrder);
+    }
+
+    console.log("OLD LEVEL ORDER:", oldClass.level_order);
+
+    console.log("NEW LEVEL ORDER:", levelOrder);
 
     await connection.beginTransaction();
 
@@ -1407,15 +1527,25 @@ exports.updateClass = async (req, res) => {
       `,
       [
         name.trim(),
+
         normalizedYear,
+
         normalizedCategory,
-        normalizedLevelOrder,
+
+        levelOrder,
+
         catechist_id || null,
+
         description?.trim() || null,
+
         start_date || null,
+
         end_date || null,
+
         normalizedStatus,
+
         classId,
+
         churchId,
       ],
     );
@@ -1424,10 +1554,8 @@ exports.updateClass = async (req, res) => {
     // UPDATE SCHEDULES
     // ========================================================
     //
-    // Chỉ thay toàn bộ schedules nếu FE gửi schedules.
-    //
-    // Nếu không gửi:
-    // → giữ nguyên lịch cũ.
+    // Chỉ thay toàn bộ schedules
+    // nếu FE gửi schedules.
     //
     // ========================================================
 
@@ -1435,6 +1563,7 @@ exports.updateClass = async (req, res) => {
       await connection.execute(
         `
           DELETE FROM class_schedules
+
           WHERE class_id = ?
         `,
         [classId],
@@ -1450,13 +1579,18 @@ exports.updateClass = async (req, res) => {
               end_time,
               room
             )
+
             VALUES (?, ?, ?, ?, ?)
           `,
           [
             classId,
+
             Number(schedule.day_of_week),
+
             schedule.start_time,
+
             schedule.end_time,
+
             schedule.room?.trim() || null,
           ],
         );
@@ -1482,10 +1616,15 @@ exports.updateClass = async (req, res) => {
         `Cập nhật lớp "${name.trim()}" ` +
         `(${oldClass.code}), ` +
         `năm học ${normalizedYear}, ` +
-        `level_order=${normalizedLevelOrder ?? "NULL"}.`,
+        `category="${normalizedCategory}", ` +
+        `level_order=${levelOrder}.`,
 
       ip_address: req.ip,
     });
+
+    // ========================================================
+    // GET UPDATED CLASS
+    // ========================================================
 
     const data = await getFullClassData(classId, churchId);
 
@@ -1502,15 +1641,21 @@ exports.updateClass = async (req, res) => {
     } catch (_) {}
 
     console.error("");
+
     console.error(
       "============================================================",
     );
+
     console.error("                 UPDATE CLASS ERROR");
+
     console.error(
       "============================================================",
     );
+
     console.error("MESSAGE:", error.message);
+
     console.error("CODE:", error.code);
+
     console.error("SQL MESSAGE:", error.sqlMessage);
 
     if (error.code === "ER_DUP_ENTRY") {
@@ -1547,6 +1692,18 @@ exports.deleteClass = async (req, res) => {
 
     const adminId = getAdminId(req);
 
+    console.log("");
+
+    console.log("============================================================");
+
+    console.log("                    DELETE CLASS");
+
+    console.log("============================================================");
+
+    console.log("CLASS ID:", classId);
+
+    console.log("CHURCH ID:", churchId);
+
     if (!churchId) {
       return res.status(403).json({
         success: false,
@@ -1561,6 +1718,10 @@ exports.deleteClass = async (req, res) => {
       });
     }
 
+    // ========================================================
+    // LOAD CLASS
+    // ========================================================
+
     const classData = await getClassByIdInternal(classId, churchId);
 
     if (!classData) {
@@ -1571,37 +1732,49 @@ exports.deleteClass = async (req, res) => {
     }
 
     // ========================================================
-    // KIỂM TRA HỌC SINH
+    // CHECK STUDENTS
     // ========================================================
 
     const [studentRows] = await db.query(
       `
-        SELECT COUNT(*) AS total
-        FROM class_students
-        WHERE class_id = ?
-      `,
+          SELECT
+            COUNT(*) AS total
+
+          FROM class_students
+
+          WHERE class_id = ?
+        `,
       [classId],
     );
 
     const studentCount = Number(studentRows[0]?.total || 0);
 
+    console.log("STUDENT COUNT:", studentCount);
+
     if (studentCount > 0) {
       return res.status(409).json({
         success: false,
+
         message:
           "Không thể xóa lớp vì lớp đã có dữ liệu học sinh. Hãy xử lý dữ liệu lớp trước.",
+
         code: "CLASS_HAS_STUDENTS",
+
         student_count: studentCount,
       });
     }
 
+    // ========================================================
+    // DELETE
+    // ========================================================
+
     const [result] = await db.query(
       `
-        DELETE FROM classes
+          DELETE FROM classes
 
-        WHERE id = ?
-          AND church_id = ?
-      `,
+          WHERE id = ?
+            AND church_id = ?
+        `,
       [classId, churchId],
     );
 
@@ -1611,6 +1784,10 @@ exports.deleteClass = async (req, res) => {
         message: "Không thể xóa lớp học.",
       });
     }
+
+    // ========================================================
+    // LOG
+    // ========================================================
 
     await writeLog({
       admin_id: adminId,
@@ -1624,10 +1801,13 @@ exports.deleteClass = async (req, res) => {
       description:
         `Xóa lớp "${classData.name}" ` +
         `(${classData.code}), ` +
-        `năm học ${classData.academic_year || "—"}.`,
+        `năm học ${classData.academic_year || "—"}, ` +
+        `level_order=${classData.level_order ?? "NULL"}.`,
 
       ip_address: req.ip,
     });
+
+    console.log("DELETE SUCCESS:", classId);
 
     return res.status(200).json({
       success: true,
@@ -1728,20 +1908,25 @@ exports.createClassSchedule = async (req, res) => {
 
     const [result] = await db.query(
       `
-        INSERT INTO class_schedules (
-          class_id,
-          day_of_week,
-          start_time,
-          end_time,
-          room
-        )
-        VALUES (?, ?, ?, ?, ?)
-      `,
+            INSERT INTO class_schedules (
+              class_id,
+              day_of_week,
+              start_time,
+              end_time,
+              room
+            )
+
+            VALUES (?, ?, ?, ?, ?)
+          `,
       [
         classId,
+
         Number(day_of_week),
+
         start_time,
+
         end_time,
+
         room?.trim() || null,
       ],
     );
@@ -1848,29 +2033,29 @@ exports.updateClassSchedule = async (req, res) => {
 
     const [rows] = await db.query(
       `
-        SELECT
-          cs.id,
-          cs.class_id,
-          cs.day_of_week,
-          cs.start_time,
-          cs.end_time,
-          cs.room,
+            SELECT
+              cs.id,
+              cs.class_id,
+              cs.day_of_week,
+              cs.start_time,
+              cs.end_time,
+              cs.room,
 
-          c.name AS class_name,
-          c.code AS class_code,
-          c.academic_year
+              c.name AS class_name,
+              c.code AS class_code,
+              c.academic_year
 
-        FROM class_schedules cs
+            FROM class_schedules cs
 
-        INNER JOIN classes c
-          ON c.id = cs.class_id
+            INNER JOIN classes c
+              ON c.id = cs.class_id
 
-        WHERE cs.id = ?
-          AND cs.class_id = ?
-          AND c.church_id = ?
+            WHERE cs.id = ?
+              AND cs.class_id = ?
+              AND c.church_id = ?
 
-        LIMIT 1
-      `,
+            LIMIT 1
+          `,
       [scheduleId, classId, churchId],
     );
 
@@ -1883,23 +2068,28 @@ exports.updateClassSchedule = async (req, res) => {
 
     await db.query(
       `
-        UPDATE class_schedules
+          UPDATE class_schedules
 
-        SET
-          day_of_week = ?,
-          start_time = ?,
-          end_time = ?,
-          room = ?
+          SET
+            day_of_week = ?,
+            start_time = ?,
+            end_time = ?,
+            room = ?
 
-        WHERE id = ?
-          AND class_id = ?
-      `,
+          WHERE id = ?
+            AND class_id = ?
+        `,
       [
         Number(day_of_week),
+
         start_time,
+
         end_time,
+
         room?.trim() || null,
+
         scheduleId,
+
         classId,
       ],
     );
@@ -1991,29 +2181,29 @@ exports.deleteClassSchedule = async (req, res) => {
 
     const [rows] = await db.query(
       `
-        SELECT
-          cs.id,
-          cs.class_id,
-          cs.day_of_week,
-          cs.start_time,
-          cs.end_time,
-          cs.room,
+            SELECT
+              cs.id,
+              cs.class_id,
+              cs.day_of_week,
+              cs.start_time,
+              cs.end_time,
+              cs.room,
 
-          c.name AS class_name,
-          c.code AS class_code,
-          c.academic_year
+              c.name AS class_name,
+              c.code AS class_code,
+              c.academic_year
 
-        FROM class_schedules cs
+            FROM class_schedules cs
 
-        INNER JOIN classes c
-          ON c.id = cs.class_id
+            INNER JOIN classes c
+              ON c.id = cs.class_id
 
-        WHERE cs.id = ?
-          AND cs.class_id = ?
-          AND c.church_id = ?
+            WHERE cs.id = ?
+              AND cs.class_id = ?
+              AND c.church_id = ?
 
-        LIMIT 1
-      `,
+            LIMIT 1
+          `,
       [scheduleId, classId, churchId],
     );
 
@@ -2026,11 +2216,11 @@ exports.deleteClassSchedule = async (req, res) => {
 
     await db.query(
       `
-        DELETE FROM class_schedules
+          DELETE FROM class_schedules
 
-        WHERE id = ?
-          AND class_id = ?
-      `,
+          WHERE id = ?
+            AND class_id = ?
+        `,
       [scheduleId, classId],
     );
 

@@ -1,5 +1,5 @@
 const db = require("../config/db");
-const { writeLog } = require("../utils/activityChurchLogger");
+const { writeLog } = require("../utils/activityLogger");
 
 // =====================================================
 // CONSTANTS

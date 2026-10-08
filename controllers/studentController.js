@@ -1312,121 +1312,118 @@ exports.getStudentsByClass = async (req, res) => {
   try {
     console.log("");
     console.log("============================================================");
-    console.log("                  GET STUDENTS BY CLASS");
+    console.log("              GET STUDENTS BY CLASS");
     console.log("============================================================");
 
     // =====================================================
-    // CHURCH
+    // 1. LẤY CHURCH ID
     // =====================================================
 
     const churchId = getChurchId(req);
 
-    // =====================================================
-    // CLASS ID
-    // =====================================================
-
-    const classId = toInt(req.params.id);
-
-    console.log("CHURCH ID:", churchId);
-
-    console.log("CLASS ID:", classId);
-
-    // =====================================================
-    // CHECK CHURCH
-    // =====================================================
+    console.log("🏠 CHURCH ID:", churchId);
 
     if (!churchId) {
       return res.status(403).json({
         success: false,
-        message: "Không xác định được giáo xứ",
+        message:
+          "Không xác định được giáo xứ. Vui lòng đăng nhập lại hoặc kiểm tra thông tin giáo xứ.",
+        data: null,
       });
     }
 
     // =====================================================
-    // CHECK CLASS ID
+    // 2. LẤY CLASS ID
     // =====================================================
+
+    const classId = toInt(req.params.id);
+
+    console.log("🏫 CLASS ID:", classId);
 
     if (!isValidId(classId)) {
       return res.status(400).json({
         success: false,
-        message: "ID lớp không hợp lệ",
+        message:
+          "ID lớp học không hợp lệ. Vui lòng kiểm tra lại lớp học cần xem.",
+        data: null,
       });
     }
 
     // =====================================================
-    // CHECK CLASS
+    // 3. KIỂM TRA LỚP HỌC
     // =====================================================
 
     const [classRows] = await db.execute(
       `
-          SELECT
-            id,
-            name,
-            code
-
-          FROM classes
-
-          WHERE id = ?
-
-            AND church_id = ?
-
-          LIMIT 1
-        `,
+        SELECT
+          id,
+          name,
+          code,
+          academic_year,
+          category,
+          status,
+          start_date,
+          end_date,
+          level_order
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
+      `,
       [classId, churchId],
     );
 
-    console.log("CLASS:", classRows);
+    console.log("🏫 CLASS:", classRows);
 
     // =====================================================
-    // CLASS NOT FOUND
+    // 4. KHÔNG TÌM THẤY LỚP
     // =====================================================
 
-    if (classRows.length === 0) {
+    if (!classRows.length) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy lớp học",
+        message:
+          "Không tìm thấy lớp học này trong giáo xứ. Lớp có thể đã bị xóa hoặc không thuộc giáo xứ hiện tại.",
+        data: null,
       });
     }
 
+    const classInfo = classRows[0];
+
     // =====================================================
-    // GET STUDENTS
+    // 5. LẤY DANH SÁCH HỌC SINH CỦA ĐÚNG LỚP
     // =====================================================
 
     const [studentRows] = await db.execute(
       `
-          SELECT
-            s.*
-
-          FROM students s
-
-          INNER JOIN class_students cs
-            ON cs.student_id = s.id
-
-          WHERE cs.class_id = ?
-
-            AND s.church_id = ?
-
-          ORDER BY
-            s.name ASC,
-            s.id ASC
-        `,
+        SELECT
+          s.*
+        FROM students AS s
+        INNER JOIN class_students AS cs
+          ON cs.student_id = s.id
+        WHERE cs.class_id = ?
+          AND s.church_id = ?
+        ORDER BY
+          s.name ASC,
+          s.id ASC
+      `,
       [classId, churchId],
     );
 
-    console.log("STUDENTS FOUND:", studentRows.length);
+    console.log(`👨‍🎓 SỐ HỌC SINH LỚP ${classId}:`, studentRows.length);
 
     // =====================================================
-    // NORMALIZE AVATAR
+    // 6. NORMALIZE AVATAR
     // =====================================================
 
     const students = normalizeStudentAvatars(studentRows);
 
     // =====================================================
-    // LOG AVATAR
+    // 7. LOG DANH SÁCH HỌC SINH
     // =====================================================
 
     console.log(
-      "AVATAR RESULT:",
+      "👨‍🎓 STUDENTS:",
       students.map((student) => ({
         id: student.id,
         name: student.name,
@@ -1435,21 +1432,40 @@ exports.getStudentsByClass = async (req, res) => {
     );
 
     // =====================================================
-    // RESPONSE
+    // 8. RESPONSE
+    //
+    // Cấu trúc:
+    //
+    // {
+    //   success: true,
+    //   message: "...",
+    //   data: {
+    //     class: {...},
+    //     students: [...],
+    //     total: 3
+    //   }
+    // }
     // =====================================================
 
-    return res.json({
+    return res.status(200).json({
       success: true,
 
-      data: students,
+      message:
+        students.length > 0
+          ? `Lấy danh sách học sinh lớp "${classInfo.name}" thành công. Có ${students.length} học sinh.`
+          : `Lớp "${classInfo.name}" hiện chưa có học sinh.`,
 
-      class: classRows[0],
+      data: {
+        class: classInfo,
 
-      total: students.length,
+        students,
+
+        total: students.length,
+      },
     });
   } catch (error) {
     // =====================================================
-    // ERROR
+    // ERROR LOG
     // =====================================================
 
     console.error("");
@@ -1457,19 +1473,24 @@ exports.getStudentsByClass = async (req, res) => {
     console.error(
       "============================================================",
     );
-
-    console.error("              GET STUDENTS BY CLASS ERROR");
-
+    console.error("            GET STUDENTS BY CLASS ERROR");
     console.error(
       "============================================================",
     );
 
     console.error("ERROR:", error);
 
+    // =====================================================
+    // SERVER ERROR
+    // =====================================================
+
     return res.status(500).json({
       success: false,
 
-      message: "Không thể lấy học sinh trong lớp",
+      message:
+        "Không thể lấy danh sách học sinh của lớp. Vui lòng thử lại sau.",
+
+      data: null,
 
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });

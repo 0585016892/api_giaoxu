@@ -8,7 +8,7 @@ const { writeLog } = require("../utils/activityChurchLogger");
 const ALLOWED_STATUS = ["studying", "completed", "transferred", "dropped"];
 
 // =====================================================
-// DEBUG / REQUEST ID
+// REQUEST ID
 // =====================================================
 
 const createRequestId = (prefix = "REQ") => {
@@ -54,6 +54,97 @@ const safeRollback = async (connection) => {
   }
 };
 
+// =====================================================
+// AVATAR URL
+// =====================================================
+
+const getApiPublicUrl = () => {
+  return (
+    process.env.API_PUBLIC_URL ||
+    process.env.BACKEND_URL ||
+    process.env.BASE_URL ||
+    "http://localhost:5000"
+  ).replace(/\/+$/, "");
+};
+
+const getUploadsPath = () => {
+  return (process.env.UPLOADS_PATH || "/uploads")
+    .replace(/^\/?/, "/")
+    .replace(/\/+$/, "");
+};
+
+const normalizeAvatarUrl = (avatar) => {
+  if (!avatar) {
+    return null;
+  }
+
+  let value = String(avatar).trim();
+
+  if (!value) {
+    return null;
+  }
+
+  // URL đầy đủ
+  if (/^https?:\/\//i.test(value)) {
+    return value;
+  }
+
+  // Data URL
+  if (value.startsWith("data:")) {
+    return value;
+  }
+
+  const baseUrl = getApiPublicUrl();
+  const uploadsPath = getUploadsPath();
+
+  // Chuẩn hóa slash
+  value = value.replace(/^\/+/, "");
+
+  // Nếu DB đã lưu uploads/...
+  if (value.toLowerCase().startsWith("uploads/")) {
+    value = value.substring("uploads/".length);
+  }
+
+  // Nếu DB lưu đường dẫn có /uploads/...
+  if (
+    value
+      .toLowerCase()
+      .startsWith(uploadsPath.replace(/^\/+/, "").toLowerCase() + "/")
+  ) {
+    value = value.substring(uploadsPath.replace(/^\/+/, "").length + 1);
+  }
+
+  return `${baseUrl}${uploadsPath}/${value}`;
+};
+
+// =====================================================
+// ADD AVATAR URL TO STUDENT
+// =====================================================
+
+const formatStudent = (student) => {
+  if (!student) {
+    return null;
+  }
+
+  return {
+    ...student,
+
+    avatar_url: normalizeAvatarUrl(student.avatar),
+  };
+};
+
+// =====================================================
+// FORMAT STUDENTS
+// =====================================================
+
+const formatStudents = (students = []) => {
+  return students.map(formatStudent);
+};
+
+// =====================================================
+// SERVER ERROR
+// =====================================================
+
 const sendServerError = (res, requestId, error, title) => {
   console.error("");
   console.error(
@@ -88,13 +179,7 @@ const getClassById = async (connection, classId, churchId) => {
   const [rows] = await connection.query(
     `
       SELECT
-        c.id,
-        c.name,
-        c.code,
-        c.category,
-        c.status,
-        c.academic_year,
-        c.church_id
+        c.*
       FROM classes c
       WHERE c.id = ?
         AND c.church_id = ?
@@ -114,18 +199,7 @@ const getStudentById = async (connection, studentId, churchId) => {
   const [rows] = await connection.query(
     `
       SELECT
-        s.id,
-        s.code,
-        s.name,
-        s.gender,
-        s.date_of_birth,
-        s.phone,
-        s.email,
-        s.address,
-        s.parish,
-        s.avatar,
-        s.status,
-        s.church_id
+        s.*
       FROM students s
       WHERE s.id = ?
         AND s.church_id = ?
@@ -134,7 +208,7 @@ const getStudentById = async (connection, studentId, churchId) => {
     [studentId, churchId],
   );
 
-  return rows[0] || null;
+  return formatStudent(rows[0] || null);
 };
 
 // =====================================================
@@ -145,12 +219,7 @@ const getSchedulesByClassId = async (connection, classId, churchId) => {
   const [rows] = await connection.query(
     `
       SELECT
-        cs.id,
-        cs.class_id,
-        cs.day_of_week,
-        cs.start_time,
-        cs.end_time,
-        cs.room
+        cs.*
       FROM class_schedules cs
 
       INNER JOIN classes c
@@ -180,7 +249,7 @@ const getSchedulesByClassId = async (connection, classId, churchId) => {
 };
 
 // =====================================================
-// GET CLASS-STUDENT RELATION
+// GET CLASS STUDENT RELATION
 // =====================================================
 
 const getClassStudentRelation = async (
@@ -198,12 +267,6 @@ const getClassStudentRelation = async (
         cs.status,
         cs.joined_at,
         cs.left_at,
-
-        s.code AS student_code,
-        s.name AS student_name,
-        s.gender AS student_gender,
-        s.date_of_birth AS student_date_of_birth,
-        s.avatar AS student_avatar,
 
         c.name AS class_name,
         c.code AS class_code,
@@ -280,10 +343,7 @@ const getStudentRelations = async (connection, studentId, churchId) => {
 };
 
 // =====================================================
-// GET ACTIVE STUDENT RELATION
-//
-// QUY TẮC:
-// Một học sinh chỉ được có 1 quan hệ STUDYING.
+// GET ACTIVE RELATION
 // =====================================================
 
 const getActiveStudentRelation = async (
@@ -313,7 +373,8 @@ const getActiveStudentRelation = async (
     INNER JOIN students s
       ON s.id = cs.student_id
 
-    WHERE cs.student_id = ?
+    WHERE
+      cs.student_id = ?
       AND cs.status = 'studying'
       AND cs.left_at IS NULL
       AND c.church_id = ?
@@ -342,9 +403,6 @@ const getActiveStudentRelation = async (
 
 // =====================================================
 // GET ALL ACTIVE RELATIONS
-//
-// Dùng để phát hiện dữ liệu bẩn:
-// 1 student đang studying nhiều class.
 // =====================================================
 
 const getAllActiveStudentRelations = async (
@@ -374,14 +432,14 @@ const getAllActiveStudentRelations = async (
       INNER JOIN students s
         ON s.id = cs.student_id
 
-      WHERE cs.student_id = ?
+      WHERE
+        cs.student_id = ?
         AND cs.status = 'studying'
         AND cs.left_at IS NULL
         AND c.church_id = ?
         AND s.church_id = ?
 
-      ORDER BY
-        cs.id DESC
+      ORDER BY cs.id DESC
     `,
     [studentId, churchId, churchId],
   );
@@ -399,29 +457,9 @@ exports.getStudentsByClass = async (req, res) => {
   let connection;
 
   try {
-    /*
-     * QUAN TRỌNG:
-     *
-     * Route phải là:
-     * GET /class-students/class/:classId
-     *
-     * Và phải dùng req.params.classId
-     */
     const classId = toPositiveInt(req.params.classId);
 
     const churchId = toPositiveInt(getChurchId(req));
-
-    console.log("");
-    console.log(
-      "================================================================",
-    );
-    console.log(`📚 [${requestId}] GET STUDENTS BY CLASS`);
-    console.log(
-      "================================================================",
-    );
-    console.log("RAW PARAMS:", req.params);
-    console.log("CLASS ID:", classId);
-    console.log("CHURCH ID:", churchId);
 
     if (!classId) {
       return res.status(400).json({
@@ -441,6 +479,10 @@ exports.getStudentsByClass = async (req, res) => {
 
     connection = await db.getConnection();
 
+    // ================================
+    // LẤY LỚP
+    // ================================
+
     const classInfo = await getClassById(connection, classId, churchId);
 
     if (!classInfo) {
@@ -451,102 +493,105 @@ exports.getStudentsByClass = async (req, res) => {
       });
     }
 
+    // ================================
+    // LẤY LỊCH HỌC
+    // ================================
+
     const schedules = await getSchedulesByClassId(
       connection,
       classId,
       churchId,
     );
 
-    /*
-     * CHỈ LẤY:
-     *
-     * class_students.class_id = classId
-     *
-     * Không lấy theo academic_year.
-     * Không lấy toàn bộ students của giáo xứ.
-     */
-    const [students] = await connection.query(
+    // ================================
+    // LẤY FULL HỌC SINH
+    // ================================
+
+    const [rows] = await connection.query(
       `
-        SELECT
-          cs.id AS class_student_id,
-          cs.class_id,
-          cs.student_id,
+          SELECT
+            s.*,
 
-          cs.status AS enrollment_status,
-          cs.joined_at,
-          cs.left_at,
+            -- ==========================
+            -- QUAN HỆ LỚP
+            -- ==========================
 
-          s.id,
-          s.code,
-          s.name,
-          s.gender,
-          s.date_of_birth,
-          s.phone,
-          s.email,
-          s.address,
-          s.parish,
-          s.avatar,
-          s.status AS student_status,
+            cs.id AS class_student_id,
+            cs.class_id,
+            cs.student_id,
 
-          c.name AS class_name,
-          c.code AS class_code,
-          c.category AS class_category,
-          c.status AS class_status,
-          c.academic_year
+            cs.status AS enrollment_status,
+            cs.joined_at,
+            cs.left_at,
 
-        FROM class_students cs
+            -- ==========================
+            -- THÔNG TIN LỚP
+            -- ==========================
 
-        INNER JOIN students s
-          ON s.id = cs.student_id
+            c.id AS current_class_id,
+            c.name AS class_name,
+            c.code AS class_code,
+            c.category AS class_category,
+            c.status AS class_status,
+            c.academic_year AS class_academic_year
 
-        INNER JOIN classes c
-          ON c.id = cs.class_id
+          FROM class_students cs
 
-        WHERE
-          cs.class_id = ?
-          AND c.id = ?
-          AND c.church_id = ?
-          AND s.church_id = ?
+          INNER JOIN students s
+            ON s.id = cs.student_id
 
-        ORDER BY
-          CASE cs.status
-            WHEN 'studying' THEN 1
-            WHEN 'completed' THEN 2
-            WHEN 'transferred' THEN 3
-            WHEN 'dropped' THEN 4
-            ELSE 5
-          END,
-          s.name ASC,
-          s.id ASC
-      `,
+          INNER JOIN classes c
+            ON c.id = cs.class_id
+
+          WHERE
+            cs.class_id = ?
+            AND c.id = ?
+            AND c.church_id = ?
+            AND s.church_id = ?
+
+          ORDER BY
+            CASE cs.status
+              WHEN 'studying' THEN 1
+              WHEN 'completed' THEN 2
+              WHEN 'transferred' THEN 3
+              WHEN 'dropped' THEN 4
+              ELSE 5
+            END,
+
+            s.name ASC,
+            s.id ASC
+        `,
       [classId, classId, churchId, churchId],
     );
 
+    const students = formatStudents(rows);
+
+    console.log("");
+    console.log("==========================================================");
+    console.log(`📚 [${requestId}] GET STUDENTS BY CLASS`);
+    console.log("==========================================================");
+    console.log("CLASS ID:", classId);
     console.log("CLASS:", classInfo.name);
     console.log("ACADEMIC YEAR:", classInfo.academic_year);
     console.log("STUDENT COUNT:", students.length);
-
-    console.log(
-      "STUDENTS:",
-      students.map((student) => ({
-        id: student.student_id,
-        name: student.name,
-        class_id: student.class_id,
-      })),
-    );
+    console.log("==========================================================");
 
     return res.status(200).json({
       success: true,
+
       message:
         students.length > 0
           ? `Lấy danh sách học sinh lớp "${classInfo.name}" thành công`
           : `Lớp "${classInfo.name}" hiện chưa có học sinh`,
+
       request_id: requestId,
 
       data: {
         class: classInfo,
         schedules,
+
         students,
+
         total: students.length,
       },
     });
@@ -630,6 +675,7 @@ exports.getClassesByStudent = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Lấy danh sách lớp của học sinh thành công",
+
       request_id: requestId,
 
       data: {
@@ -654,11 +700,6 @@ exports.getClassesByStudent = async (req, res) => {
 
 // =====================================================
 // 3. ADD STUDENT TO CLASS
-//
-// QUY TẮC MỚI:
-// - Một học sinh chỉ được có 1 lớp STUDYING.
-// - Nếu đang học lớp khác => KHÔNG INSERT.
-// - Phải dùng API CHANGE CLASS để chuyển lớp.
 // =====================================================
 
 exports.addStudentToClass = async (req, res) => {
@@ -674,13 +715,6 @@ exports.addStudentToClass = async (req, res) => {
     const churchId = toPositiveInt(getChurchId(req));
 
     const status = req.body.status || "studying";
-
-    console.log("");
-    console.log(`➕ [${requestId}] ADD STUDENT TO CLASS`);
-    console.log("CLASS ID:", classId);
-    console.log("STUDENT ID:", studentId);
-    console.log("CHURCH ID:", churchId);
-    console.log("STATUS:", status);
 
     if (!classId || !studentId) {
       return res.status(400).json({
@@ -742,10 +776,7 @@ exports.addStudentToClass = async (req, res) => {
       churchId,
     );
 
-    // ---------------------------------------------------
-    // ĐÃ CÓ QUAN HỆ VỚI LỚP NÀY
-    // ---------------------------------------------------
-
+    // ĐÃ CÓ QUAN HỆ VỚI LỚP
     if (existingRelation) {
       if (
         existingRelation.status === "studying" &&
@@ -761,10 +792,6 @@ exports.addStudentToClass = async (req, res) => {
         });
       }
 
-      /*
-       * Chỉ cho phép khôi phục quan hệ cũ nếu
-       * học sinh không đang học lớp khác.
-       */
       if (status === "studying") {
         const activeOther = await getActiveStudentRelation(
           connection,
@@ -819,10 +846,7 @@ exports.addStudentToClass = async (req, res) => {
       });
     }
 
-    // ---------------------------------------------------
-    // STUDYING => KIỂM TRA LỚP KHÁC
-    // ---------------------------------------------------
-
+    // KIỂM TRA LỚP ĐANG HỌC
     if (status === "studying") {
       const activeRelation = await getActiveStudentRelation(
         connection,
@@ -842,10 +866,6 @@ exports.addStudentToClass = async (req, res) => {
         });
       }
     }
-
-    // ---------------------------------------------------
-    // INSERT
-    // ---------------------------------------------------
 
     const joinedAt = status === "studying" ? new Date() : null;
 
@@ -884,6 +904,7 @@ exports.addStudentToClass = async (req, res) => {
         class_id: classId,
         student_id: studentId,
         status,
+        student,
       },
     });
   } catch (error) {
@@ -898,7 +919,7 @@ exports.addStudentToClass = async (req, res) => {
 };
 
 // =====================================================
-// 4. UPDATE CLASS-STUDENT
+// 4. UPDATE CLASS STUDENT
 // =====================================================
 
 exports.updateClassStudent = async (req, res) => {
@@ -963,10 +984,6 @@ exports.updateClassStudent = async (req, res) => {
         request_id: requestId,
       });
     }
-
-    // ---------------------------------------------------
-    // CHUYỂN SANG STUDYING
-    // ---------------------------------------------------
 
     if (
       nextStatus === "studying" &&
@@ -1055,13 +1072,6 @@ exports.updateClassStudent = async (req, res) => {
 
     await connection.commit();
 
-    await safeWriteLog({
-      church_id: churchId,
-      action: "UPDATE_CLASS_STUDENT",
-      description: `Cập nhật học sinh ${relation.student_name} trong lớp ${relation.class_name}`,
-      user_id: req.user?.id || null,
-    });
-
     return res.status(200).json({
       success: true,
       message: "Cập nhật học sinh thành công",
@@ -1079,11 +1089,7 @@ exports.updateClassStudent = async (req, res) => {
 };
 
 // =====================================================
-// 5. CHANGE ONE STUDENT TO ANOTHER CLASS
-//
-// QUAN TRỌNG:
-// Chuyển lớp = UPDATE dòng hiện tại.
-// KHÔNG INSERT dòng mới.
+// 5. CHANGE ONE STUDENT CLASS
 // =====================================================
 
 exports.changeClassStudent = async (req, res) => {
@@ -1096,11 +1102,6 @@ exports.changeClassStudent = async (req, res) => {
 
     const studentId = toPositiveInt(req.params.studentId);
 
-    /*
-     * Hỗ trợ cả:
-     * new_class_id
-     * newClassId
-     */
     const newClassId = toPositiveInt(
       req.body.new_class_id ?? req.body.newClassId,
     );
@@ -1137,6 +1138,8 @@ exports.changeClassStudent = async (req, res) => {
 
     const oldClass = await getClassById(connection, oldClassId, churchId);
 
+    const newClass = await getClassById(connection, newClassId, churchId);
+
     if (!oldClass) {
       await safeRollback(connection);
 
@@ -1146,8 +1149,6 @@ exports.changeClassStudent = async (req, res) => {
         request_id: requestId,
       });
     }
-
-    const newClass = await getClassById(connection, newClassId, churchId);
 
     if (!newClass) {
       await safeRollback(connection);
@@ -1188,12 +1189,6 @@ exports.changeClassStudent = async (req, res) => {
       });
     }
 
-    /*
-     * Kiểm tra học sinh có đang nằm ở lớp khác
-     * ngoài oldClass không.
-     *
-     * Nếu có => dữ liệu hiện tại đã bị duplicate.
-     */
     const activeOther = await getActiveStudentRelation(
       connection,
       studentId,
@@ -1207,16 +1202,12 @@ exports.changeClassStudent = async (req, res) => {
       return res.status(409).json({
         success: false,
         code: "DUPLICATE_ACTIVE_CLASS",
-        message: `Học sinh đang đồng thời học lớp ${oldClass.name} và lớp ${activeOther.class_name}. Vui lòng xử lý dữ liệu trùng trước.`,
+        message: `Học sinh đang đồng thời học lớp ${oldClass.name} và lớp ${activeOther.class_name}`,
         data: activeOther,
         request_id: requestId,
       });
     }
 
-    /*
-     * Nếu lớp đích đã có quan hệ cũ
-     * thì không tạo thêm.
-     */
     const targetRelation = await getClassStudentRelation(
       connection,
       newClassId,
@@ -1236,11 +1227,6 @@ exports.changeClassStudent = async (req, res) => {
       });
     }
 
-    /*
-     * CHUYỂN LỚP:
-     *
-     * UPDATE dòng cũ.
-     */
     await connection.query(
       `
         UPDATE class_students
@@ -1269,6 +1255,7 @@ exports.changeClassStudent = async (req, res) => {
       request_id: requestId,
 
       data: {
+        student,
         student_id: studentId,
         old_class_id: oldClassId,
         new_class_id: newClassId,
@@ -1286,12 +1273,7 @@ exports.changeClassStudent = async (req, res) => {
 };
 
 // =====================================================
-// 6. CHANGE MULTIPLE STUDENTS TO CLASS
-//
-// QUY TẮC:
-// - Nếu học sinh đang ở lớp khác => UPDATE dòng đó.
-// - Không INSERT thêm dòng mới.
-// - Không để 1 học sinh có 2 lớp studying.
+// 6. CHANGE MULTIPLE STUDENTS
 // =====================================================
 
 exports.changeClassStudents = async (req, res) => {
@@ -1313,11 +1295,6 @@ exports.changeClassStudents = async (req, res) => {
     const studentIds = rawStudentIds.map(toPositiveInt).filter(Boolean);
 
     const uniqueStudentIds = [...new Set(studentIds)];
-
-    console.log("");
-    console.log(`🔄 [${requestId}] CHANGE MULTIPLE STUDENTS`);
-    console.log("TARGET CLASS:", classId);
-    console.log("STUDENT IDS:", uniqueStudentIds);
 
     if (!classId) {
       return res.status(400).json({
@@ -1363,10 +1340,7 @@ exports.changeClassStudents = async (req, res) => {
 
     const [students] = await connection.query(
       `
-          SELECT
-            id,
-            code,
-            name
+          SELECT *
           FROM students
           WHERE church_id = ?
             AND id IN (${placeholders})
@@ -1375,7 +1349,7 @@ exports.changeClassStudents = async (req, res) => {
     );
 
     const studentMap = new Map(
-      students.map((student) => [Number(student.id), student]),
+      students.map((student) => [Number(student.id), formatStudent(student)]),
     );
 
     const result = {
@@ -1398,9 +1372,6 @@ exports.changeClassStudents = async (req, res) => {
       }
 
       try {
-        /*
-         * 1. Kiểm tra target
-         */
         const targetRelation = await getClassStudentRelation(
           connection,
           classId,
@@ -1415,17 +1386,12 @@ exports.changeClassStudents = async (req, res) => {
           ) {
             result.alreadyInTarget.push({
               student_id: studentId,
-              student_name: student.name,
+              student,
             });
 
             continue;
           }
 
-          /*
-           * Có quan hệ cũ ở target.
-           * Trước khi khôi phục phải đảm bảo
-           * không có lớp studying khác.
-           */
           const activeOther = await getActiveStudentRelation(
             connection,
             studentId,
@@ -1436,7 +1402,7 @@ exports.changeClassStudents = async (req, res) => {
           if (activeOther) {
             result.failed.push({
               student_id: studentId,
-              student_name: student.name,
+              student,
               reason: "STUDENT_ALREADY_STUDYING",
               class_id: activeOther.class_id,
               class_name: activeOther.class_name,
@@ -1459,16 +1425,13 @@ exports.changeClassStudents = async (req, res) => {
 
           result.success.push({
             student_id: studentId,
-            student_name: student.name,
+            student,
             action: "reactivated",
           });
 
           continue;
         }
 
-        /*
-         * 2. Tìm lớp đang học.
-         */
         const activeRelation = await getActiveStudentRelation(
           connection,
           studentId,
@@ -1476,10 +1439,6 @@ exports.changeClassStudents = async (req, res) => {
         );
 
         if (activeRelation) {
-          /*
-           * MOVE:
-           * UPDATE dòng cũ.
-           */
           await connection.query(
             `
               UPDATE class_students
@@ -1495,7 +1454,7 @@ exports.changeClassStudents = async (req, res) => {
 
           result.success.push({
             student_id: studentId,
-            student_name: student.name,
+            student,
             action: "moved",
             old_class_id: activeRelation.class_id,
             old_class_name: activeRelation.class_name,
@@ -1504,9 +1463,6 @@ exports.changeClassStudents = async (req, res) => {
           continue;
         }
 
-        /*
-         * 3. Không có lớp đang học => INSERT.
-         */
         await connection.query(
           `
             INSERT INTO class_students (
@@ -1516,14 +1472,20 @@ exports.changeClassStudents = async (req, res) => {
               joined_at,
               left_at
             )
-            VALUES (?, ?, 'studying', ?, NULL)
+            VALUES (
+              ?,
+              ?,
+              'studying',
+              ?,
+              NULL
+            )
           `,
           [classId, studentId, new Date()],
         );
 
         result.success.push({
           student_id: studentId,
-          student_name: student.name,
+          student,
           action: "inserted",
         });
       } catch (studentError) {
@@ -1531,7 +1493,7 @@ exports.changeClassStudents = async (req, res) => {
 
         result.failed.push({
           student_id: studentId,
-          student_name: student.name,
+          student,
           reason: studentError.message,
         });
       }
@@ -1635,9 +1597,9 @@ exports.removeStudentFromClass = async (req, res) => {
 
     await connection.query(
       `
-        DELETE FROM class_students
-        WHERE id = ?
-      `,
+          DELETE FROM class_students
+          WHERE id = ?
+        `,
       [relation.id],
     );
 
@@ -1679,12 +1641,6 @@ exports.removeStudentFromClass = async (req, res) => {
 
 // =====================================================
 // 8. CLEAN DUPLICATE ACTIVE CLASSES
-//
-// DÙNG 1 LẦN để dọn dữ liệu cũ.
-//
-// Nếu 1 học sinh đang studying ở nhiều lớp,
-// giữ lại relation mới nhất (id lớn nhất),
-// các relation studying cũ sẽ chuyển thành transferred.
 // =====================================================
 
 exports.cleanupDuplicateActiveClasses = async (req, res) => {
@@ -1707,32 +1663,30 @@ exports.cleanupDuplicateActiveClasses = async (req, res) => {
 
     await connection.beginTransaction();
 
-    /*
-     * Tìm tất cả học sinh đang có nhiều hơn
-     * 1 lớp studying.
-     */
     const [duplicates] = await connection.query(
       `
-          SELECT
-            cs.student_id,
-            COUNT(*) AS total_active
-          FROM class_students cs
+            SELECT
+              cs.student_id,
+              COUNT(*) AS total_active
 
-          INNER JOIN classes c
-            ON c.id = cs.class_id
+            FROM class_students cs
 
-          INNER JOIN students s
-            ON s.id = cs.student_id
+            INNER JOIN classes c
+              ON c.id = cs.class_id
 
-          WHERE cs.status = 'studying'
-            AND cs.left_at IS NULL
-            AND c.church_id = ?
-            AND s.church_id = ?
+            INNER JOIN students s
+              ON s.id = cs.student_id
 
-          GROUP BY cs.student_id
+            WHERE
+              cs.status = 'studying'
+              AND cs.left_at IS NULL
+              AND c.church_id = ?
+              AND s.church_id = ?
 
-          HAVING COUNT(*) > 1
-        `,
+            GROUP BY cs.student_id
+
+            HAVING COUNT(*) > 1
+          `,
       [churchId, churchId],
     );
 
@@ -1749,9 +1703,6 @@ exports.cleanupDuplicateActiveClasses = async (req, res) => {
         continue;
       }
 
-      /*
-       * Giữ relation mới nhất.
-       */
       const keep = activeRelations[0];
 
       const removeIds = activeRelations.slice(1).map((relation) => relation.id);
@@ -1761,23 +1712,25 @@ exports.cleanupDuplicateActiveClasses = async (req, res) => {
 
         await connection.query(
           `
-            UPDATE class_students
-            SET
-              status = 'transferred',
-              left_at = ?
-            WHERE id IN (${placeholders})
-          `,
+              UPDATE class_students
+              SET
+                status = 'transferred',
+                left_at = ?
+              WHERE id IN (${placeholders})
+            `,
           [new Date(), ...removeIds],
         );
       }
 
       cleaned.push({
         student_id: item.student_id,
+
         kept: {
           id: keep.id,
           class_id: keep.class_id,
           class_name: keep.class_name,
         },
+
         cleaned: activeRelations.slice(1).map((relation) => ({
           id: relation.id,
           class_id: relation.class_id,
@@ -1791,10 +1744,12 @@ exports.cleanupDuplicateActiveClasses = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Đã dọn dữ liệu học sinh bị trùng lớp",
+
       request_id: requestId,
 
       data: {
         duplicate_students: duplicates.length,
+
         cleaned,
       },
     });

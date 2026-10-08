@@ -1,27 +1,58 @@
 const db = require("../config/db");
+
 const { writeLog } = require("../utils/activityLogger");
 
-// =========================================================
-// HELPER
-// =========================================================
+const { getChurchId, getAdminId } = require("../utils/authContext");
 
-const getChurchId = (req) => {
-  return req.user?.church_id;
-};
+// ============================================================
+// CLASSES CONTROLLER
+// ============================================================
+//
+// TABLE:
+//
+// classes
+// class_schedules
+// class_students
+// catechists
+// catechist_classes
+//
+// ============================================================
+//
+// API:
+//
+// GET    /api/classes
+// GET    /api/classes/:id
+// GET    /api/classes/teacher-class
+// GET    /api/classes/schedules
+//
+// POST   /api/classes
+// PUT    /api/classes/:id
+// DELETE /api/classes/:id
+//
+// POST   /api/classes/:id/schedules
+// PUT    /api/classes/:id/schedules/:scheduleId
+// DELETE /api/classes/:id/schedules/:scheduleId
+//
+// ============================================================
 
-// =========================================================
+// ============================================================
+// CONSTANT
+// ============================================================
+
+const DEFAULT_CATEGORY = "Giáo lý Thiếu Nhi";
+
+const VALID_CLASS_STATUS = ["active", "completed", "cancelled"];
+
+// ============================================================
 // VALIDATE ACADEMIC YEAR
-// Ví dụ hợp lệ:
-// 2025-2026
-// 2026-2027
-// =========================================================
+// ============================================================
 
-const validateAcademicYear = (academic_year) => {
-  if (!academic_year) {
+const validateAcademicYear = (academicYear) => {
+  if (!academicYear) {
     return "Năm học là bắt buộc.";
   }
 
-  const value = String(academic_year).trim();
+  const value = String(academicYear).trim();
 
   if (!/^\d{4}-\d{4}$/.test(value)) {
     return "Năm học không hợp lệ. Ví dụ: 2026-2027.";
@@ -30,15 +61,73 @@ const validateAcademicYear = (academic_year) => {
   const [startYear, endYear] = value.split("-").map(Number);
 
   if (endYear !== startYear + 1) {
-    return "Năm học không hợp lệ. Năm kết thúc phải lớn hơn năm bắt đầu 1 năm.";
+    return (
+      "Năm học không hợp lệ. " + "Năm kết thúc phải lớn hơn năm bắt đầu 1 năm."
+    );
   }
 
   return null;
 };
 
-// =========================================================
+// ============================================================
+// NORMALIZE ACADEMIC YEAR
+// ============================================================
+
+const normalizeAcademicYear = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+
+  const error = validateAcademicYear(normalized);
+
+  if (error) {
+    return null;
+  }
+
+  return normalized;
+};
+
+// ============================================================
+// VALIDATE LEVEL ORDER
+// ============================================================
+
+const validateLevelOrder = (value) => {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const levelOrder = Number(value);
+
+  if (!Number.isInteger(levelOrder) || levelOrder < 1) {
+    return "level_order phải là số nguyên lớn hơn hoặc bằng 1.";
+  }
+
+  return null;
+};
+
+// ============================================================
+// NORMALIZE LEVEL ORDER
+// ============================================================
+
+const normalizeLevelOrder = (value) => {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const levelOrder = Number(value);
+
+  if (!Number.isInteger(levelOrder) || levelOrder < 1) {
+    return null;
+  }
+
+  return levelOrder;
+};
+
+// ============================================================
 // VALIDATE SCHEDULE
-// =========================================================
+// ============================================================
 
 const validateSchedule = (schedule) => {
   const { day_of_week, start_time, end_time } = schedule || {};
@@ -46,213 +135,289 @@ const validateSchedule = (schedule) => {
   const day = Number(day_of_week);
 
   if (!Number.isInteger(day) || day < 1 || day > 7) {
-    return "Thứ trong tuần không hợp lệ. Giá trị phải từ 1 đến 7.";
+    return "Thứ trong tuần không hợp lệ. " + "Giá trị phải từ 1 đến 7.";
   }
 
   if (!start_time || !end_time) {
-    return "Giờ bắt đầu và giờ kết thúc là bắt buộc.";
+    return "Giờ bắt đầu và giờ kết thúc " + "là bắt buộc.";
   }
 
-  if (start_time >= end_time) {
+  if (String(start_time) >= String(end_time)) {
     return "Giờ kết thúc phải lớn hơn giờ bắt đầu.";
   }
 
   return null;
 };
 
-// =========================================================
+// ============================================================
 // FORMAT SCHEDULE
-// =========================================================
+// ============================================================
 
 const formatSchedule = (item) => ({
   id: Number(item.id),
+
   class_id: Number(item.class_id),
+
   day_of_week: Number(item.day_of_week),
+
   start_time: item.start_time,
+
   end_time: item.end_time,
+
   room: item.room || null,
+
   created_at: item.created_at,
+
   updated_at: item.updated_at,
 });
 
-// =========================================================
+// ============================================================
 // GET SCHEDULES BY CLASS IDS
-// =========================================================
+// ============================================================
 
-const getSchedulesByClassIds = async (classIds) => {
-  if (!classIds.length) {
+const getSchedulesByClassIds = async (classIds, connection = db) => {
+  if (!Array.isArray(classIds) || classIds.length === 0) {
     return [];
   }
 
-  const placeholders = classIds.map(() => "?").join(",");
+  const ids = [
+    ...new Set(
+      classIds.map(Number).filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  ];
 
-  const [rows] = await db.query(
+  if (ids.length === 0) {
+    return [];
+  }
+
+  const placeholders = ids.map(() => "?").join(",");
+
+  const [rows] = await connection.query(
     `
-    SELECT
-      id,
-      class_id,
-      day_of_week,
-      start_time,
-      end_time,
-      room,
-      created_at,
-      updated_at
-    FROM class_schedules
-    WHERE class_id IN (${placeholders})
-    ORDER BY
-      class_id ASC,
-      day_of_week ASC,
-      start_time ASC
-    `,
-    classIds,
+        SELECT
+          id,
+          class_id,
+          day_of_week,
+          start_time,
+          end_time,
+          room,
+          created_at,
+          updated_at
+
+        FROM class_schedules
+
+        WHERE class_id IN (${placeholders})
+
+        ORDER BY
+          class_id ASC,
+          day_of_week ASC,
+          start_time ASC,
+          id ASC
+      `,
+    ids,
   );
 
   return rows.map(formatSchedule);
 };
 
-// =========================================================
-// LẤY DANH SÁCH LỚP
+// ============================================================
+// GET CLASS BASE DATA
+// ============================================================
+
+const getClassByIdInternal = async (classId, churchId, connection = db) => {
+  const [rows] = await connection.query(
+    `
+        SELECT
+          c.id,
+          c.church_id,
+          c.name,
+          c.code,
+          c.academic_year,
+          c.category,
+          c.level_order,
+          c.catechist_id,
+          c.description,
+          c.start_date,
+          c.end_date,
+          c.status,
+          c.created_at,
+          c.updated_at,
+
+          (
+            SELECT COUNT(*)
+            FROM class_students cs
+            WHERE cs.class_id = c.id
+              AND cs.status = 'studying'
+          ) AS studentsCount
+
+        FROM classes c
+
+        WHERE c.id = ?
+          AND c.church_id = ?
+
+        LIMIT 1
+      `,
+    [classId, churchId],
+  );
+
+  if (!rows.length) {
+    return null;
+  }
+
+  return rows[0];
+};
+
+// ============================================================
+// GET CLASS CATECHISTS
+// ============================================================
+
+const getClassCatechists = async (classId, churchId, connection = db) => {
+  const [rows] = await connection.query(
+    `
+        SELECT
+          cc.id AS assignment_id,
+
+          cc.catechist_id,
+          cc.class_id,
+
+          cc.role,
+          cc.assigned_date,
+          cc.notes,
+
+          ct.catechist_code,
+          ct.holy_name,
+          ct.full_name,
+          ct.gender,
+          ct.phone,
+          ct.email,
+          ct.level,
+          ct.status
+
+        FROM catechist_classes cc
+
+        INNER JOIN catechists ct
+          ON ct.id = cc.catechist_id
+         AND ct.church_id = ?
+
+        WHERE cc.class_id = ?
+
+        ORDER BY
+          cc.role ASC,
+          ct.full_name ASC
+      `,
+    [churchId, classId],
+  );
+
+  return rows;
+};
+
+// ============================================================
+// GET CLASS DETAIL
+// ============================================================
+
+const getFullClassData = async (classId, churchId, connection = db) => {
+  const classData = await getClassByIdInternal(classId, churchId, connection);
+
+  if (!classData) {
+    return null;
+  }
+
+  const catechists = await getClassCatechists(classId, churchId, connection);
+
+  const schedules = await getSchedulesByClassIds([classId], connection);
+
+  return {
+    ...classData,
+
+    id: Number(classData.id),
+
+    church_id: Number(classData.church_id),
+
+    catechist_id: classData.catechist_id
+      ? Number(classData.catechist_id)
+      : null,
+
+    level_order:
+      classData.level_order !== null && classData.level_order !== undefined
+        ? Number(classData.level_order)
+        : null,
+
+    studentsCount: Number(classData.studentsCount || 0),
+
+    catechists,
+
+    schedules,
+  };
+};
+
+// ============================================================
+// 1. GET CLASSES
+// ============================================================
 //
 // GET /api/classes
-// =========================================================
+//
+// ============================================================
 
 exports.getClasses = async (req, res) => {
   console.log("");
   console.log("============================================================");
-  console.log("                  🔥 CALL API GET CLASSES");
+  console.log("                    GET CLASSES");
   console.log("============================================================");
 
   try {
-    const church_id = getChurchId(req);
+    const churchId = getChurchId(req);
 
-    console.log("CHURCH ID:", church_id);
+    console.log("CHURCH ID:", churchId);
 
-    if (!church_id) {
+    if (!churchId) {
       return res.status(403).json({
         success: false,
-        message: "Tài khoản chưa được liên kết với giáo xứ",
+        message: "Tài khoản chưa được liên kết với giáo xứ.",
+        code: "CHURCH_ID_REQUIRED",
       });
     }
 
-    // =====================================================
-    // 1. LẤY DANH SÁCH LỚP
-    // =====================================================
+    const [rows] = await db.query(
+      `
+          SELECT
+            c.id,
+            c.church_id,
+            c.name,
+            c.code,
+            c.academic_year,
+            c.category,
+            c.level_order,
+            c.catechist_id,
+            c.description,
+            c.start_date,
+            c.end_date,
+            c.status,
+            c.created_at,
+            c.updated_at,
 
-    const sql = `
-      SELECT
-        c.id,
-        c.church_id,
-        c.name,
-        c.code,
-        c.academic_year,
-        c.category,
-        c.catechist_id,
-        c.description,
-        c.start_date,
-        c.end_date,
-        c.status,
-        c.created_at,
-        c.updated_at,
+            (
+              SELECT COUNT(*)
+              FROM class_students cs
+              WHERE cs.class_id = c.id
+                AND cs.status = 'studying'
+            ) AS studentsCount
 
-        (
-          SELECT COUNT(*)
-          FROM class_students cs
-          WHERE cs.class_id = c.id
-            AND cs.status = 'studying'
-        ) AS studentsCount,
+          FROM classes c
 
-        GROUP_CONCAT(
-          DISTINCT ct.id
-          ORDER BY ct.full_name
-          SEPARATOR ','
-        ) AS catechist_ids,
+          WHERE c.church_id = ?
 
-        GROUP_CONCAT(
-          DISTINCT ct.catechist_code
-          ORDER BY ct.full_name
-          SEPARATOR ', '
-        ) AS catechist_codes,
-
-        GROUP_CONCAT(
-          DISTINCT CONCAT(
-            IFNULL(ct.holy_name, ''),
-            CASE
-              WHEN ct.holy_name IS NOT NULL
-                AND ct.holy_name != ''
-              THEN ' '
-              ELSE ''
-            END,
-            ct.full_name
-          )
-          ORDER BY ct.full_name
-          SEPARATOR ', '
-        ) AS catechist_names,
-
-        GROUP_CONCAT(
-          DISTINCT cc.role
-          ORDER BY ct.full_name
-          SEPARATOR ', '
-        ) AS catechist_roles,
-
-        GROUP_CONCAT(
-          DISTINCT DATE_FORMAT(
-            cc.assigned_date,
-            '%Y-%m-%d'
-          )
-          ORDER BY ct.full_name
-          SEPARATOR ', '
-        ) AS assigned_dates
-
-      FROM classes c
-
-      LEFT JOIN catechist_classes cc
-        ON cc.class_id = c.id
-
-      LEFT JOIN catechists ct
-        ON ct.id = cc.catechist_id
-        AND ct.church_id = c.church_id
-
-      WHERE c.church_id = ?
-
-      GROUP BY
-        c.id,
-        c.church_id,
-        c.name,
-        c.code,
-        c.academic_year,
-        c.category,
-        c.catechist_id,
-        c.description,
-        c.start_date,
-        c.end_date,
-        c.status,
-        c.created_at,
-        c.updated_at
-
-      ORDER BY
-        c.created_at DESC
-    `;
-
-    console.log("EXECUTE GET CLASSES SQL");
-
-    const [rows] = await db.query(sql, [church_id]);
-
-    console.log("CLASSES RAW COUNT:", rows.length);
-
-    // =====================================================
-    // 2. LẤY SCHEDULE
-    // =====================================================
+          ORDER BY
+            c.academic_year DESC,
+            c.level_order ASC,
+            c.name ASC,
+            c.id ASC
+        `,
+      [churchId],
+    );
 
     const classIds = rows.map((item) => Number(item.id));
 
     const schedules = await getSchedulesByClassIds(classIds);
-
-    console.log("CLASS IDS:", classIds);
-    console.log("SCHEDULE COUNT:", schedules.length);
-
-    // =====================================================
-    // 3. MAP SCHEDULE
-    // =====================================================
 
     const schedulesMap = {};
 
@@ -266,364 +431,285 @@ exports.getClasses = async (req, res) => {
       schedulesMap[classId].push(schedule);
     }
 
-    // =====================================================
-    // 4. FORMAT
-    // =====================================================
+    // ========================================================
+    // LOAD CATECHISTS
+    // ========================================================
 
-    const formattedRows = rows.map((item) => {
-      const catechistIds = item.catechist_ids
-        ? item.catechist_ids.split(",")
-        : [];
+    let catechists = [];
 
-      const catechistCodes = item.catechist_codes
-        ? item.catechist_codes.split(", ")
-        : [];
+    if (classIds.length > 0) {
+      const placeholders = classIds.map(() => "?").join(",");
 
-      const catechistNames = item.catechist_names
-        ? item.catechist_names.split(", ")
-        : [];
+      const [catechistRows] = await db.query(
+        `
+            SELECT
+              cc.id AS assignment_id,
+              cc.class_id,
+              cc.catechist_id,
+              cc.role,
+              cc.assigned_date,
+              cc.notes,
 
-      const catechistRoles = item.catechist_roles
-        ? item.catechist_roles.split(", ")
-        : [];
+              ct.catechist_code,
+              ct.holy_name,
+              ct.full_name
 
-      const assignedDates = item.assigned_dates
-        ? item.assigned_dates.split(", ")
-        : [];
+            FROM catechist_classes cc
 
-      const catechists = catechistIds.map((catechistId, index) => ({
-        id: Number(catechistId),
-        code: catechistCodes[index] || null,
-        full_name: catechistNames[index] || null,
-        role: catechistRoles[index] || null,
-        assigned_date: assignedDates[index] || null,
-      }));
+            INNER JOIN catechists ct
+              ON ct.id = cc.catechist_id
+             AND ct.church_id = ?
 
-      return {
-        id: Number(item.id),
-        church_id: Number(item.church_id),
+            WHERE cc.class_id IN (${placeholders})
 
-        name: item.name,
-        code: item.code,
+            ORDER BY
+              cc.class_id ASC,
+              cc.role ASC,
+              ct.full_name ASC
+          `,
+        [churchId, ...classIds],
+      );
 
-        academic_year: item.academic_year || null,
+      catechists = catechistRows;
+    }
 
-        category: item.category,
+    const catechistMap = {};
 
-        catechist_id: item.catechist_id ? Number(item.catechist_id) : null,
+    for (const item of catechists) {
+      const classId = Number(item.class_id);
 
-        description: item.description,
+      if (!catechistMap[classId]) {
+        catechistMap[classId] = [];
+      }
 
-        start_date: item.start_date,
-        end_date: item.end_date,
+      catechistMap[classId].push({
+        id: Number(item.catechist_id),
 
-        status: item.status,
+        assignment_id: Number(item.assignment_id),
 
-        created_at: item.created_at,
-        updated_at: item.updated_at,
+        code: item.catechist_code || null,
 
-        studentsCount: Number(item.studentsCount || 0),
+        holy_name: item.holy_name || null,
 
-        catechists,
+        full_name: item.full_name || null,
 
-        schedules: schedulesMap[Number(item.id)] || [],
-      };
-    });
+        role: item.role || null,
 
-    console.log("ACADEMIC YEARS:", [
-      ...new Set(
-        formattedRows.map((item) => item.academic_year).filter(Boolean),
-      ),
-    ]);
+        assigned_date: item.assigned_date || null,
 
-    console.log("FIRST CLASS:", formattedRows[0] || null);
+        notes: item.notes || null,
+      });
+    }
 
-    // =====================================================
-    // RESPONSE
-    // =====================================================
+    const data = rows.map((item) => ({
+      id: Number(item.id),
+
+      church_id: Number(item.church_id),
+
+      name: item.name,
+
+      code: item.code,
+
+      academic_year: item.academic_year || null,
+
+      category: item.category || DEFAULT_CATEGORY,
+
+      level_order:
+        item.level_order !== null && item.level_order !== undefined
+          ? Number(item.level_order)
+          : null,
+
+      catechist_id: item.catechist_id ? Number(item.catechist_id) : null,
+
+      description: item.description || null,
+
+      start_date: item.start_date || null,
+
+      end_date: item.end_date || null,
+
+      status: item.status || "active",
+
+      created_at: item.created_at,
+
+      updated_at: item.updated_at,
+
+      studentsCount: Number(item.studentsCount || 0),
+
+      catechists: catechistMap[Number(item.id)] || [],
+
+      schedules: schedulesMap[Number(item.id)] || [],
+    }));
+
+    console.log("CLASS COUNT:", data.length);
+
+    console.log("SCHEDULE COUNT:", schedules.length);
 
     return res.status(200).json({
       success: true,
-      church_id: Number(church_id),
-      data: formattedRows,
+
+      church_id: Number(churchId),
+
+      data,
     });
   } catch (error) {
     console.error("");
     console.error(
       "============================================================",
     );
-    console.error("                  ❌ GET CLASSES ERROR");
+    console.error("                 GET CLASSES ERROR");
     console.error(
       "============================================================",
     );
-    console.error(error);
+    console.error("MESSAGE:", error.message);
+    console.error("CODE:", error.code);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể lấy danh sách lớp học",
+      message: "Không thể lấy danh sách lớp học.",
       error: error.message,
     });
   }
 };
 
-// =========================================================
-// CHI TIẾT LỚP
+// ============================================================
+// 2. GET CLASS BY ID
+// ============================================================
 //
 // GET /api/classes/:id
-// =========================================================
+//
+// ============================================================
 
 exports.getClassById = async (req, res) => {
   try {
-    const { id } = req.params;
+    const classId = Number(req.params.id);
 
-    const classId = Number(id);
-    const church_id = getChurchId(req);
+    const churchId = getChurchId(req);
 
-    if (!church_id) {
+    if (!churchId) {
       return res.status(403).json({
         success: false,
-        message: "Tài khoản chưa được liên kết với giáo xứ",
+        message: "Tài khoản chưa được liên kết với giáo xứ.",
       });
     }
 
     if (!Number.isInteger(classId) || classId <= 0) {
       return res.status(400).json({
         success: false,
-        message: "ID lớp học không hợp lệ",
+        message: "ID lớp học không hợp lệ.",
       });
     }
 
-    // =====================================================
-    // 1. THÔNG TIN LỚP
-    // =====================================================
+    const data = await getFullClassData(classId, churchId);
 
-    const classSql = `
-      SELECT
-        c.*,
-
-        (
-          SELECT COUNT(*)
-          FROM class_students cs
-          WHERE cs.class_id = c.id
-            AND cs.status = 'studying'
-        ) AS studentsCount
-
-      FROM classes c
-
-      WHERE c.id = ?
-        AND c.church_id = ?
-
-      LIMIT 1
-    `;
-
-    const [classRows] = await db.query(classSql, [classId, church_id]);
-
-    if (!classRows.length) {
+    if (!data) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy lớp học trong giáo xứ của bạn",
+        message: "Không tìm thấy lớp học trong giáo xứ của bạn.",
       });
     }
-
-    const classData = classRows[0];
-
-    // =====================================================
-    // 2. GIÁO LÝ VIÊN
-    // =====================================================
-
-    const catechistSql = `
-      SELECT
-        cc.id AS assignment_id,
-
-        cc.catechist_id,
-        cc.class_id,
-
-        cc.role,
-        cc.assigned_date,
-        cc.notes,
-
-        ct.catechist_code,
-        ct.holy_name,
-        ct.full_name,
-        ct.gender,
-        ct.phone,
-        ct.email,
-        ct.level,
-        ct.status
-
-      FROM catechist_classes cc
-
-      INNER JOIN catechists ct
-        ON ct.id = cc.catechist_id
-
-      WHERE cc.class_id = ?
-        AND ct.church_id = ?
-
-      ORDER BY
-        cc.role ASC,
-        ct.full_name ASC
-    `;
-
-    const [catechists] = await db.query(catechistSql, [classId, church_id]);
-
-    // =====================================================
-    // 3. LỊCH HỌC
-    // =====================================================
-
-    const scheduleSql = `
-      SELECT
-        id,
-        class_id,
-        day_of_week,
-        start_time,
-        end_time,
-        room,
-        created_at,
-        updated_at
-
-      FROM class_schedules
-
-      WHERE class_id = ?
-
-      ORDER BY
-        day_of_week ASC,
-        start_time ASC
-    `;
-
-    const [schedules] = await db.query(scheduleSql, [classId]);
-
-    // =====================================================
-    // 4. RESPONSE
-    // =====================================================
 
     return res.status(200).json({
       success: true,
-
-      data: {
-        ...classData,
-
-        id: Number(classData.id),
-        church_id: Number(classData.church_id),
-
-        academic_year: classData.academic_year || null,
-
-        catechist_id: classData.catechist_id
-          ? Number(classData.catechist_id)
-          : null,
-
-        studentsCount: Number(classData.studentsCount || 0),
-
-        catechists,
-
-        schedules: schedules.map(formatSchedule),
-      },
+      data,
     });
   } catch (error) {
-    console.error("❌ getClassById error:", error);
+    console.error("getClassById error:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể lấy thông tin lớp học",
+      message: "Không thể lấy thông tin lớp học.",
       error: error.message,
     });
   }
 };
 
-// =========================================================
-// LỚP CỦA GIÁO LÝ VIÊN ĐĂNG NHẬP
+// ============================================================
+// 3. GET CLASSES BY TEACHER
+// ============================================================
 //
 // GET /api/classes/teacher-class
-// =========================================================
+//
+// ============================================================
 
 exports.getClassesByTeacherId = async (req, res) => {
   try {
     const username = req.user?.username;
-    const church_id = getChurchId(req);
+
+    const churchId = getChurchId(req);
 
     if (!username) {
       return res.status(403).json({
         success: false,
-        message: "Không xác định được mã giáo lý viên",
+        message: "Không xác định được mã giáo lý viên.",
       });
     }
 
-    if (!church_id) {
+    if (!churchId) {
       return res.status(403).json({
         success: false,
-        message: "Tài khoản chưa được liên kết với giáo xứ",
+        message: "Tài khoản chưa được liên kết với giáo xứ.",
       });
     }
 
-    // =====================================================
-    // 1. TÌM GIÁO LÝ VIÊN
-    // =====================================================
+    const [catechistRows] = await db.query(
+      `
+        SELECT
+          id,
+          catechist_code,
+          full_name,
+          holy_name
 
-    const catechistSql = `
-      SELECT
-        id,
-        catechist_code,
-        full_name,
-        holy_name
+        FROM catechists
 
-      FROM catechists
+        WHERE catechist_code = ?
+          AND church_id = ?
 
-      WHERE catechist_code = ?
-        AND church_id = ?
-
-      LIMIT 1
-    `;
-
-    const [catechistRows] = await db.query(catechistSql, [username, church_id]);
+        LIMIT 1
+      `,
+      [username, churchId],
+    );
 
     if (!catechistRows.length) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy Giáo lý viên tương ứng với tài khoản",
+        message: "Không tìm thấy Giáo lý viên tương ứng với tài khoản.",
       });
     }
 
     const catechist = catechistRows[0];
 
-    const catechist_id = catechist.id;
+    const [rows] = await db.query(
+      `
+        SELECT
+          c.*,
 
-    // =====================================================
-    // 2. LẤY LỚP
-    // =====================================================
+          (
+            SELECT COUNT(*)
+            FROM class_students cs
+            WHERE cs.class_id = c.id
+              AND cs.status = 'studying'
+          ) AS studentsCount,
 
-    const classSql = `
-      SELECT
-        c.*,
+          cc.id AS assignment_id,
+          cc.role AS catechist_role,
+          cc.assigned_date,
+          cc.notes
 
-        (
-          SELECT COUNT(*)
-          FROM class_students cs
-          WHERE cs.class_id = c.id
-            AND cs.status = 'studying'
-        ) AS studentsCount,
+        FROM classes c
 
-        cc.id AS assignment_id,
-        cc.catechist_id AS assigned_catechist_id,
-        cc.role AS catechist_role,
-        cc.assigned_date,
-        cc.notes
+        INNER JOIN catechist_classes cc
+          ON cc.class_id = c.id
+         AND cc.catechist_id = ?
 
-      FROM classes c
+        WHERE c.church_id = ?
 
-      INNER JOIN catechist_classes cc
-        ON cc.class_id = c.id
-        AND cc.catechist_id = ?
-
-      WHERE c.church_id = ?
-
-      ORDER BY
-        c.id DESC
-    `;
-
-    const [rows] = await db.query(classSql, [catechist_id, church_id]);
-
-    // =====================================================
-    // 3. LẤY SCHEDULE
-    // =====================================================
+        ORDER BY
+          c.academic_year DESC,
+          c.level_order ASC,
+          c.name ASC
+      `,
+      [catechist.id, churchId],
+    );
 
     const classIds = rows.map((item) => Number(item.id));
 
@@ -641,17 +727,16 @@ exports.getClassesByTeacherId = async (req, res) => {
       schedulesMap[classId].push(schedule);
     }
 
-    // =====================================================
-    // 4. RESPONSE
-    // =====================================================
-
     return res.status(200).json({
       success: true,
 
       catechist: {
-        id: catechist.id,
+        id: Number(catechist.id),
+
         catechist_code: catechist.catechist_code,
+
         full_name: catechist.full_name,
+
         holy_name: catechist.holy_name,
       },
 
@@ -659,11 +744,15 @@ exports.getClassesByTeacherId = async (req, res) => {
         ...item,
 
         id: Number(item.id),
+
         church_id: Number(item.church_id),
 
-        academic_year: item.academic_year || null,
-
         catechist_id: item.catechist_id ? Number(item.catechist_id) : null,
+
+        level_order:
+          item.level_order !== null && item.level_order !== undefined
+            ? Number(item.level_order)
+            : null,
 
         studentsCount: Number(item.studentsCount || 0),
 
@@ -671,314 +760,390 @@ exports.getClassesByTeacherId = async (req, res) => {
       })),
     });
   } catch (error) {
-    console.error("❌ getClassesByTeacherId error:", error);
+    console.error("getClassesByTeacherId error:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể lấy danh sách lớp của giáo lý viên",
+      message: "Không thể lấy danh sách lớp của giáo lý viên.",
       error: error.message,
     });
   }
 };
 
-// =========================================================
-// LẤY TOÀN BỘ LỊCH HỌC CỦA GIÁO XỨ
+// ============================================================
+// 4. GET ALL CLASS SCHEDULES
+// ============================================================
 //
 // GET /api/classes/schedules
-// =========================================================
+//
+// ============================================================
 
 exports.getClassSchedules = async (req, res) => {
   try {
-    const church_id = getChurchId(req);
+    const churchId = getChurchId(req);
 
-    if (!church_id) {
+    if (!churchId) {
       return res.status(403).json({
         success: false,
-        message: "Tài khoản chưa được liên kết với giáo xứ",
+        message: "Tài khoản chưa được liên kết với giáo xứ.",
       });
     }
 
-    const sql = `
-      SELECT
-        cs.id,
-        cs.class_id,
+    const [rows] = await db.query(
+      `
+        SELECT
+          cs.id,
+          cs.class_id,
 
-        c.church_id,
-        c.name AS class_name,
-        c.code AS class_code,
-        c.academic_year,
-        c.category AS class_category,
-        c.status AS class_status,
+          c.church_id,
+          c.name AS class_name,
+          c.code AS class_code,
+          c.academic_year,
+          c.category AS class_category,
+          c.level_order,
+          c.status AS class_status,
 
-        cs.day_of_week,
-        cs.start_time,
-        cs.end_time,
-        cs.room,
+          cs.day_of_week,
+          cs.start_time,
+          cs.end_time,
+          cs.room,
 
-        cs.created_at,
-        cs.updated_at
+          cs.created_at,
+          cs.updated_at
 
-      FROM class_schedules cs
+        FROM class_schedules cs
 
-      INNER JOIN classes c
-        ON c.id = cs.class_id
+        INNER JOIN classes c
+          ON c.id = cs.class_id
 
-      WHERE c.church_id = ?
+        WHERE c.church_id = ?
 
-      ORDER BY
-        cs.day_of_week ASC,
-        cs.start_time ASC,
-        c.name ASC
-    `;
-
-    const [rows] = await db.query(sql, [church_id]);
+        ORDER BY
+          c.academic_year DESC,
+          cs.day_of_week ASC,
+          cs.start_time ASC,
+          c.name ASC
+      `,
+      [churchId],
+    );
 
     return res.status(200).json({
       success: true,
-      church_id: Number(church_id),
+
+      church_id: Number(churchId),
 
       data: rows.map((item) => ({
         id: Number(item.id),
+
         class_id: Number(item.class_id),
 
         church_id: Number(item.church_id),
 
         class_name: item.class_name,
+
         class_code: item.class_code,
 
         academic_year: item.academic_year || null,
 
-        class_category: item.class_category,
+        class_category: item.class_category || DEFAULT_CATEGORY,
+
+        level_order:
+          item.level_order !== null && item.level_order !== undefined
+            ? Number(item.level_order)
+            : null,
+
         class_status: item.class_status,
 
         day_of_week: Number(item.day_of_week),
 
         start_time: item.start_time,
+
         end_time: item.end_time,
 
         room: item.room || null,
 
         created_at: item.created_at,
+
         updated_at: item.updated_at,
       })),
     });
   } catch (error) {
-    console.error("❌ getClassSchedules error:", error);
+    console.error("getClassSchedules error:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể lấy lịch học",
+      message: "Không thể lấy lịch học.",
       error: error.message,
     });
   }
 };
 
-// =========================================================
-// TẠO LỚP
+// ============================================================
+// GENERATE CLASS CODE
+// ============================================================
+
+const generateClassCode = async (
+  connection,
+  churchId,
+  academicYear,
+  category,
+) => {
+  let prefix = "GL";
+
+  switch (category) {
+    case "Giáo lý Hôn Nhân":
+      prefix = "GLHN";
+      break;
+
+    case "Giáo lý Dự Tòng":
+      prefix = "GLDT";
+      break;
+
+    case "Giáo lý Tân Tòng":
+      prefix = "GLTT";
+      break;
+
+    case "Giáo lý Thiếu Nhi":
+      prefix = "GLTN";
+      break;
+
+    case "Giáo lý Thêm Sức":
+      prefix = "GLTS";
+      break;
+
+    default:
+      prefix = "GL";
+  }
+
+  for (let attempts = 0; attempts < 100; attempts++) {
+    const randomNumber = Math.floor(Math.random() * 1000);
+
+    const code = `${prefix}${String(randomNumber).padStart(3, "0")}`;
+
+    const [existing] = await connection.query(
+      `
+        SELECT id
+
+        FROM classes
+
+        WHERE church_id = ?
+          AND code = ?
+          AND academic_year = ?
+
+        LIMIT 1
+      `,
+      [churchId, code, academicYear],
+    );
+
+    if (!existing.length) {
+      return code;
+    }
+  }
+
+  throw new Error("Không thể tạo mã lớp học ngẫu nhiên.");
+};
+
+// ============================================================
+// 5. CREATE CLASS
+// ============================================================
 //
 // POST /api/classes
-// =========================================================
+//
+// BODY:
+//
+// {
+//   name,
+//   academic_year,
+//   category,
+//   level_order,
+//   catechist_id,
+//   description,
+//   start_date,
+//   end_date,
+//   status,
+//   schedules: []
+// }
+//
+// ============================================================
 
 exports.createClass = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
+    const churchId = getChurchId(req);
+
+    const adminId = getAdminId(req);
+
     const {
       name,
       academic_year,
       category,
+      level_order,
       catechist_id,
       description,
       start_date,
       end_date,
       status,
       schedules = [],
-    } = req.body;
-
-    const church_id = getChurchId(req);
+    } = req.body || {};
 
     console.log("");
     console.log("============================================================");
     console.log("                    CREATE CLASS");
     console.log("============================================================");
 
-    console.log("CHURCH ID:", church_id);
-    console.log("NAME:", name);
-    console.log("ACADEMIC YEAR:", academic_year);
-    console.log("CATEGORY:", category);
+    console.log("CHURCH ID:", churchId);
 
-    if (!church_id) {
+    console.log("ADMIN ID:", adminId);
+
+    console.log("NAME:", name);
+
+    console.log("ACADEMIC YEAR:", academic_year);
+
+    console.log("LEVEL ORDER:", level_order);
+
+    if (!churchId) {
       return res.status(403).json({
         success: false,
-        message: "Tài khoản chưa được liên kết với giáo xứ",
+        message: "Tài khoản chưa được liên kết với giáo xứ.",
+        code: "CHURCH_ID_REQUIRED",
       });
     }
-
-    // =====================================================
-    // VALIDATE
-    // =====================================================
 
     if (!name?.trim()) {
       return res.status(400).json({
         success: false,
-        message: "Tên lớp là bắt buộc",
+        message: "Tên lớp là bắt buộc.",
       });
     }
 
-    const academicYearError = validateAcademicYear(academic_year);
+    const normalizedYear = normalizeAcademicYear(academic_year);
 
-    if (academicYearError) {
+    if (!normalizedYear) {
       return res.status(400).json({
         success: false,
-        message: academicYearError,
+        message: "Năm học không hợp lệ. Ví dụ: 2026-2027.",
+      });
+    }
+
+    const levelError = validateLevelOrder(level_order);
+
+    if (levelError) {
+      return res.status(400).json({
+        success: false,
+        message: levelError,
       });
     }
 
     if (!Array.isArray(schedules)) {
       return res.status(400).json({
         success: false,
-        message: "Danh sách lịch học không hợp lệ",
+        message: "Danh sách lịch học không hợp lệ.",
       });
     }
 
     for (const schedule of schedules) {
-      const scheduleError = validateSchedule(schedule);
+      const error = validateSchedule(schedule);
 
-      if (scheduleError) {
+      if (error) {
         return res.status(400).json({
           success: false,
-          message: scheduleError,
+          message: error,
         });
       }
     }
 
-    // =====================================================
-    // PREFIX
-    // =====================================================
+    const normalizedLevelOrder = normalizeLevelOrder(level_order);
 
-    let prefix = "GL";
+    const normalizedCategory = category?.trim() || DEFAULT_CATEGORY;
 
-    switch (category) {
-      case "Giáo lý Hôn Nhân":
-        prefix = "GLHN";
-        break;
+    const normalizedStatus = status || "active";
 
-      case "Giáo lý Dự Tòng":
-        prefix = "GLDT";
-        break;
-
-      case "Giáo lý Tân Tòng":
-        prefix = "GLTT";
-        break;
-
-      case "Giáo lý Thiếu Nhi":
-        prefix = "GLTN";
-        break;
-
-      case "Giáo lý Thêm Sức":
-        prefix = "GLTS";
-        break;
-
-      default:
-        prefix = "GL";
-    }
-
-    // =====================================================
-    // SINH CODE
-    // =====================================================
-
-    let code = null;
-    let attempts = 0;
-
-    while (attempts < 100) {
-      const randomNumber = Math.floor(Math.random() * 1000);
-
-      const randomCode = `${prefix}${String(randomNumber).padStart(3, "0")}`;
-
-      const [existing] = await connection.query(
-        `
-        SELECT id
-        FROM classes
-        WHERE church_id = ?
-          AND code = ?
-          AND academic_year = ?
-        LIMIT 1
-        `,
-        [church_id, randomCode, academic_year.trim()],
-      );
-
-      if (!existing.length) {
-        code = randomCode;
-        break;
-      }
-
-      attempts++;
-    }
-
-    if (!code) {
-      return res.status(500).json({
+    if (!VALID_CLASS_STATUS.includes(normalizedStatus)) {
+      return res.status(400).json({
         success: false,
-        message: "Không thể tạo mã lớp học ngẫu nhiên",
+        message: "Trạng thái lớp không hợp lệ.",
       });
     }
 
-    // =====================================================
-    // TRANSACTION
-    // =====================================================
-
     await connection.beginTransaction();
 
-    // =====================================================
-    // INSERT CLASS
-    // =====================================================
+    // ========================================================
+    // GENERATE CODE
+    // ========================================================
 
-    const [result] = await connection.query(
+    const code = await generateClassCode(
+      connection,
+      churchId,
+      normalizedYear,
+      normalizedCategory,
+    );
+
+    // ========================================================
+    // INSERT CLASS
+    // ========================================================
+
+    const [result] = await connection.execute(
       `
-      INSERT INTO classes (
-        church_id,
-        name,
-        code,
-        academic_year,
-        category,
-        catechist_id,
-        description,
-        start_date,
-        end_date,
-        status
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO classes (
+          church_id,
+          name,
+          code,
+          academic_year,
+          category,
+          level_order,
+          catechist_id,
+          description,
+          start_date,
+          end_date,
+          status
+        )
+        VALUES (
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?
+        )
       `,
       [
-        church_id,
+        churchId,
         name.trim(),
         code,
-        academic_year.trim(),
-        category || "Giáo lý Thiếu Nhi",
+        normalizedYear,
+        normalizedCategory,
+        normalizedLevelOrder,
         catechist_id || null,
         description?.trim() || null,
         start_date || null,
         end_date || null,
-        status || "active",
+        normalizedStatus,
       ],
     );
 
-    const classId = result.insertId;
+    const classId = Number(result.insertId);
 
-    // =====================================================
-    // INSERT SCHEDULE
-    // =====================================================
+    // ========================================================
+    // INSERT SCHEDULES
+    // ========================================================
 
     for (const schedule of schedules) {
-      await connection.query(
+      await connection.execute(
         `
-        INSERT INTO class_schedules (
-          class_id,
-          day_of_week,
-          start_time,
-          end_time,
-          room
-        )
-        VALUES (?, ?, ?, ?, ?)
+          INSERT INTO class_schedules (
+            class_id,
+            day_of_week,
+            start_time,
+            end_time,
+            room
+          )
+          VALUES (?, ?, ?, ?, ?)
         `,
         [
           classId,
@@ -992,50 +1157,57 @@ exports.createClass = async (req, res) => {
 
     await connection.commit();
 
-    // =====================================================
-    // ACTIVITY LOG
-    // =====================================================
+    // ========================================================
+    // LOG
+    // ========================================================
 
-    try {
-      await writeLog({
-        admin_id: req.user?.id || null,
+    await writeLog({
+      admin_id: adminId,
 
-        action: "CREATE_CLASS",
+      action: "CREATE_CLASS",
 
-        target_type: "classes",
+      target_type: "classes",
 
-        target_id: classId,
+      target_id: classId,
 
-        description:
-          `Tạo lớp "${name.trim()}" (${code}), ` +
-          `năm học ${academic_year.trim()}, ` +
-          `loại ${category || "Giáo lý Thiếu Nhi"}, ` +
-          `thuộc giáo xứ #${church_id}`,
+      description:
+        `Tạo lớp "${name.trim()}" ` +
+        `(${code}), năm học ` +
+        `${normalizedYear}, ` +
+        `level_order=${normalizedLevelOrder ?? "NULL"}.`,
 
-        ip_address: req.ip,
-      });
-    } catch (logError) {
-      console.error("⚠️ Activity log createClass error:", logError);
-    }
-
-    // =====================================================
-    // RESPONSE
-    // =====================================================
+      ip_address: req.ip,
+    });
 
     return res.status(201).json({
       success: true,
-      message: "Tạo lớp học thành công",
+
+      message: "Tạo lớp học thành công.",
 
       data: {
         id: classId,
-        code,
-        church_id: Number(church_id),
 
-        academic_year: academic_year.trim(),
+        church_id: Number(churchId),
 
         name: name.trim(),
 
-        category: category || "Giáo lý Thiếu Nhi",
+        code,
+
+        academic_year: normalizedYear,
+
+        category: normalizedCategory,
+
+        level_order: normalizedLevelOrder,
+
+        catechist_id: catechist_id ? Number(catechist_id) : null,
+
+        description: description?.trim() || null,
+
+        start_date: start_date || null,
+
+        end_date: end_date || null,
+
+        status: normalizedStatus,
 
         schedules: schedules.map((item) => ({
           day_of_week: Number(item.day_of_week),
@@ -1048,22 +1220,31 @@ exports.createClass = async (req, res) => {
   } catch (error) {
     try {
       await connection.rollback();
-    } catch (rollbackError) {
-      console.error("❌ Rollback createClass error:", rollbackError);
-    }
+    } catch (_) {}
 
-    console.error("❌ createClass error:", error);
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("                 CREATE CLASS ERROR");
+    console.error(
+      "============================================================",
+    );
+    console.error("MESSAGE:", error.message);
+    console.error("CODE:", error.code);
+    console.error("SQL MESSAGE:", error.sqlMessage);
 
     if (error.code === "ER_DUP_ENTRY") {
       return res.status(409).json({
         success: false,
-        message: "Mã lớp đã tồn tại trong năm học này hoặc lịch học bị trùng",
+        message: "Mã lớp đã tồn tại trong năm học này.",
+        code: "CLASS_CODE_DUPLICATE",
       });
     }
 
     return res.status(500).json({
       success: false,
-      message: "Không thể tạo lớp học",
+      message: "Không thể tạo lớp học.",
       error: error.message,
     });
   } finally {
@@ -1071,33 +1252,36 @@ exports.createClass = async (req, res) => {
   }
 };
 
-// =========================================================
-// CẬP NHẬT LỚP
+// ============================================================
+// 6. UPDATE CLASS
+// ============================================================
 //
 // PUT /api/classes/:id
-// =========================================================
+//
+// ============================================================
 
 exports.updateClass = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { id } = req.params;
+    const classId = Number(req.params.id);
 
-    const classId = Number(id);
+    const churchId = getChurchId(req);
+
+    const adminId = getAdminId(req);
 
     const {
       name,
       academic_year,
       category,
+      level_order,
       catechist_id,
       description,
       start_date,
       end_date,
       status,
       schedules,
-    } = req.body;
-
-    const church_id = getChurchId(req);
+    } = req.body || {};
 
     console.log("");
     console.log("============================================================");
@@ -1105,151 +1289,168 @@ exports.updateClass = async (req, res) => {
     console.log("============================================================");
 
     console.log("CLASS ID:", classId);
-    console.log("CHURCH ID:", church_id);
-    console.log("ACADEMIC YEAR:", academic_year);
 
-    if (!church_id) {
+    console.log("CHURCH ID:", churchId);
+
+    console.log("ADMIN ID:", adminId);
+
+    console.log("LEVEL ORDER:", level_order);
+
+    if (!churchId) {
       return res.status(403).json({
         success: false,
-        message: "Tài khoản chưa được liên kết với giáo xứ",
+        message: "Tài khoản chưa được liên kết với giáo xứ.",
       });
     }
 
     if (!Number.isInteger(classId) || classId <= 0) {
       return res.status(400).json({
         success: false,
-        message: "ID lớp học không hợp lệ",
+        message: "ID lớp học không hợp lệ.",
       });
     }
 
     if (!name?.trim()) {
       return res.status(400).json({
         success: false,
-        message: "Tên lớp là bắt buộc",
+        message: "Tên lớp là bắt buộc.",
       });
     }
 
-    const academicYearError = validateAcademicYear(academic_year);
+    const normalizedYear = normalizeAcademicYear(academic_year);
 
-    if (academicYearError) {
+    if (!normalizedYear) {
       return res.status(400).json({
         success: false,
-        message: academicYearError,
+        message: "Năm học không hợp lệ. Ví dụ: 2026-2027.",
+      });
+    }
+
+    const levelError = validateLevelOrder(level_order);
+
+    if (levelError) {
+      return res.status(400).json({
+        success: false,
+        message: levelError,
       });
     }
 
     if (schedules !== undefined && !Array.isArray(schedules)) {
       return res.status(400).json({
         success: false,
-        message: "Danh sách lịch học không hợp lệ",
+        message: "Danh sách lịch học không hợp lệ.",
       });
     }
 
     if (Array.isArray(schedules)) {
       for (const schedule of schedules) {
-        const scheduleError = validateSchedule(schedule);
+        const error = validateSchedule(schedule);
 
-        if (scheduleError) {
+        if (error) {
           return res.status(400).json({
             success: false,
-            message: scheduleError,
+            message: error,
           });
         }
       }
     }
 
-    // =====================================================
-    // KIỂM TRA LỚP
-    // =====================================================
+    const normalizedCategory = category?.trim() || DEFAULT_CATEGORY;
 
-    const [classRows] = await connection.query(
-      `
-      SELECT
-        id,
-        code,
-        name,
-        category,
-        academic_year
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
-      `,
-      [classId, church_id],
-    );
+    const normalizedLevelOrder = normalizeLevelOrder(level_order);
 
-    if (!classRows.length) {
-      return res.status(404).json({
+    const normalizedStatus = status || "active";
+
+    if (!VALID_CLASS_STATUS.includes(normalizedStatus)) {
+      return res.status(400).json({
         success: false,
-        message: "Không tìm thấy lớp học trong giáo xứ của bạn",
+        message: "Trạng thái lớp không hợp lệ.",
       });
     }
 
-    const oldClass = classRows[0];
+    // ========================================================
+    // LOAD OLD CLASS
+    // ========================================================
 
-    // =====================================================
-    // TRANSACTION
-    // =====================================================
+    const oldClass = await getClassByIdInternal(classId, churchId, connection);
+
+    if (!oldClass) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy lớp học trong giáo xứ của bạn.",
+      });
+    }
 
     await connection.beginTransaction();
 
-    // =====================================================
+    // ========================================================
     // UPDATE CLASS
-    // =====================================================
+    // ========================================================
 
-    await connection.query(
+    await connection.execute(
       `
-      UPDATE classes
-      SET
-        name = ?,
-        academic_year = ?,
-        category = ?,
-        catechist_id = ?,
-        description = ?,
-        start_date = ?,
-        end_date = ?,
-        status = ?
-      WHERE id = ?
-        AND church_id = ?
+        UPDATE classes
+
+        SET
+          name = ?,
+          academic_year = ?,
+          category = ?,
+          level_order = ?,
+          catechist_id = ?,
+          description = ?,
+          start_date = ?,
+          end_date = ?,
+          status = ?
+
+        WHERE id = ?
+          AND church_id = ?
       `,
       [
         name.trim(),
-        academic_year.trim(),
-        category || "Giáo lý Thiếu Nhi",
+        normalizedYear,
+        normalizedCategory,
+        normalizedLevelOrder,
         catechist_id || null,
         description?.trim() || null,
         start_date || null,
         end_date || null,
-        status || "active",
+        normalizedStatus,
         classId,
-        church_id,
+        churchId,
       ],
     );
 
-    // =====================================================
-    // UPDATE SCHEDULE
-    // =====================================================
+    // ========================================================
+    // UPDATE SCHEDULES
+    // ========================================================
+    //
+    // Chỉ thay toàn bộ schedules nếu FE gửi schedules.
+    //
+    // Nếu không gửi:
+    // → giữ nguyên lịch cũ.
+    //
+    // ========================================================
 
     if (Array.isArray(schedules)) {
-      await connection.query(
+      await connection.execute(
         `
-        DELETE FROM class_schedules
-        WHERE class_id = ?
+          DELETE FROM class_schedules
+          WHERE class_id = ?
         `,
         [classId],
       );
 
       for (const schedule of schedules) {
-        await connection.query(
+        await connection.execute(
           `
-          INSERT INTO class_schedules (
-            class_id,
-            day_of_week,
-            start_time,
-            end_time,
-            room
-          )
-          VALUES (?, ?, ?, ?, ?)
+            INSERT INTO class_schedules (
+              class_id,
+              day_of_week,
+              start_time,
+              end_time,
+              room
+            )
+            VALUES (?, ?, ?, ?, ?)
           `,
           [
             classId,
@@ -1264,69 +1465,65 @@ exports.updateClass = async (req, res) => {
 
     await connection.commit();
 
-    // =====================================================
-    // ACTIVITY LOG
-    // =====================================================
+    // ========================================================
+    // LOG
+    // ========================================================
 
-    try {
-      await writeLog({
-        admin_id: req.user?.id || null,
+    await writeLog({
+      admin_id: adminId,
 
-        action: "UPDATE_CLASS",
+      action: "UPDATE_CLASS",
 
-        target_type: "classes",
+      target_type: "classes",
 
-        target_id: classId,
+      target_id: classId,
 
-        description:
-          `Cập nhật lớp "${name.trim()}" (${oldClass.code}), ` +
-          `năm học ${academic_year.trim()}, ` +
-          `thuộc giáo xứ #${church_id}`,
+      description:
+        `Cập nhật lớp "${name.trim()}" ` +
+        `(${oldClass.code}), ` +
+        `năm học ${normalizedYear}, ` +
+        `level_order=${normalizedLevelOrder ?? "NULL"}.`,
 
-        ip_address: req.ip,
-      });
-    } catch (logError) {
-      console.error("⚠️ Activity log updateClass error:", logError);
-    }
+      ip_address: req.ip,
+    });
 
-    // =====================================================
-    // RESPONSE
-    // =====================================================
+    const data = await getFullClassData(classId, churchId);
 
     return res.status(200).json({
       success: true,
-      message: "Cập nhật lớp học thành công",
 
-      data: {
-        id: classId,
-        code: oldClass.code,
+      message: "Cập nhật lớp học thành công.",
 
-        name: name.trim(),
-
-        academic_year: academic_year.trim(),
-
-        category: category || "Giáo lý Thiếu Nhi",
-      },
+      data,
     });
   } catch (error) {
     try {
       await connection.rollback();
-    } catch (rollbackError) {
-      console.error("❌ Rollback updateClass error:", rollbackError);
-    }
+    } catch (_) {}
 
-    console.error("❌ updateClass error:", error);
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("                 UPDATE CLASS ERROR");
+    console.error(
+      "============================================================",
+    );
+    console.error("MESSAGE:", error.message);
+    console.error("CODE:", error.code);
+    console.error("SQL MESSAGE:", error.sqlMessage);
 
     if (error.code === "ER_DUP_ENTRY") {
       return res.status(409).json({
         success: false,
-        message: "Mã lớp đã tồn tại trong năm học này hoặc lịch học bị trùng",
+        message: "Mã lớp đã tồn tại trong năm học này.",
+        code: "CLASS_DUPLICATE",
       });
     }
 
     return res.status(500).json({
       success: false,
-      message: "Không thể cập nhật lớp học",
+      message: "Không thể cập nhật lớp học.",
       error: error.message,
     });
   } finally {
@@ -1334,123 +1531,128 @@ exports.updateClass = async (req, res) => {
   }
 };
 
-// =========================================================
-// XÓA LỚP
+// ============================================================
+// 7. DELETE CLASS
+// ============================================================
 //
 // DELETE /api/classes/:id
-// =========================================================
+//
+// ============================================================
 
 exports.deleteClass = async (req, res) => {
   try {
-    const { id } = req.params;
+    const classId = Number(req.params.id);
 
-    const classId = Number(id);
-    const church_id = getChurchId(req);
+    const churchId = getChurchId(req);
 
-    if (!church_id) {
+    const adminId = getAdminId(req);
+
+    if (!churchId) {
       return res.status(403).json({
         success: false,
-        message: "Tài khoản chưa được liên kết với giáo xứ",
+        message: "Tài khoản chưa được liên kết với giáo xứ.",
       });
     }
 
     if (!Number.isInteger(classId) || classId <= 0) {
       return res.status(400).json({
         success: false,
-        message: "ID lớp học không hợp lệ",
+        message: "ID lớp học không hợp lệ.",
       });
     }
 
-    // =====================================================
-    // KIỂM TRA LỚP
-    // =====================================================
+    const classData = await getClassByIdInternal(classId, churchId);
 
-    const [classRows] = await db.query(
-      `
-      SELECT
-        id,
-        name,
-        code,
-        academic_year,
-        category,
-        church_id
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
-      `,
-      [classId, church_id],
-    );
-
-    if (!classRows.length) {
+    if (!classData) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy lớp học trong giáo xứ của bạn",
+        message: "Không tìm thấy lớp học trong giáo xứ của bạn.",
       });
     }
 
-    const classData = classRows[0];
+    // ========================================================
+    // KIỂM TRA HỌC SINH
+    // ========================================================
 
-    // =====================================================
-    // XÓA LỚP
-    // =====================================================
+    const [studentRows] = await db.query(
+      `
+        SELECT COUNT(*) AS total
+        FROM class_students
+        WHERE class_id = ?
+      `,
+      [classId],
+    );
+
+    const studentCount = Number(studentRows[0]?.total || 0);
+
+    if (studentCount > 0) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "Không thể xóa lớp vì lớp đã có dữ liệu học sinh. Hãy xử lý dữ liệu lớp trước.",
+        code: "CLASS_HAS_STUDENTS",
+        student_count: studentCount,
+      });
+    }
 
     const [result] = await db.query(
       `
-      DELETE FROM classes
-      WHERE id = ?
-        AND church_id = ?
+        DELETE FROM classes
+
+        WHERE id = ?
+          AND church_id = ?
       `,
-      [classId, church_id],
+      [classId, churchId],
     );
 
     if (!result.affectedRows) {
       return res.status(404).json({
         success: false,
-        message: "Không thể xóa lớp học",
+        message: "Không thể xóa lớp học.",
       });
     }
 
-    // =====================================================
-    // ACTIVITY LOG
-    // =====================================================
+    await writeLog({
+      admin_id: adminId,
 
-    try {
-      await writeLog({
-        admin_id: req.user?.id || null,
+      action: "DELETE_CLASS",
 
-        action: "DELETE_CLASS",
+      target_type: "classes",
 
-        target_type: "classes",
+      target_id: classId,
 
-        target_id: classId,
+      description:
+        `Xóa lớp "${classData.name}" ` +
+        `(${classData.code}), ` +
+        `năm học ${classData.academic_year || "—"}.`,
 
-        description:
-          `Xóa lớp "${classData.name}" (${classData.code}), ` +
-          `năm học ${classData.academic_year || "—"}, ` +
-          `loại ${classData.category || "—"}, ` +
-          `thuộc giáo xứ #${church_id}`,
-
-        ip_address: req.ip,
-      });
-    } catch (logError) {
-      console.error("⚠️ Activity log deleteClass error:", logError);
-    }
+      ip_address: req.ip,
+    });
 
     return res.status(200).json({
       success: true,
-      message: `Đã xóa lớp "${classData.name}"`,
+
+      message: `Đã xóa lớp "${classData.name}".`,
 
       data: {
-        id: classData.id,
+        id: Number(classData.id),
+
         name: classData.name,
+
         code: classData.code,
+
         academic_year: classData.academic_year || null,
-        category: classData.category,
+
+        category: classData.category || null,
+
+        level_order:
+          classData.level_order !== null && classData.level_order !== undefined
+            ? Number(classData.level_order)
+            : null,
       },
     });
   } catch (error) {
-    console.error("❌ deleteClass error:", error);
+    console.error("deleteClass error:", error);
 
     if (
       error.code === "ER_ROW_IS_REFERENCED_2" ||
@@ -1458,51 +1660,49 @@ exports.deleteClass = async (req, res) => {
     ) {
       return res.status(409).json({
         success: false,
-        message:
-          "Không thể xóa lớp vì lớp đang có dữ liệu liên quan. Vui lòng xử lý dữ liệu liên quan trước.",
+        message: "Không thể xóa lớp vì đang có dữ liệu liên quan.",
       });
     }
 
     return res.status(500).json({
       success: false,
-      message: "Không thể xóa lớp học",
+      message: "Không thể xóa lớp học.",
       error: error.message,
     });
   }
 };
 
-// =========================================================
-// THÊM LỊCH CHO LỚP
+// ============================================================
+// 8. CREATE CLASS SCHEDULE
+// ============================================================
 //
 // POST /api/classes/:id/schedules
-// =========================================================
+//
+// ============================================================
 
 exports.createClassSchedule = async (req, res) => {
   try {
-    const { id } = req.params;
+    const classId = Number(req.params.id);
 
-    const classId = Number(id);
-    const church_id = getChurchId(req);
+    const churchId = getChurchId(req);
 
-    const { day_of_week, start_time, end_time, room } = req.body;
+    const adminId = getAdminId(req);
 
-    if (!church_id) {
+    const { day_of_week, start_time, end_time, room } = req.body || {};
+
+    if (!churchId) {
       return res.status(403).json({
         success: false,
-        message: "Tài khoản chưa được liên kết với giáo xứ",
+        message: "Tài khoản chưa được liên kết với giáo xứ.",
       });
     }
 
     if (!Number.isInteger(classId) || classId <= 0) {
       return res.status(400).json({
         success: false,
-        message: "ID lớp học không hợp lệ",
+        message: "ID lớp học không hợp lệ.",
       });
     }
-
-    // =====================================================
-    // VALIDATE
-    // =====================================================
 
     const scheduleError = validateSchedule({
       day_of_week,
@@ -1517,46 +1717,25 @@ exports.createClassSchedule = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // KIỂM TRA LỚP
-    // =====================================================
+    const classData = await getClassByIdInternal(classId, churchId);
 
-    const [classRows] = await db.query(
-      `
-      SELECT
-        id,
-        name,
-        code,
-        academic_year
-      FROM classes
-      WHERE id = ?
-        AND church_id = ?
-      LIMIT 1
-      `,
-      [classId, church_id],
-    );
-
-    if (!classRows.length) {
+    if (!classData) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy lớp học trong giáo xứ của bạn",
+        message: "Không tìm thấy lớp học trong giáo xứ.",
       });
     }
 
-    // =====================================================
-    // INSERT
-    // =====================================================
-
     const [result] = await db.query(
       `
-      INSERT INTO class_schedules (
-        class_id,
-        day_of_week,
-        start_time,
-        end_time,
-        room
-      )
-      VALUES (?, ?, ?, ?, ?)
+        INSERT INTO class_schedules (
+          class_id,
+          day_of_week,
+          start_time,
+          end_time,
+          room
+        )
+        VALUES (?, ?, ?, ?, ?)
       `,
       [
         classId,
@@ -1567,102 +1746,92 @@ exports.createClassSchedule = async (req, res) => {
       ],
     );
 
-    // =====================================================
-    // LOG
-    // =====================================================
+    await writeLog({
+      admin_id: adminId,
 
-    try {
-      await writeLog({
-        admin_id: req.user?.id || null,
+      action: "CREATE_CLASS_SCHEDULE",
 
-        action: "CREATE_CLASS_SCHEDULE",
+      target_type: "class_schedules",
 
-        target_type: "class_schedules",
+      target_id: result.insertId,
 
-        target_id: result.insertId,
+      description:
+        `Thêm lịch học cho lớp ` +
+        `"${classData.name}" ` +
+        `(${classData.code}), ` +
+        `năm học ${classData.academic_year || "—"}.`,
 
-        description:
-          `Thêm lịch học cho lớp "${classRows[0].name}" ` +
-          `(${classRows[0].code}), ` +
-          `năm học ${classRows[0].academic_year || "—"}, ` +
-          `thuộc giáo xứ #${church_id}`,
-
-        ip_address: req.ip,
-      });
-    } catch (logError) {
-      console.error("⚠️ Activity log createClassSchedule error:", logError);
-    }
+      ip_address: req.ip,
+    });
 
     return res.status(201).json({
       success: true,
-      message: "Thêm lịch học thành công",
+
+      message: "Thêm lịch học thành công.",
 
       data: {
-        id: result.insertId,
+        id: Number(result.insertId),
+
         class_id: classId,
+
         day_of_week: Number(day_of_week),
+
         start_time,
+
         end_time,
+
         room: room?.trim() || null,
       },
     });
   } catch (error) {
-    console.error("❌ createClassSchedule error:", error);
-
-    if (error.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({
-        success: false,
-        message: "Lịch học này đã tồn tại trong lớp",
-      });
-    }
+    console.error("createClassSchedule error:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể thêm lịch học",
+      message: "Không thể thêm lịch học.",
       error: error.message,
     });
   }
 };
 
-// =========================================================
-// SỬA LỊCH
+// ============================================================
+// 9. UPDATE CLASS SCHEDULE
+// ============================================================
 //
 // PUT /api/classes/:id/schedules/:scheduleId
-// =========================================================
+//
+// ============================================================
 
 exports.updateClassSchedule = async (req, res) => {
   try {
-    const { id, scheduleId } = req.params;
+    const classId = Number(req.params.id);
 
-    const classId = Number(id);
-    const schedule_id = Number(scheduleId);
+    const scheduleId = Number(req.params.scheduleId);
 
-    const church_id = getChurchId(req);
+    const churchId = getChurchId(req);
 
-    const { day_of_week, start_time, end_time, room } = req.body;
+    const adminId = getAdminId(req);
 
-    if (!church_id) {
+    const { day_of_week, start_time, end_time, room } = req.body || {};
+
+    if (!churchId) {
       return res.status(403).json({
         success: false,
-        message: "Tài khoản chưa được liên kết với giáo xứ",
+        message: "Tài khoản chưa được liên kết với giáo xứ.",
       });
     }
 
     if (
       !Number.isInteger(classId) ||
       classId <= 0 ||
-      !Number.isInteger(schedule_id) ||
-      schedule_id <= 0
+      !Number.isInteger(scheduleId) ||
+      scheduleId <= 0
     ) {
       return res.status(400).json({
         success: false,
-        message: "ID lớp hoặc lịch học không hợp lệ",
+        message: "ID lớp hoặc lịch học không hợp lệ.",
       });
     }
-
-    // =====================================================
-    // VALIDATE
-    // =====================================================
 
     const scheduleError = validateSchedule({
       day_of_week,
@@ -1677,261 +1846,229 @@ exports.updateClassSchedule = async (req, res) => {
       });
     }
 
-    // =====================================================
-    // KIỂM TRA SCHEDULE
-    // =====================================================
-
-    const [scheduleRows] = await db.query(
+    const [rows] = await db.query(
       `
-      SELECT
-        cs.id,
-        cs.class_id,
-        c.name AS class_name,
-        c.code AS class_code,
-        c.academic_year
+        SELECT
+          cs.id,
+          cs.class_id,
+          cs.day_of_week,
+          cs.start_time,
+          cs.end_time,
+          cs.room,
 
-      FROM class_schedules cs
+          c.name AS class_name,
+          c.code AS class_code,
+          c.academic_year
 
-      INNER JOIN classes c
-        ON c.id = cs.class_id
+        FROM class_schedules cs
 
-      WHERE cs.id = ?
-        AND cs.class_id = ?
-        AND c.church_id = ?
+        INNER JOIN classes c
+          ON c.id = cs.class_id
 
-      LIMIT 1
+        WHERE cs.id = ?
+          AND cs.class_id = ?
+          AND c.church_id = ?
+
+        LIMIT 1
       `,
-      [schedule_id, classId, church_id],
+      [scheduleId, classId, churchId],
     );
 
-    if (!scheduleRows.length) {
+    if (!rows.length) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy lịch học trong lớp của bạn",
+        message: "Không tìm thấy lịch học trong lớp.",
       });
     }
 
-    // =====================================================
-    // UPDATE
-    // =====================================================
-
     await db.query(
       `
-      UPDATE class_schedules
+        UPDATE class_schedules
 
-      SET
-        day_of_week = ?,
-        start_time = ?,
-        end_time = ?,
-        room = ?
+        SET
+          day_of_week = ?,
+          start_time = ?,
+          end_time = ?,
+          room = ?
 
-      WHERE id = ?
-        AND class_id = ?
+        WHERE id = ?
+          AND class_id = ?
       `,
       [
         Number(day_of_week),
         start_time,
         end_time,
         room?.trim() || null,
-        schedule_id,
+        scheduleId,
         classId,
       ],
     );
 
-    // =====================================================
-    // LOG
-    // =====================================================
+    await writeLog({
+      admin_id: adminId,
 
-    try {
-      await writeLog({
-        admin_id: req.user?.id || null,
+      action: "UPDATE_CLASS_SCHEDULE",
 
-        action: "UPDATE_CLASS_SCHEDULE",
+      target_type: "class_schedules",
 
-        target_type: "class_schedules",
+      target_id: scheduleId,
 
-        target_id: schedule_id,
+      description:
+        `Cập nhật lịch học ` +
+        `của lớp "${rows[0].class_name}" ` +
+        `(${rows[0].class_code}), ` +
+        `năm học ${rows[0].academic_year || "—"}.`,
 
-        description:
-          `Cập nhật lịch học của lớp "${scheduleRows[0].class_name}" ` +
-          `(${scheduleRows[0].class_code}), ` +
-          `năm học ${scheduleRows[0].academic_year || "—"}, ` +
-          `thuộc giáo xứ #${church_id}`,
-
-        ip_address: req.ip,
-      });
-    } catch (logError) {
-      console.error("⚠️ Activity log updateClassSchedule error:", logError);
-    }
+      ip_address: req.ip,
+    });
 
     return res.status(200).json({
       success: true,
-      message: "Cập nhật lịch học thành công",
+
+      message: "Cập nhật lịch học thành công.",
 
       data: {
-        id: schedule_id,
+        id: scheduleId,
+
         class_id: classId,
+
         day_of_week: Number(day_of_week),
+
         start_time,
+
         end_time,
+
         room: room?.trim() || null,
       },
     });
   } catch (error) {
-    console.error("❌ updateClassSchedule error:", error);
-
-    if (error.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({
-        success: false,
-        message: "Lịch học này đã tồn tại trong lớp",
-      });
-    }
+    console.error("updateClassSchedule error:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể cập nhật lịch học",
+      message: "Không thể cập nhật lịch học.",
       error: error.message,
     });
   }
 };
 
-// =========================================================
-// XÓA LỊCH
+// ============================================================
+// 10. DELETE CLASS SCHEDULE
+// ============================================================
 //
 // DELETE /api/classes/:id/schedules/:scheduleId
-// =========================================================
+//
+// ============================================================
 
 exports.deleteClassSchedule = async (req, res) => {
   try {
-    const { id, scheduleId } = req.params;
+    const classId = Number(req.params.id);
 
-    const classId = Number(id);
-    const schedule_id = Number(scheduleId);
+    const scheduleId = Number(req.params.scheduleId);
 
-    const church_id = getChurchId(req);
+    const churchId = getChurchId(req);
 
-    if (!church_id) {
+    const adminId = getAdminId(req);
+
+    if (!churchId) {
       return res.status(403).json({
         success: false,
-        message: "Tài khoản chưa được liên kết với giáo xứ",
+        message: "Tài khoản chưa được liên kết với giáo xứ.",
       });
     }
 
     if (
       !Number.isInteger(classId) ||
       classId <= 0 ||
-      !Number.isInteger(schedule_id) ||
-      schedule_id <= 0
+      !Number.isInteger(scheduleId) ||
+      scheduleId <= 0
     ) {
       return res.status(400).json({
         success: false,
-        message: "ID lớp hoặc lịch học không hợp lệ",
+        message: "ID lớp hoặc lịch học không hợp lệ.",
       });
     }
 
-    // =====================================================
-    // KIỂM TRA
-    // =====================================================
-
-    const [scheduleRows] = await db.query(
+    const [rows] = await db.query(
       `
-      SELECT
-        cs.id,
-        cs.class_id,
-        cs.day_of_week,
-        cs.start_time,
-        cs.end_time,
-        cs.room,
+        SELECT
+          cs.id,
+          cs.class_id,
+          cs.day_of_week,
+          cs.start_time,
+          cs.end_time,
+          cs.room,
 
-        c.name AS class_name,
-        c.code AS class_code,
-        c.academic_year
+          c.name AS class_name,
+          c.code AS class_code,
+          c.academic_year
 
-      FROM class_schedules cs
+        FROM class_schedules cs
 
-      INNER JOIN classes c
-        ON c.id = cs.class_id
+        INNER JOIN classes c
+          ON c.id = cs.class_id
 
-      WHERE cs.id = ?
-        AND cs.class_id = ?
-        AND c.church_id = ?
+        WHERE cs.id = ?
+          AND cs.class_id = ?
+          AND c.church_id = ?
 
-      LIMIT 1
+        LIMIT 1
       `,
-      [schedule_id, classId, church_id],
+      [scheduleId, classId, churchId],
     );
 
-    if (!scheduleRows.length) {
+    if (!rows.length) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy lịch học trong lớp của bạn",
+        message: "Không tìm thấy lịch học trong lớp.",
       });
     }
 
-    const scheduleData = scheduleRows[0];
-
-    // =====================================================
-    // DELETE
-    // =====================================================
-
-    const [result] = await db.query(
+    await db.query(
       `
-      DELETE FROM class_schedules
+        DELETE FROM class_schedules
 
-      WHERE id = ?
-        AND class_id = ?
+        WHERE id = ?
+          AND class_id = ?
       `,
-      [schedule_id, classId],
+      [scheduleId, classId],
     );
 
-    if (!result.affectedRows) {
-      return res.status(404).json({
-        success: false,
-        message: "Không thể xóa lịch học",
-      });
-    }
+    await writeLog({
+      admin_id: adminId,
 
-    // =====================================================
-    // LOG
-    // =====================================================
+      action: "DELETE_CLASS_SCHEDULE",
 
-    try {
-      await writeLog({
-        admin_id: req.user?.id || null,
+      target_type: "class_schedules",
 
-        action: "DELETE_CLASS_SCHEDULE",
+      target_id: scheduleId,
 
-        target_type: "class_schedules",
+      description:
+        `Xóa lịch học của lớp ` +
+        `"${rows[0].class_name}" ` +
+        `(${rows[0].class_code}), ` +
+        `năm học ${rows[0].academic_year || "—"}.`,
 
-        target_id: schedule_id,
-
-        description:
-          `Xóa lịch học của lớp "${scheduleData.class_name}" ` +
-          `(${scheduleData.class_code}), ` +
-          `năm học ${scheduleData.academic_year || "—"}, ` +
-          `thuộc giáo xứ #${church_id}`,
-
-        ip_address: req.ip,
-      });
-    } catch (logError) {
-      console.error("⚠️ Activity log deleteClassSchedule error:", logError);
-    }
+      ip_address: req.ip,
+    });
 
     return res.status(200).json({
       success: true,
-      message: "Đã xóa lịch học",
+
+      message: "Đã xóa lịch học.",
 
       data: {
-        id: scheduleData.id,
-        class_id: scheduleData.class_id,
+        id: Number(rows[0].id),
+
+        class_id: Number(rows[0].class_id),
       },
     });
   } catch (error) {
-    console.error("❌ deleteClassSchedule error:", error);
+    console.error("deleteClassSchedule error:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể xóa lịch học",
+      message: "Không thể xóa lịch học.",
       error: error.message,
     });
   }

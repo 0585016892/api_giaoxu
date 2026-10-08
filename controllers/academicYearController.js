@@ -1,10 +1,84 @@
 const db = require("../config/db");
 
-const {
-  writeLog,
-  getChurchId,
-  getAdminId,
-} = require("../utils/activityLogger");
+const { writeLog } = require("../utils/activityLogger");
+
+// ============================================================
+// ACADEMIC YEAR CONTROLLER
+// ============================================================
+//
+// API:
+//
+// 1. POST /academic-years/preview-create
+// 2. POST /academic-years
+// 3. POST /academic-years/preview-promotion
+// 4. POST /academic-years/confirm-promotion
+//
+// ============================================================
+//
+// NGUYÊN TẮC:
+//
+// - Không tạo bảng lịch sử riêng.
+// - Lịch sử học sinh dựa trên:
+//
+//      class_students
+//            ↓
+//         classes
+//            ↓
+//      academic_year
+//
+// - Audit:
+//
+//      activity_church_logs
+//
+// - church_id luôn lấy từ JWT.
+// - Không tin church_id từ req.body.
+// - Tạo năm học + copy schedule trong transaction.
+// - Không copy học sinh khi tạo năm.
+// - Không copy điểm danh.
+// - Không copy giáo lý viên.
+// - Phân lớp học sinh thực hiện ở API confirm-promotion.
+//
+// ============================================================
+
+// ============================================================
+// HELPER - GET CHURCH ID
+// ============================================================
+//
+// Ưu tiên:
+//
+// req.user.church_id
+//
+// fallback:
+//
+// req.user.parish_id
+//
+// Tuyệt đối không lấy church_id từ body.
+//
+// ============================================================
+
+const getChurchId = (req) => {
+  const churchId = Number(req?.user?.church_id || req?.user?.parish_id || 0);
+
+  if (!Number.isInteger(churchId) || churchId <= 0) {
+    return null;
+  }
+
+  return churchId;
+};
+
+// ============================================================
+// HELPER - GET ADMIN ID
+// ============================================================
+
+const getAdminId = (req) => {
+  const adminId = Number(req?.user?.id || 0);
+
+  if (!Number.isInteger(adminId) || adminId <= 0) {
+    return null;
+  }
+
+  return adminId;
+};
 
 // ============================================================
 // HELPER - NORMALIZE ACADEMIC YEAR

@@ -1,5 +1,5 @@
 const db = require("../config/db");
-const { writeLog } = require("../utils/activityLogger");
+const { writeLog } = require("../utils/activityChurchLogger");
 
 // =====================================================
 // CONSTANTS
@@ -8,7 +8,7 @@ const { writeLog } = require("../utils/activityLogger");
 const ALLOWED_STATUS = ["studying", "completed", "transferred", "dropped"];
 
 // =====================================================
-// REQUEST ID
+// DEBUG / REQUEST ID
 // =====================================================
 
 const createRequestId = (prefix = "REQ") => {
@@ -19,8 +19,12 @@ const createRequestId = (prefix = "REQ") => {
 };
 
 // =====================================================
-// SAFE POSITIVE INTEGER
+// HELPERS
 // =====================================================
+
+const getChurchId = (req) => {
+  return req.user?.church_id ?? req.user?.parish_id ?? null;
+};
 
 const toPositiveInt = (value) => {
   const number = Number(value);
@@ -32,102 +36,66 @@ const toPositiveInt = (value) => {
   return number;
 };
 
-// =====================================================
-// SAFE ACTIVITY LOG
-// =====================================================
-
-const safeWriteLog = async (req, data) => {
+const safeWriteLog = async (payload) => {
   try {
-    const payload = {
-      admin_id: req.user?.id || null,
-
-      action: data?.action || null,
-
-      target_type: data?.target_type || null,
-
-      target_id: data?.target_id || null,
-
-      description: data?.description || null,
-
-      ip_address:
-        req.ip ||
-        req.headers?.["x-forwarded-for"] ||
-        req.socket?.remoteAddress ||
-        null,
-    };
-
-    console.log("");
-    console.log("------------------------------------------------------------");
-    console.log("📝 ACTIVITY LOG");
-    console.log("------------------------------------------------------------");
-    console.log(payload);
-
     await writeLog(payload);
-
-    console.log("✅ ACTIVITY LOG SUCCESS");
-    console.log("------------------------------------------------------------");
   } catch (error) {
-    console.error("");
-    console.error(
-      "------------------------------------------------------------",
-    );
-    console.error("⚠️ ACTIVITY LOG ERROR");
-    console.error(
-      "------------------------------------------------------------",
-    );
-    console.error("MESSAGE:", error.message);
-    console.error("CODE:", error.code);
-    console.error("SQL:", error.sqlMessage);
-    console.error(
-      "------------------------------------------------------------",
-    );
+    console.error("⚠️ WRITE ACTIVITY LOG ERROR:", error.message);
   }
 };
 
-// =====================================================
-// SAFE ROLLBACK
-// =====================================================
-
-const safeRollback = async (connection, transactionStarted, requestId) => {
-  if (!connection || !transactionStarted) {
-    return;
-  }
-
+const safeRollback = async (connection) => {
   try {
     await connection.rollback();
-
-    console.log(`🔄 [${requestId}] ROLLBACK SUCCESS`);
-  } catch (rollbackError) {
-    console.error(`❌ [${requestId}] ROLLBACK ERROR:`, rollbackError.message);
+  } catch (error) {
+    console.error("⚠️ ROLLBACK ERROR:", error.message);
   }
 };
 
+const sendServerError = (res, requestId, error, title) => {
+  console.error("");
+  console.error(
+    "================================================================",
+  );
+  console.error(`💥 [${requestId}] ${title}`);
+  console.error(
+    "================================================================",
+  );
+  console.error("MESSAGE:", error.message);
+  console.error("CODE:", error.code);
+  console.error("ERRNO:", error.errno);
+  console.error("SQL STATE:", error.sqlState);
+  console.error("SQL MESSAGE:", error.sqlMessage);
+  console.error(
+    "================================================================",
+  );
+
+  return res.status(500).json({
+    success: false,
+    message: "Lỗi máy chủ",
+    error: error.message,
+    request_id: requestId,
+  });
+};
+
 // =====================================================
-// GET CLASS BY ID + CHURCH
-//
-// academic_year lấy trực tiếp từ classes.
-//
-// KHÔNG lấy academic_year từ class_students.
-// KHÔNG lấy academic_year từ class_schedules.
+// GET CLASS
 // =====================================================
 
-const getClassById = async (classId, churchId, connection = db) => {
+const getClassById = async (connection, classId, churchId) => {
   const [rows] = await connection.query(
     `
       SELECT
-        id,
-        name,
-        code,
-        category,
-        status,
-        academic_year,
-        church_id
-
-      FROM classes
-
-      WHERE id = ?
-        AND church_id = ?
-
+        c.id,
+        c.name,
+        c.code,
+        c.category,
+        c.status,
+        c.academic_year,
+        c.church_id
+      FROM classes c
+      WHERE c.id = ?
+        AND c.church_id = ?
       LIMIT 1
     `,
     [classId, churchId],
@@ -137,31 +105,28 @@ const getClassById = async (classId, churchId, connection = db) => {
 };
 
 // =====================================================
-// GET STUDENT BY ID + CHURCH
+// GET STUDENT
 // =====================================================
 
-const getStudentById = async (studentId, churchId, connection = db) => {
+const getStudentById = async (connection, studentId, churchId) => {
   const [rows] = await connection.query(
     `
       SELECT
-        id,
-        code,
-        name,
-        gender,
-        date_of_birth,
-        phone,
-        email,
-        address,
-        parish,
-        avatar,
-        status,
-        church_id
-
-      FROM students
-
-      WHERE id = ?
-        AND church_id = ?
-
+        s.id,
+        s.code,
+        s.name,
+        s.gender,
+        s.date_of_birth,
+        s.phone,
+        s.email,
+        s.address,
+        s.parish,
+        s.avatar,
+        s.status,
+        s.church_id
+      FROM students s
+      WHERE s.id = ?
+        AND s.church_id = ?
       LIMIT 1
     `,
     [studentId, churchId],
@@ -173,18 +138,27 @@ const getStudentById = async (studentId, churchId, connection = db) => {
 // =====================================================
 // GET SCHEDULES BY CLASS
 //
-// QUAN TRỌNG:
-//
-// class_schedules hiện tại KHÔNG có:
+// IMPORTANT:
+// class_schedules KHÔNG sử dụng:
 // - start_date
 // - end_date
+// - status
 //
-// academic_year thuộc classes.
-//
-// Bảo vệ church bằng classes.church_id.
+// academic_year nằm ở classes.academic_year
 // =====================================================
 
-const getSchedulesByClassId = async (classId, churchId, connection = db) => {
+const getSchedulesByClassId = async (connection, classId, churchId) => {
+  console.log("");
+  console.log(
+    "---------------------------------------------------------------",
+  );
+  console.log("📅 GET CLASS SCHEDULES");
+  console.log("CLASS ID:", classId);
+  console.log("CHURCH ID:", churchId);
+  console.log(
+    "---------------------------------------------------------------",
+  );
+
   const [rows] = await connection.query(
     `
       SELECT
@@ -193,34 +167,30 @@ const getSchedulesByClassId = async (classId, churchId, connection = db) => {
         cs.day_of_week,
         cs.start_time,
         cs.end_time,
-        cs.room,
-        cs.status
-
+        cs.room
       FROM class_schedules cs
-
       INNER JOIN classes c
         ON c.id = cs.class_id
-
       WHERE cs.class_id = ?
         AND c.church_id = ?
-
       ORDER BY
-        CASE cs.day_of_week
-          WHEN 1 THEN 1
-          WHEN 2 THEN 2
-          WHEN 3 THEN 3
-          WHEN 4 THEN 4
-          WHEN 5 THEN 5
-          WHEN 6 THEN 6
-          WHEN 7 THEN 7
+        CASE
+          WHEN cs.day_of_week = 1 THEN 1
+          WHEN cs.day_of_week = 2 THEN 2
+          WHEN cs.day_of_week = 3 THEN 3
+          WHEN cs.day_of_week = 4 THEN 4
+          WHEN cs.day_of_week = 5 THEN 5
+          WHEN cs.day_of_week = 6 THEN 6
+          WHEN cs.day_of_week = 0 THEN 7
           ELSE 8
         END,
-
         cs.start_time ASC,
         cs.id ASC
     `,
     [classId, churchId],
   );
+
+  console.log("📅 SCHEDULE COUNT:", rows.length);
 
   return rows;
 };
@@ -230,10 +200,10 @@ const getSchedulesByClassId = async (classId, churchId, connection = db) => {
 // =====================================================
 
 const getClassStudentRelation = async (
+  connection,
   classId,
   studentId,
   churchId,
-  connection = db,
 ) => {
   const [rows] = await connection.query(
     `
@@ -241,20 +211,22 @@ const getClassStudentRelation = async (
         cs.id,
         cs.class_id,
         cs.student_id,
-
         cs.status,
         cs.joined_at,
         cs.left_at,
 
-        s.name AS student_name,
         s.code AS student_code,
+        s.name AS student_name,
+        s.gender AS student_gender,
+        s.date_of_birth AS student_date_of_birth,
+        s.avatar AS student_avatar,
 
         c.name AS class_name,
         c.code AS class_code,
         c.category AS class_category,
         c.status AS class_status,
         c.academic_year,
-        c.church_id AS class_church_id
+        c.church_id
 
       FROM class_students cs
 
@@ -266,11 +238,11 @@ const getClassStudentRelation = async (
 
       WHERE cs.class_id = ?
         AND cs.student_id = ?
-
-        AND s.church_id = ?
         AND c.church_id = ?
+        AND s.church_id = ?
 
-      ORDER BY cs.id DESC
+      ORDER BY
+        cs.id DESC
 
       LIMIT 1
     `,
@@ -281,17 +253,16 @@ const getClassStudentRelation = async (
 };
 
 // =====================================================
-// GET ALL STUDENT RELATIONS
+// GET ALL RELATIONS OF STUDENT
 // =====================================================
 
-const getStudentRelations = async (studentId, churchId, connection = db) => {
+const getStudentRelations = async (connection, studentId, churchId) => {
   const [rows] = await connection.query(
     `
       SELECT
         cs.id,
         cs.class_id,
         cs.student_id,
-
         cs.status,
         cs.joined_at,
         cs.left_at,
@@ -301,8 +272,7 @@ const getStudentRelations = async (studentId, churchId, connection = db) => {
         c.category AS class_category,
         c.status AS class_status,
         c.academic_year,
-
-        c.church_id AS class_church_id
+        c.church_id
 
       FROM class_students cs
 
@@ -313,11 +283,11 @@ const getStudentRelations = async (studentId, churchId, connection = db) => {
         ON s.id = cs.student_id
 
       WHERE cs.student_id = ?
-
         AND c.church_id = ?
         AND s.church_id = ?
 
       ORDER BY
+        c.academic_year DESC,
         cs.id DESC
     `,
     [studentId, churchId, churchId],
@@ -328,14 +298,12 @@ const getStudentRelations = async (studentId, churchId, connection = db) => {
 
 // =====================================================
 // GET ACTIVE STUDENT RELATION
-//
-// Một học sinh chỉ được studying ở một lớp.
 // =====================================================
 
 const getActiveStudentRelation = async (
+  connection,
   studentId,
   churchId,
-  connection = db,
   excludeClassId = null,
 ) => {
   let sql = `
@@ -343,15 +311,12 @@ const getActiveStudentRelation = async (
       cs.id,
       cs.class_id,
       cs.student_id,
-
       cs.status,
       cs.joined_at,
       cs.left_at,
 
       c.name AS class_name,
       c.code AS class_code,
-      c.category AS class_category,
-      c.status AS class_status,
       c.academic_year
 
     FROM class_students cs
@@ -363,10 +328,8 @@ const getActiveStudentRelation = async (
       ON s.id = cs.student_id
 
     WHERE cs.student_id = ?
-
       AND cs.status = 'studying'
       AND cs.left_at IS NULL
-
       AND c.church_id = ?
       AND s.church_id = ?
   `;
@@ -375,7 +338,7 @@ const getActiveStudentRelation = async (
 
   if (excludeClassId) {
     sql += `
-      AND cs.class_id != ?
+      AND cs.class_id <> ?
     `;
 
     params.push(excludeClassId);
@@ -393,102 +356,74 @@ const getActiveStudentRelation = async (
 
 // =====================================================
 // 1. GET STUDENTS BY CLASS
-//
-// GET /api/class-students/class/:classId
 // =====================================================
 
 exports.getStudentsByClass = async (req, res) => {
   const requestId = createRequestId("GET-CLASS-STUDENTS");
 
+  console.log("");
+  console.log(
+    "================================================================",
+  );
+  console.log(`📚 [${requestId}] GET STUDENTS BY CLASS`);
+  console.log(
+    "================================================================",
+  );
+
+  let connection;
+
   try {
     const classId = toPositiveInt(req.params.classId);
+    const churchId = toPositiveInt(getChurchId(req));
 
-    const churchId = toPositiveInt(req.user?.church_id);
-
-    console.log("");
-    console.log(
-      "================================================================",
-    );
-    console.log(`📚 [${requestId}] GET STUDENTS BY CLASS`);
-    console.log(
-      "================================================================",
-    );
-
-    console.log("USER:", {
-      id: req.user?.id,
-      username: req.user?.username,
-      role: req.user?.role,
-      church_id: req.user?.church_id,
-    });
-
-    console.log("PARAMS:", {
-      classId,
-      churchId,
-    });
-
-    // =====================================================
-    // AUTH
-    // =====================================================
-
-    if (!churchId) {
-      return res.status(403).json({
-        success: false,
-        code: "NO_CHURCH_ID",
-        message: "Tài khoản chưa được liên kết với giáo xứ",
-      });
-    }
-
-    // =====================================================
-    // VALIDATE
-    // =====================================================
+    console.log("CLASS ID:", classId);
+    console.log("CHURCH ID:", churchId);
 
     if (!classId) {
       return res.status(400).json({
         success: false,
-        code: "INVALID_CLASS_ID",
         message: "classId không hợp lệ",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // CLASS
-    // =====================================================
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ",
+        request_id: requestId,
+      });
+    }
 
-    const classData = await getClassById(classId, churchId);
+    connection = await db.getConnection();
 
-    if (!classData) {
+    const classInfo = await getClassById(connection, classId, churchId);
+
+    if (!classInfo) {
       return res.status(404).json({
         success: false,
-        code: "CLASS_NOT_FOUND",
-        message: "Không tìm thấy lớp hoặc lớp không thuộc giáo xứ",
+        message: "Không tìm thấy lớp học",
+        request_id: requestId,
       });
     }
 
-    console.log(`📚 [${requestId}] CLASS:`, classData);
+    const schedules = await getSchedulesByClassId(
+      connection,
+      classId,
+      churchId,
+    );
 
-    // =====================================================
-    // SCHEDULES
-    // =====================================================
-
-    const schedules = await getSchedulesByClassId(classId, churchId);
-
-    console.log(`📅 [${requestId}] SCHEDULE COUNT:`, schedules.length);
-
-    // =====================================================
-    // STUDENTS
-    // =====================================================
-
-    const [rows] = await db.query(
+    const [students] = await connection.query(
       `
         SELECT
-          cs.id,
+          cs.id AS class_student_id,
           cs.class_id,
           cs.student_id,
-
-          cs.status,
+          cs.status AS enrollment_status,
           cs.joined_at,
           cs.left_at,
 
+          s.id,
           s.code,
           s.name,
           s.gender,
@@ -498,16 +433,13 @@ exports.getStudentsByClass = async (req, res) => {
           s.address,
           s.parish,
           s.avatar,
-
           s.status AS student_status,
 
           c.name AS class_name,
           c.code AS class_code,
           c.category AS class_category,
           c.status AS class_status,
-          c.academic_year,
-
-          c.church_id AS class_church_id
+          c.academic_year
 
         FROM class_students cs
 
@@ -518,1119 +450,588 @@ exports.getStudentsByClass = async (req, res) => {
           ON c.id = cs.class_id
 
         WHERE cs.class_id = ?
-
-          AND s.church_id = ?
           AND c.church_id = ?
+          AND s.church_id = ?
 
         ORDER BY
-          CASE
-            WHEN cs.status = 'studying' THEN 0
-            WHEN cs.status = 'completed' THEN 1
-            WHEN cs.status = 'transferred' THEN 2
-            WHEN cs.status = 'dropped' THEN 3
-            ELSE 4
+          CASE cs.status
+            WHEN 'studying' THEN 1
+            WHEN 'completed' THEN 2
+            WHEN 'transferred' THEN 3
+            WHEN 'dropped' THEN 4
+            ELSE 5
           END,
-
           s.name ASC,
           s.id ASC
       `,
       [classId, churchId, churchId],
     );
 
-    console.log(`📊 [${requestId}] STUDENT COUNT:`, rows.length);
+    console.log("STUDENT COUNT:", students.length);
+    console.log("ACADEMIC YEAR:", classInfo.academic_year);
 
-    console.table(
-      rows.map((row) => ({
-        relation_id: row.id,
-        class_id: row.class_id,
-        student_id: row.student_id,
-        name: row.name,
-        code: row.code,
-        academic_year: row.academic_year,
-        status: row.status,
-        joined_at: row.joined_at,
-        left_at: row.left_at,
-      })),
-    );
-
-    // =====================================================
-    // RESPONSE
-    // =====================================================
-
-    return res.json({
+    return res.status(200).json({
       success: true,
+      message: "Lấy danh sách học sinh thành công",
+      request_id: requestId,
 
-      data: rows,
-
-      class: {
-        ...classData,
+      data: {
+        class: classInfo,
         schedules,
-      },
-
-      schedules,
-
-      academic_year: classData.academic_year || null,
-
-      debug: {
-        request_id: requestId,
-        class_id: classId,
-        church_id: churchId,
-        academic_year: classData.academic_year || null,
-        student_count: rows.length,
-        schedule_count: schedules.length,
+        students,
+        total: students.length,
       },
     });
   } catch (error) {
-    console.error("");
-    console.error(
-      "================================================================",
+    return sendServerError(
+      res,
+      requestId,
+      error,
+      "GET STUDENTS BY CLASS ERROR",
     );
-    console.error(`💥 [${requestId}] GET STUDENTS BY CLASS ERROR`);
-    console.error(
-      "================================================================",
-    );
-
-    console.error("MESSAGE:", error.message);
-
-    console.error("CODE:", error.code);
-
-    console.error("ERRNO:", error.errno);
-
-    console.error("SQL STATE:", error.sqlState);
-
-    console.error("SQL MESSAGE:", error.sqlMessage);
-
-    return res.status(500).json({
-      success: false,
-      code: "GET_STUDENTS_BY_CLASS_ERROR",
-      message: "Không thể lấy danh sách học sinh trong lớp",
-
-      debug: {
-        request_id: requestId,
-      },
-    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
   }
 };
 
 // =====================================================
 // 2. GET CLASSES BY STUDENT
-//
-// GET /api/class-students/student/:studentId
 // =====================================================
 
 exports.getClassesByStudent = async (req, res) => {
   const requestId = createRequestId("GET-STUDENT-CLASSES");
 
+  console.log("");
+  console.log(
+    "================================================================",
+  );
+  console.log(`📚 [${requestId}] GET CLASSES BY STUDENT`);
+  console.log(
+    "================================================================",
+  );
+
+  let connection;
+
   try {
     const studentId = toPositiveInt(req.params.studentId);
+    const churchId = toPositiveInt(getChurchId(req));
 
-    const churchId = toPositiveInt(req.user?.church_id);
-
-    console.log("");
-    console.log(
-      "================================================================",
-    );
-    console.log(`👨‍🎓 [${requestId}] GET CLASSES BY STUDENT`);
-    console.log(
-      "================================================================",
-    );
-
-    console.log({
-      studentId,
-      churchId,
-    });
-
-    // =====================================================
-    // AUTH
-    // =====================================================
-
-    if (!churchId) {
-      return res.status(403).json({
-        success: false,
-        code: "NO_CHURCH_ID",
-        message: "Tài khoản chưa được liên kết với giáo xứ",
-      });
-    }
-
-    // =====================================================
-    // VALIDATE
-    // =====================================================
+    console.log("STUDENT ID:", studentId);
+    console.log("CHURCH ID:", churchId);
 
     if (!studentId) {
       return res.status(400).json({
         success: false,
-        code: "INVALID_STUDENT_ID",
         message: "studentId không hợp lệ",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // STUDENT
-    // =====================================================
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ",
+        request_id: requestId,
+      });
+    }
 
-    const student = await getStudentById(studentId, churchId);
+    connection = await db.getConnection();
+
+    const student = await getStudentById(connection, studentId, churchId);
 
     if (!student) {
       return res.status(404).json({
         success: false,
-        code: "STUDENT_NOT_FOUND",
-        message: "Không tìm thấy học sinh hoặc học sinh không thuộc giáo xứ",
+        message: "Không tìm thấy học sinh",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // RELATIONS
-    // =====================================================
-
-    const rows = await getStudentRelations(studentId, churchId);
-
-    // =====================================================
-    // SCHEDULES
-    // =====================================================
+    const relations = await getStudentRelations(
+      connection,
+      studentId,
+      churchId,
+    );
 
     const classes = [];
 
-    for (const classItem of rows) {
+    for (const relation of relations) {
       const schedules = await getSchedulesByClassId(
-        classItem.class_id,
+        connection,
+        relation.class_id,
         churchId,
       );
 
       classes.push({
-        ...classItem,
+        ...relation,
         schedules,
       });
     }
 
-    console.log(`📚 [${requestId}] CLASS COUNT:`, classes.length);
+    console.log("CLASS COUNT:", classes.length);
 
-    console.table(
-      classes.map((item) => ({
-        relation_id: item.id,
-        class_id: item.class_id,
-        student_id: item.student_id,
-        class_name: item.class_name,
-        class_code: item.class_code,
-        academic_year: item.academic_year,
-        status: item.status,
-        schedule_count: item.schedules?.length || 0,
-      })),
-    );
-
-    return res.json({
+    return res.status(200).json({
       success: true,
+      message: "Lấy danh sách lớp của học sinh thành công",
+      request_id: requestId,
 
-      data: classes,
-
-      student,
-
-      debug: {
-        request_id: requestId,
-        student_id: studentId,
-        church_id: churchId,
-        class_count: classes.length,
+      data: {
+        student,
+        classes,
+        total: classes.length,
       },
     });
   } catch (error) {
-    console.error("");
-    console.error(
-      "================================================================",
+    return sendServerError(
+      res,
+      requestId,
+      error,
+      "GET CLASSES BY STUDENT ERROR",
     );
-    console.error(`💥 [${requestId}] GET CLASSES BY STUDENT ERROR`);
-    console.error(
-      "================================================================",
-    );
-
-    console.error("MESSAGE:", error.message);
-
-    console.error("CODE:", error.code);
-
-    console.error("SQL MESSAGE:", error.sqlMessage);
-
-    return res.status(500).json({
-      success: false,
-      code: "GET_CLASSES_BY_STUDENT_ERROR",
-      message: "Không thể lấy danh sách lớp của học sinh",
-
-      debug: {
-        request_id: requestId,
-      },
-    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
   }
 };
 
 // =====================================================
 // 3. ADD STUDENT TO CLASS
-//
-// POST /api/class-students
-//
-// BODY:
-// {
-//   class_id: 190,
-//   student_id: 1903,
-//   status: "studying",
-//   joined_at: null
-// }
 // =====================================================
 
 exports.addStudentToClass = async (req, res) => {
-  const requestId = createRequestId("ADD-STUDENT");
+  const requestId = createRequestId("ADD-STUDENT-CLASS");
 
-  let connection = null;
-  let transactionStarted = false;
+  console.log("");
+  console.log(
+    "================================================================",
+  );
+  console.log(`➕ [${requestId}] ADD STUDENT TO CLASS`);
+  console.log(
+    "================================================================",
+  );
+
+  let connection;
 
   try {
-    const churchId = toPositiveInt(req.user?.church_id);
+    const classId = toPositiveInt(req.body.class_id);
+    const studentId = toPositiveInt(req.body.student_id);
+    const churchId = toPositiveInt(getChurchId(req));
 
-    const classId = toPositiveInt(req.body?.class_id);
+    const status = req.body.status || "studying";
 
-    const studentId = toPositiveInt(req.body?.student_id);
+    console.log("CLASS ID:", classId);
+    console.log("STUDENT ID:", studentId);
+    console.log("CHURCH ID:", churchId);
+    console.log("STATUS:", status);
 
-    const status = req.body?.status || "studying";
-
-    const joinedAt = req.body?.joined_at ?? null;
-
-    console.log("");
-    console.log(
-      "================================================================",
-    );
-    console.log(`🚀 [${requestId}] ADD STUDENT TO CLASS`);
-    console.log(
-      "================================================================",
-    );
-
-    console.log("USER:", {
-      id: req.user?.id,
-      username: req.user?.username,
-      role: req.user?.role,
-      church_id: req.user?.church_id,
-    });
-
-    console.log("BODY:", {
-      class_id: req.body?.class_id,
-      student_id: req.body?.student_id,
-      status,
-      joined_at: joinedAt,
-    });
-
-    // =====================================================
-    // AUTH
-    // =====================================================
+    if (!classId || !studentId) {
+      return res.status(400).json({
+        success: false,
+        message: "class_id và student_id là bắt buộc",
+        request_id: requestId,
+      });
+    }
 
     if (!churchId) {
       return res.status(403).json({
         success: false,
-        code: "NO_CHURCH_ID",
-        message: "Tài khoản chưa được liên kết với giáo xứ",
-      });
-    }
-
-    // =====================================================
-    // VALIDATE
-    // =====================================================
-
-    if (!classId) {
-      return res.status(400).json({
-        success: false,
-        code: "INVALID_CLASS_ID",
-        message: "class_id không hợp lệ",
-      });
-    }
-
-    if (!studentId) {
-      return res.status(400).json({
-        success: false,
-        code: "INVALID_STUDENT_ID",
-        message: "student_id không hợp lệ",
+        message: "Không xác định được giáo xứ",
+        request_id: requestId,
       });
     }
 
     if (!ALLOWED_STATUS.includes(status)) {
       return res.status(400).json({
         success: false,
-        code: "INVALID_STATUS",
         message: "Trạng thái học sinh không hợp lệ",
+        allowed_status: ALLOWED_STATUS,
+        request_id: requestId,
       });
     }
-
-    // =====================================================
-    // CONNECTION
-    // =====================================================
 
     connection = await db.getConnection();
 
     await connection.beginTransaction();
 
-    transactionStarted = true;
+    const classInfo = await getClassById(connection, classId, churchId);
 
-    // =====================================================
-    // CLASS
-    // =====================================================
-
-    const targetClass = await getClassById(classId, churchId, connection);
-
-    if (!targetClass) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
+    if (!classInfo) {
+      await safeRollback(connection);
 
       return res.status(404).json({
         success: false,
-        code: "CLASS_NOT_FOUND",
-        message: "Không tìm thấy lớp hoặc lớp không thuộc giáo xứ",
+        message: "Không tìm thấy lớp học",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // STUDENT
-    // =====================================================
-
-    const student = await getStudentById(studentId, churchId, connection);
+    const student = await getStudentById(connection, studentId, churchId);
 
     if (!student) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
+      await safeRollback(connection);
 
       return res.status(404).json({
         success: false,
-        code: "STUDENT_NOT_FOUND",
-        message: "Không tìm thấy học sinh hoặc học sinh không thuộc giáo xứ",
+        message: "Không tìm thấy học sinh",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // EXACT RELATION
-    // =====================================================
-
-    const relation = await getClassStudentRelation(
+    const existingRelation = await getClassStudentRelation(
+      connection,
       classId,
       studentId,
       churchId,
-      connection,
     );
 
-    // =====================================================
-    // TARGET RELATION EXISTS
-    // =====================================================
+    // ---------------------------------------------------
+    // ĐÃ ĐANG HỌC LỚP NÀY
+    // ---------------------------------------------------
 
-    if (relation) {
-      // ===================================================
-      // ACTIVE
-      // ===================================================
+    if (
+      existingRelation &&
+      existingRelation.status === "studying" &&
+      existingRelation.left_at === null
+    ) {
+      await safeRollback(connection);
 
-      if (relation.status === "studying" && !relation.left_at) {
-        await safeRollback(connection, transactionStarted, requestId);
+      return res.status(409).json({
+        success: false,
+        code: "ALREADY_IN_CLASS",
+        message: "Học sinh đã ở trong lớp này",
+        request_id: requestId,
+      });
+    }
 
-        transactionStarted = false;
+    // ---------------------------------------------------
+    // THÊM LẠI QUAN HỆ CŨ
+    // ---------------------------------------------------
 
-        return res.status(409).json({
-          success: false,
+    if (existingRelation) {
+      if (status === "studying") {
+        const activeRelation = await getActiveStudentRelation(
+          connection,
+          studentId,
+          churchId,
+          classId,
+        );
 
-          code: "ALREADY_IN_CLASS",
+        if (activeRelation) {
+          await safeRollback(connection);
 
-          message:
-            `Học sinh "${student.name}" ` +
-            `đang học tại lớp "${relation.class_name}"`,
-
-          data: {
-            relation_id: Number(relation.id),
-
-            class_id: Number(relation.class_id),
-
-            student_id: Number(relation.student_id),
-
-            status: relation.status,
-
-            joined_at: relation.joined_at,
-
-            left_at: relation.left_at,
-
-            academic_year: relation.academic_year,
-
-            class_name: relation.class_name,
-
-            class_code: relation.class_code,
-          },
-
-          debug: {
+          return res.status(409).json({
+            success: false,
+            code: "STUDENT_ALREADY_STUDYING",
+            message: `Học sinh đang học lớp ${activeRelation.class_name}`,
+            data: activeRelation,
             request_id: requestId,
-            reason: "EXACT_ACTIVE_RELATION_EXISTS",
-          },
-        });
+          });
+        }
       }
 
-      // ===================================================
-      // REACTIVATE OLD RELATION
-      // ===================================================
+      const joinedAt =
+        status === "studying" ? new Date() : existingRelation.joined_at;
 
-      console.log(`♻️ [${requestId}] REACTIVATE OLD RELATION`);
+      const leftAt = status === "studying" ? null : existingRelation.left_at;
 
-      const [result] = await connection.query(
+      await connection.query(
         `
-            UPDATE class_students
-
-            SET
-              status = ?,
-              joined_at = COALESCE(?, NOW()),
-              left_at = NULL
-
-            WHERE id = ?
-          `,
-        [status, joinedAt, relation.id],
+          UPDATE class_students
+          SET
+            status = ?,
+            joined_at = ?,
+            left_at = ?
+          WHERE id = ?
+        `,
+        [status, joinedAt, leftAt, existingRelation.id],
       );
-
-      if (!result.affectedRows) {
-        await safeRollback(connection, transactionStarted, requestId);
-
-        transactionStarted = false;
-
-        return res.status(400).json({
-          success: false,
-          code: "REACTIVATE_FAILED",
-          message: "Không thể kích hoạt lại quan hệ lớp - học sinh",
-        });
-      }
-
-      // ===================================================
-      // COMMIT
-      // ===================================================
 
       await connection.commit();
 
-      transactionStarted = false;
-
-      // ===================================================
-      // LOG
-      // ===================================================
-
-      await safeWriteLog(req, {
+      await safeWriteLog({
+        church_id: churchId,
         action: "REACTIVATE_STUDENT_CLASS",
-
-        target_type: "class_students",
-
-        target_id: relation.id,
-
-        description:
-          `Kích hoạt lại học sinh "${student.name}" ` +
-          `(${student.code || "—"}) ` +
-          `trong lớp "${targetClass.name}" ` +
-          `(${targetClass.code || "—"}) ` +
-          `- năm học ${targetClass.academic_year || "—"}`,
+        description: `Thêm lại học sinh ${student.name} vào lớp ${classInfo.name}`,
+        user_id: req.user?.id || null,
       });
 
       return res.status(200).json({
         success: true,
-
-        code: "RELATION_REACTIVATED",
-
-        message: "Học sinh đã được đưa trở lại lớp",
-
-        data: {
-          id: Number(relation.id),
-
-          class_id: classId,
-
-          student_id: studentId,
-
-          status,
-
-          joined_at: joinedAt || new Date(),
-
-          left_at: null,
-
-          academic_year: targetClass.academic_year,
-
-          class: targetClass,
-
-          student,
-        },
-
-        debug: {
-          request_id: requestId,
-        },
+        message: "Đã cập nhật học sinh vào lớp",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // CHECK OTHER ACTIVE CLASS
-    // =====================================================
+    // ---------------------------------------------------
+    // CHECK ĐANG HỌC LỚP KHÁC
+    // ---------------------------------------------------
 
     if (status === "studying") {
       const activeRelation = await getActiveStudentRelation(
+        connection,
         studentId,
         churchId,
-        connection,
       );
 
       if (activeRelation) {
-        await safeRollback(connection, transactionStarted, requestId);
-
-        transactionStarted = false;
+        await safeRollback(connection);
 
         return res.status(409).json({
           success: false,
-
           code: "STUDENT_ALREADY_STUDYING",
-
-          message:
-            `Học sinh "${student.name}" ` +
-            `đang học tại lớp "${activeRelation.class_name}"`,
-
-          data: {
-            student_id: studentId,
-
-            current_class: {
-              id: Number(activeRelation.class_id),
-
-              name: activeRelation.class_name,
-
-              code: activeRelation.class_code,
-
-              academic_year: activeRelation.academic_year,
-
-              relation_id: Number(activeRelation.id),
-
-              status: activeRelation.status,
-
-              joined_at: activeRelation.joined_at,
-
-              left_at: activeRelation.left_at,
-            },
-
-            target_class: {
-              id: Number(targetClass.id),
-
-              name: targetClass.name,
-
-              code: targetClass.code,
-
-              academic_year: targetClass.academic_year,
-            },
-          },
-
-          debug: {
-            request_id: requestId,
-            reason: "ACTIVE_RELATION_IN_OTHER_CLASS",
-          },
+          message: `Học sinh đang học lớp ${activeRelation.class_name}`,
+          data: activeRelation,
+          request_id: requestId,
         });
       }
     }
 
-    // =====================================================
+    // ---------------------------------------------------
     // INSERT
-    // =====================================================
+    // ---------------------------------------------------
+
+    const joinedAt = status === "studying" ? new Date() : null;
+
+    const leftAt = status === "studying" ? null : new Date();
 
     const [insertResult] = await connection.query(
       `
-          INSERT INTO class_students
-          (
-            class_id,
-            student_id,
-            status,
-            joined_at,
-            left_at
-          )
-
-          VALUES
-          (
-            ?,
-            ?,
-            ?,
-            COALESCE(?, NOW()),
-            NULL
-          )
-        `,
-      [classId, studentId, status, joinedAt],
+        INSERT INTO class_students (
+          class_id,
+          student_id,
+          status,
+          joined_at,
+          left_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+      `,
+      [classId, studentId, status, joinedAt, leftAt],
     );
-
-    // =====================================================
-    // VERIFY
-    // =====================================================
-
-    const [verifyRows] = await connection.query(
-      `
-          SELECT
-            cs.id,
-            cs.class_id,
-            cs.student_id,
-            cs.status,
-            cs.joined_at,
-            cs.left_at,
-
-            c.name AS class_name,
-            c.code AS class_code,
-            c.academic_year
-
-          FROM class_students cs
-
-          INNER JOIN classes c
-            ON c.id = cs.class_id
-
-          INNER JOIN students s
-            ON s.id = cs.student_id
-
-          WHERE cs.id = ?
-
-            AND c.church_id = ?
-            AND s.church_id = ?
-
-          LIMIT 1
-        `,
-      [insertResult.insertId, churchId, churchId],
-    );
-
-    if (!verifyRows.length) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
-
-      return res.status(500).json({
-        success: false,
-        code: "INSERT_VERIFY_FAILED",
-        message: "Đã thêm nhưng không thể xác nhận dữ liệu trong database",
-
-        debug: {
-          request_id: requestId,
-          inserted_id: insertResult.insertId,
-        },
-      });
-    }
-
-    // =====================================================
-    // COMMIT
-    // =====================================================
 
     await connection.commit();
 
-    transactionStarted = false;
-
-    // =====================================================
-    // LOG
-    // =====================================================
-
-    await safeWriteLog(req, {
+    await safeWriteLog({
+      church_id: churchId,
       action: "ADD_STUDENT_TO_CLASS",
-
-      target_type: "class_students",
-
-      target_id: insertResult.insertId,
-
-      description:
-        `Thêm học sinh "${student.name}" ` +
-        `(${student.code || "—"}) ` +
-        `vào lớp "${targetClass.name}" ` +
-        `(${targetClass.code || "—"}) ` +
-        `- năm học ${targetClass.academic_year || "—"}`,
+      description: `Thêm học sinh ${student.name} vào lớp ${classInfo.name}`,
+      user_id: req.user?.id || null,
     });
+
+    console.log("CREATED RELATION ID:", insertResult.insertId);
 
     return res.status(201).json({
       success: true,
-
-      code: "STUDENT_ADDED",
-
       message: "Thêm học sinh vào lớp thành công",
+      request_id: requestId,
 
       data: {
-        id: Number(insertResult.insertId),
-
+        id: insertResult.insertId,
         class_id: classId,
-
         student_id: studentId,
-
         status,
-
-        joined_at: verifyRows[0]?.joined_at || joinedAt || new Date(),
-
-        left_at: null,
-
-        academic_year: targetClass.academic_year,
-
-        class: targetClass,
-
-        student,
-      },
-
-      debug: {
-        request_id: requestId,
       },
     });
   } catch (error) {
-    await safeRollback(connection, transactionStarted, requestId);
+    await safeRollback(connection);
 
-    transactionStarted = false;
-
-    console.error("");
-    console.error(`💥 [${requestId}] ADD STUDENT ERROR`);
-
-    console.error("MESSAGE:", error.message);
-
-    console.error("CODE:", error.code);
-
-    console.error("SQL:", error.sqlMessage);
-
-    // =====================================================
-    // DUPLICATE
-    // =====================================================
-
-    if (error.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({
-        success: false,
-
-        code: "DUPLICATE_RELATION",
-
-        message: "Quan hệ học sinh - lớp đã tồn tại",
-
-        error: error.sqlMessage,
-
-        debug: {
-          request_id: requestId,
-
-          class_id: req.body?.class_id,
-
-          student_id: req.body?.student_id,
-
-          church_id: req.user?.church_id,
-        },
-      });
-    }
-
-    // =====================================================
-    // FOREIGN KEY
-    // =====================================================
-
-    if (error.code === "ER_NO_REFERENCED_ROW_2") {
-      return res.status(400).json({
-        success: false,
-
-        code: "FOREIGN_KEY_ERROR",
-
-        message: "Lớp hoặc học sinh không tồn tại",
-
-        error: error.sqlMessage,
-
-        debug: {
-          request_id: requestId,
-        },
-      });
-    }
-
-    // =====================================================
-    // UNKNOWN COLUMN
-    // =====================================================
-
-    if (error.code === "ER_BAD_FIELD_ERROR") {
-      return res.status(500).json({
-        success: false,
-
-        code: "DATABASE_COLUMN_ERROR",
-
-        message: "Cấu trúc database không khớp với code backend",
-
-        error: error.sqlMessage,
-
-        debug: {
-          request_id: requestId,
-
-          hint: "Kiểm tra classes.academic_year và các cột của class_students/class_schedules",
-        },
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-
-      code: "ADD_STUDENT_TO_CLASS_ERROR",
-
-      message: "Không thể thêm học sinh vào lớp",
-
-      debug: {
-        request_id: requestId,
-      },
-    });
+    return sendServerError(res, requestId, error, "ADD STUDENT TO CLASS ERROR");
   } finally {
     if (connection) {
       connection.release();
     }
-
-    console.log(`🏁 [${requestId}] ADD STUDENT REQUEST FINISHED`);
   }
 };
 
 // =====================================================
-// 4. UPDATE CLASS STUDENT
-//
-// PUT /api/class-students/update/:classId/:studentId
+// 4. UPDATE CLASS-STUDENT
 // =====================================================
 
 exports.updateClassStudent = async (req, res) => {
   const requestId = createRequestId("UPDATE-CLASS-STUDENT");
 
-  let connection = null;
-  let transactionStarted = false;
+  console.log("");
+  console.log(
+    "================================================================",
+  );
+  console.log(`✏️ [${requestId}] UPDATE CLASS STUDENT`);
+  console.log(
+    "================================================================",
+  );
+
+  let connection;
 
   try {
     const classId = toPositiveInt(req.params.classId);
-
     const studentId = toPositiveInt(req.params.studentId);
+    const churchId = toPositiveInt(getChurchId(req));
 
-    const churchId = toPositiveInt(req.user?.church_id);
-
-    const { status, joined_at, left_at } = req.body;
-
-    console.log("");
-    console.log(
-      "================================================================",
-    );
-    console.log(`✏️ [${requestId}] UPDATE CLASS STUDENT`);
-    console.log(
-      "================================================================",
-    );
-
-    // =====================================================
-    // AUTH
-    // =====================================================
-
-    if (!churchId) {
-      return res.status(403).json({
-        success: false,
-        code: "NO_CHURCH_ID",
-        message: "Tài khoản chưa được liên kết với giáo xứ",
-      });
-    }
-
-    // =====================================================
-    // VALIDATE
-    // =====================================================
+    console.log("CLASS ID:", classId);
+    console.log("STUDENT ID:", studentId);
+    console.log("CHURCH ID:", churchId);
 
     if (!classId || !studentId) {
       return res.status(400).json({
         success: false,
-        code: "INVALID_ID",
-        message: "classId và studentId không hợp lệ",
+        message: "classId hoặc studentId không hợp lệ",
+        request_id: requestId,
       });
     }
 
-    if (status !== undefined && !ALLOWED_STATUS.includes(status)) {
-      return res.status(400).json({
+    if (!churchId) {
+      return res.status(403).json({
         success: false,
-        code: "INVALID_STATUS",
-        message: "Trạng thái không hợp lệ",
+        message: "Không xác định được giáo xứ",
+        request_id: requestId,
       });
     }
-
-    // =====================================================
-    // CONNECTION
-    // =====================================================
 
     connection = await db.getConnection();
 
     await connection.beginTransaction();
 
-    transactionStarted = true;
-
-    // =====================================================
-    // RELATION
-    // =====================================================
-
     const relation = await getClassStudentRelation(
+      connection,
       classId,
       studentId,
       churchId,
-      connection,
     );
 
     if (!relation) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
+      await safeRollback(connection);
 
       return res.status(404).json({
         success: false,
-        code: "RELATION_NOT_FOUND",
-        message: "Không tìm thấy học sinh trong lớp của giáo xứ",
+        message: "Không tìm thấy học sinh trong lớp",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // CHECK OTHER ACTIVE CLASS
-    // =====================================================
+    const nextStatus =
+      req.body.status !== undefined ? req.body.status : relation.status;
 
-    if (status === "studying") {
-      const otherActive = await getActiveStudentRelation(
+    if (!ALLOWED_STATUS.includes(nextStatus)) {
+      await safeRollback(connection);
+
+      return res.status(400).json({
+        success: false,
+        message: "Trạng thái không hợp lệ",
+        allowed_status: ALLOWED_STATUS,
+        request_id: requestId,
+      });
+    }
+
+    // ---------------------------------------------------
+    // CHUYỂN SANG STUDYING
+    // ---------------------------------------------------
+
+    if (
+      nextStatus === "studying" &&
+      (relation.status !== "studying" || relation.left_at !== null)
+    ) {
+      const activeRelation = await getActiveStudentRelation(
+        connection,
         studentId,
         churchId,
-        connection,
         classId,
       );
 
-      if (otherActive) {
-        await safeRollback(connection, transactionStarted, requestId);
-
-        transactionStarted = false;
+      if (activeRelation) {
+        await safeRollback(connection);
 
         return res.status(409).json({
           success: false,
-
           code: "STUDENT_ALREADY_STUDYING",
-
-          message: `Học sinh đang học tại lớp "${otherActive.class_name}"`,
-
-          data: {
-            current_class: {
-              id: Number(otherActive.class_id),
-
-              name: otherActive.class_name,
-
-              code: otherActive.class_code,
-
-              academic_year: otherActive.academic_year,
-
-              relation_id: Number(otherActive.id),
-            },
-          },
-
-          debug: {
-            request_id: requestId,
-          },
+          message: `Học sinh đang học lớp ${activeRelation.class_name}`,
+          data: activeRelation,
+          request_id: requestId,
         });
       }
     }
 
-    // =====================================================
-    // BUILD UPDATE
-    // =====================================================
-
-    const fields = [];
+    const updates = [];
     const values = [];
 
-    if (status !== undefined) {
-      fields.push("status = ?");
-      values.push(status);
+    if (req.body.status !== undefined) {
+      updates.push("status = ?");
+      values.push(nextStatus);
     }
 
-    if (joined_at !== undefined) {
-      fields.push("joined_at = ?");
-      values.push(joined_at);
+    if (req.body.joined_at !== undefined) {
+      updates.push("joined_at = ?");
+      values.push(req.body.joined_at || null);
     }
 
-    if (left_at !== undefined) {
-      fields.push("left_at = ?");
-      values.push(left_at);
+    if (req.body.left_at !== undefined) {
+      updates.push("left_at = ?");
+      values.push(req.body.left_at || null);
     }
 
-    if (!fields.length) {
-      await safeRollback(connection, transactionStarted, requestId);
+    // Nếu chuyển về studying mà không truyền joined_at
+    if (nextStatus === "studying" && relation.status !== "studying") {
+      if (req.body.joined_at === undefined) {
+        updates.push("joined_at = ?");
+        values.push(new Date());
+      }
 
-      transactionStarted = false;
+      if (req.body.left_at === undefined) {
+        updates.push("left_at = ?");
+        values.push(null);
+      }
+    }
+
+    // Nếu chuyển khỏi studying mà không truyền left_at
+    if (
+      nextStatus !== "studying" &&
+      relation.status === "studying" &&
+      req.body.left_at === undefined
+    ) {
+      updates.push("left_at = ?");
+      values.push(new Date());
+    }
+
+    if (updates.length === 0) {
+      await safeRollback(connection);
 
       return res.status(400).json({
         success: false,
-        code: "NO_UPDATE_DATA",
         message: "Không có dữ liệu cần cập nhật",
+        request_id: requestId,
       });
     }
 
     values.push(relation.id);
 
-    // =====================================================
-    // UPDATE
-    // =====================================================
-
-    const [result] = await connection.query(
+    await connection.query(
       `
-          UPDATE class_students
-
-          SET
-            ${fields.join(", ")}
-
-          WHERE id = ?
-        `,
+        UPDATE class_students
+        SET
+          ${updates.join(", ")}
+        WHERE id = ?
+      `,
       values,
     );
 
-    if (!result.affectedRows) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
-
-      return res.status(400).json({
-        success: false,
-        code: "UPDATE_FAILED",
-        message: "Không thể cập nhật quan hệ lớp - học sinh",
-      });
-    }
-
-    // =====================================================
-    // COMMIT
-    // =====================================================
-
     await connection.commit();
 
-    transactionStarted = false;
-
-    // =====================================================
-    // LOG
-    // =====================================================
-
-    await safeWriteLog(req, {
+    await safeWriteLog({
+      church_id: churchId,
       action: "UPDATE_CLASS_STUDENT",
-
-      target_type: "class_students",
-
-      target_id: relation.id,
-
-      description:
-        `Cập nhật học sinh "${relation.student_name}" ` +
-        `(${relation.student_code || "—"}) ` +
-        `trong lớp "${relation.class_name}" ` +
-        `(${relation.class_code || "—"}) ` +
-        `- năm học ${relation.academic_year || "—"}`,
+      description: `Cập nhật học sinh ${relation.student_name} trong lớp ${relation.class_name}`,
+      user_id: req.user?.id || null,
     });
 
-    return res.json({
+    return res.status(200).json({
       success: true,
-
-      message: "Cập nhật quan hệ lớp - học sinh thành công",
-
-      data: {
-        relation_id: Number(relation.id),
-
-        class_id: Number(relation.class_id),
-
-        student_id: Number(relation.student_id),
-
-        academic_year: relation.academic_year,
-
-        affectedRows: result.affectedRows,
-      },
-
-      debug: {
-        request_id: requestId,
-      },
+      message: "Cập nhật học sinh thành công",
+      request_id: requestId,
     });
   } catch (error) {
-    await safeRollback(connection, transactionStarted, requestId);
+    await safeRollback(connection);
 
-    transactionStarted = false;
-
-    console.error(`💥 [${requestId}] UPDATE CLASS STUDENT ERROR`);
-
-    console.error("MESSAGE:", error.message);
-
-    console.error("CODE:", error.code);
-
-    console.error("SQL:", error.sqlMessage);
-
-    return res.status(500).json({
-      success: false,
-      code: "UPDATE_CLASS_STUDENT_ERROR",
-      message: "Không thể cập nhật quan hệ lớp - học sinh",
-
-      debug: {
-        request_id: requestId,
-      },
-    });
+    return sendServerError(res, requestId, error, "UPDATE CLASS STUDENT ERROR");
   } finally {
     if (connection) {
       connection.release();
@@ -1639,345 +1040,189 @@ exports.updateClassStudent = async (req, res) => {
 };
 
 // =====================================================
-// 5. CHANGE ONE STUDENT CLASS
-//
-// PUT /api/class-students/:classId/:studentId/change-class
-//
-// BODY:
-// {
-//   new_class_id: 5
-// }
+// 5. CHANGE ONE STUDENT TO ANOTHER CLASS
 // =====================================================
 
 exports.changeClassStudent = async (req, res) => {
-  const requestId = createRequestId("CHANGE-CLASS");
+  const requestId = createRequestId("CHANGE-CLASS-STUDENT");
 
-  let connection = null;
-  let transactionStarted = false;
+  console.log("");
+  console.log(
+    "================================================================",
+  );
+  console.log(`🔄 [${requestId}] CHANGE CLASS STUDENT`);
+  console.log(
+    "================================================================",
+  );
+
+  let connection;
 
   try {
     const oldClassId = toPositiveInt(req.params.classId);
-
     const studentId = toPositiveInt(req.params.studentId);
+    const newClassId = toPositiveInt(req.body.new_class_id);
+    const churchId = toPositiveInt(getChurchId(req));
 
-    const newClassId = toPositiveInt(
-      req.body?.new_class_id ?? req.body?.newClassId,
-    );
-
-    const churchId = toPositiveInt(req.user?.church_id);
-
-    console.log("");
-    console.log(
-      "================================================================",
-    );
-    console.log(`🔄 [${requestId}] CHANGE ONE STUDENT CLASS`);
-    console.log(
-      "================================================================",
-    );
-
-    console.log({
-      oldClassId,
-      studentId,
-      newClassId,
-      churchId,
-    });
-
-    // =====================================================
-    // VALIDATE
-    // =====================================================
-
-    if (!churchId) {
-      return res.status(403).json({
-        success: false,
-        code: "NO_CHURCH_ID",
-        message: "Tài khoản chưa được liên kết với giáo xứ",
-      });
-    }
+    console.log("OLD CLASS ID:", oldClassId);
+    console.log("NEW CLASS ID:", newClassId);
+    console.log("STUDENT ID:", studentId);
+    console.log("CHURCH ID:", churchId);
 
     if (!oldClassId || !studentId || !newClassId) {
       return res.status(400).json({
         success: false,
-        code: "INVALID_DATA",
-        message: "classId, studentId và new_class_id là bắt buộc",
+        message: "Thông tin chuyển lớp không hợp lệ",
+        request_id: requestId,
       });
     }
 
     if (oldClassId === newClassId) {
       return res.status(400).json({
         success: false,
-        code: "SAME_CLASS",
         message: "Lớp mới phải khác lớp hiện tại",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // CONNECTION
-    // =====================================================
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ",
+        request_id: requestId,
+      });
+    }
 
     connection = await db.getConnection();
 
     await connection.beginTransaction();
 
-    transactionStarted = true;
-
-    // =====================================================
-    // OLD CLASS
-    // =====================================================
-
-    const oldClass = await getClassById(oldClassId, churchId, connection);
+    const oldClass = await getClassById(connection, oldClassId, churchId);
 
     if (!oldClass) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
+      await safeRollback(connection);
 
       return res.status(404).json({
         success: false,
-        code: "OLD_CLASS_NOT_FOUND",
         message: "Không tìm thấy lớp hiện tại",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // NEW CLASS
-    // =====================================================
-
-    const newClass = await getClassById(newClassId, churchId, connection);
+    const newClass = await getClassById(connection, newClassId, churchId);
 
     if (!newClass) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
+      await safeRollback(connection);
 
       return res.status(404).json({
         success: false,
-        code: "NEW_CLASS_NOT_FOUND",
         message: "Không tìm thấy lớp mới",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // STUDENT
-    // =====================================================
-
-    const student = await getStudentById(studentId, churchId, connection);
+    const student = await getStudentById(connection, studentId, churchId);
 
     if (!student) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
+      await safeRollback(connection);
 
       return res.status(404).json({
         success: false,
-        code: "STUDENT_NOT_FOUND",
         message: "Không tìm thấy học sinh",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // OLD RELATION
-    // =====================================================
-
-    const relation = await getClassStudentRelation(
+    const oldRelation = await getClassStudentRelation(
+      connection,
       oldClassId,
       studentId,
       churchId,
-      connection,
     );
 
-    if (!relation) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
+    if (!oldRelation) {
+      await safeRollback(connection);
 
       return res.status(404).json({
         success: false,
-        code: "OLD_RELATION_NOT_FOUND",
         message: "Học sinh không thuộc lớp hiện tại",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // NEW RELATION
-    // =====================================================
-
-    const targetRelation = await getClassStudentRelation(
+    const newRelation = await getClassStudentRelation(
+      connection,
       newClassId,
       studentId,
       churchId,
-      connection,
     );
 
-    if (targetRelation) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
+    if (newRelation) {
+      await safeRollback(connection);
 
       return res.status(409).json({
         success: false,
-
         code: "ALREADY_IN_TARGET_CLASS",
-
-        message: `Học sinh đã có quan hệ với lớp "${newClass.name}"`,
-
-        data: {
-          relation: targetRelation,
-
-          academic_year: newClass.academic_year,
-        },
-
-        debug: {
-          request_id: requestId,
-        },
+        message: "Học sinh đã từng/đang thuộc lớp mới",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // OTHER ACTIVE CLASS
-    // =====================================================
-
-    const otherActive = await getActiveStudentRelation(
+    const activeRelation = await getActiveStudentRelation(
+      connection,
       studentId,
       churchId,
-      connection,
       oldClassId,
     );
 
-    if (otherActive && Number(otherActive.class_id) !== Number(newClassId)) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
+    if (activeRelation) {
+      await safeRollback(connection);
 
       return res.status(409).json({
         success: false,
-
         code: "STUDENT_ALREADY_STUDYING",
-
-        message: `Học sinh đang học tại lớp "${otherActive.class_name}"`,
-
-        data: {
-          current_class: otherActive,
-        },
-
-        debug: {
-          request_id: requestId,
-        },
+        message: `Học sinh đang học lớp ${activeRelation.class_name}`,
+        data: activeRelation,
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // CHANGE CLASS
-    //
-    // Giữ nguyên relation ID.
-    // =====================================================
-
-    const [result] = await connection.query(
+    await connection.query(
       `
-          UPDATE class_students
-
-          SET
-            class_id = ?,
-            status = 'studying',
-            left_at = NULL
-
-          WHERE id = ?
-        `,
-      [newClassId, relation.id],
+        UPDATE class_students
+        SET
+          class_id = ?,
+          status = 'studying',
+          joined_at = ?,
+          left_at = NULL
+        WHERE id = ?
+      `,
+      [newClassId, new Date(), oldRelation.id],
     );
-
-    if (!result.affectedRows) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
-
-      return res.status(400).json({
-        success: false,
-        code: "CHANGE_CLASS_FAILED",
-        message: "Không thể chuyển lớp",
-      });
-    }
-
-    // =====================================================
-    // COMMIT
-    // =====================================================
 
     await connection.commit();
 
-    transactionStarted = false;
-
-    // =====================================================
-    // LOG
-    // =====================================================
-
-    await safeWriteLog(req, {
+    await safeWriteLog({
+      church_id: churchId,
       action: "CHANGE_CLASS_STUDENT",
-
-      target_type: "class_students",
-
-      target_id: relation.id,
-
-      description:
-        `Chuyển học sinh "${student.name}" ` +
-        `(${student.code || "—"}) ` +
-        `từ lớp "${oldClass.name}" ` +
-        `(${oldClass.code || "—"}) ` +
-        `năm học ${oldClass.academic_year || "—"} ` +
-        `sang lớp "${newClass.name}" ` +
-        `(${newClass.code || "—"}) ` +
-        `năm học ${newClass.academic_year || "—"}`,
+      description: `Chuyển học sinh ${student.name} từ lớp ${oldClass.name} sang lớp ${newClass.name}`,
+      user_id: req.user?.id || null,
     });
 
-    return res.json({
+    return res.status(200).json({
       success: true,
-
-      code: "CLASS_CHANGED",
-
       message: "Chuyển lớp thành công",
+      request_id: requestId,
 
       data: {
-        relation_id: Number(relation.id),
-
         student_id: studentId,
-
         old_class_id: oldClassId,
-
         new_class_id: newClassId,
-
-        old_class_name: oldClass.name,
-
-        new_class_name: newClass.name,
-
-        old_academic_year: oldClass.academic_year,
-
-        new_academic_year: newClass.academic_year,
-      },
-
-      debug: {
-        request_id: requestId,
       },
     });
   } catch (error) {
-    await safeRollback(connection, transactionStarted, requestId);
+    await safeRollback(connection);
 
-    transactionStarted = false;
-
-    console.error(`💥 [${requestId}] CHANGE CLASS ERROR`);
-
-    console.error("MESSAGE:", error.message);
-
-    console.error("CODE:", error.code);
-
-    console.error("SQL:", error.sqlMessage);
-
-    return res.status(500).json({
-      success: false,
-      code: "CHANGE_CLASS_ERROR",
-      message: "Không thể chuyển lớp",
-
-      debug: {
-        request_id: requestId,
-      },
-    });
+    return sendServerError(res, requestId, error, "CHANGE CLASS STUDENT ERROR");
   } finally {
     if (connection) {
       connection.release();
@@ -1986,493 +1231,304 @@ exports.changeClassStudent = async (req, res) => {
 };
 
 // =====================================================
-// 6. CHANGE MANY STUDENTS
-//
-// PUT /api/class-students/classes/:classId/change-students
-//
-// :classId = LỚP MỚI
-//
-// BODY:
-// {
-//   studentIds: [1,2,3]
-// }
+// 6. CHANGE MULTIPLE STUDENTS TO CLASS
 // =====================================================
 
 exports.changeClassStudents = async (req, res) => {
-  const requestId = createRequestId("BULK-CHANGE");
+  const requestId = createRequestId("CHANGE-CLASS-STUDENTS");
 
-  let connection = null;
-  let transactionStarted = false;
+  console.log("");
+  console.log(
+    "================================================================",
+  );
+  console.log(`🔄 [${requestId}] CHANGE MULTIPLE STUDENTS`);
+  console.log(
+    "================================================================",
+  );
+
+  let connection;
 
   try {
-    const newClassId = toPositiveInt(req.params.classId);
+    const classId = toPositiveInt(req.params.classId);
+    const churchId = toPositiveInt(getChurchId(req));
 
-    const churchId = toPositiveInt(req.user?.church_id);
+    const studentIds = Array.isArray(req.body.student_ids)
+      ? req.body.student_ids.map(toPositiveInt).filter(Boolean)
+      : [];
 
-    const { studentIds } = req.body;
+    console.log("TARGET CLASS ID:", classId);
+    console.log("CHURCH ID:", churchId);
+    console.log("STUDENT COUNT:", studentIds.length);
 
-    console.log("");
-    console.log(
-      "================================================================",
-    );
-    console.log(`👥 [${requestId}] BULK CHANGE STUDENTS`);
-    console.log(
-      "================================================================",
-    );
-
-    // =====================================================
-    // AUTH
-    // =====================================================
+    if (!classId) {
+      return res.status(400).json({
+        success: false,
+        message: "classId không hợp lệ",
+        request_id: requestId,
+      });
+    }
 
     if (!churchId) {
       return res.status(403).json({
         success: false,
-        code: "NO_CHURCH_ID",
-        message: "Tài khoản chưa được liên kết với giáo xứ",
+        message: "Không xác định được giáo xứ",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // VALIDATE CLASS
-    // =====================================================
-
-    if (!newClassId) {
+    if (studentIds.length === 0) {
       return res.status(400).json({
         success: false,
-        code: "INVALID_CLASS_ID",
-        message: "classId không hợp lệ",
+        message: "Danh sách học sinh không được để trống",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // VALIDATE STUDENTS
-    // =====================================================
-
-    if (!Array.isArray(studentIds) || !studentIds.length) {
-      return res.status(400).json({
-        success: false,
-        code: "INVALID_STUDENT_IDS",
-        message: "studentIds phải là mảng và không được rỗng",
-      });
-    }
-
-    const uniqueStudentIds = [
-      ...new Set(
-        studentIds
-          .map((id) => Number(id))
-          .filter((id) => Number.isInteger(id) && id > 0),
-      ),
-    ];
-
-    if (!uniqueStudentIds.length) {
-      return res.status(400).json({
-        success: false,
-        code: "INVALID_STUDENT_IDS",
-        message: "Danh sách học sinh không hợp lệ",
-      });
-    }
-
-    // =====================================================
-    // CONNECTION
-    // =====================================================
+    const uniqueStudentIds = [...new Set(studentIds)];
 
     connection = await db.getConnection();
 
     await connection.beginTransaction();
 
-    transactionStarted = true;
+    const targetClass = await getClassById(connection, classId, churchId);
 
-    // =====================================================
-    // TARGET CLASS
-    // =====================================================
-
-    const newClass = await getClassById(newClassId, churchId, connection);
-
-    if (!newClass) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
+    if (!targetClass) {
+      await safeRollback(connection);
 
       return res.status(404).json({
         success: false,
-        code: "TARGET_CLASS_NOT_FOUND",
-        message: "Không tìm thấy lớp mới",
+        message: "Không tìm thấy lớp đích",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // STUDENTS
-    // =====================================================
+    // ---------------------------------------------------
+    // LOAD STUDENTS
+    // ---------------------------------------------------
 
     const placeholders = uniqueStudentIds.map(() => "?").join(",");
 
     const [students] = await connection.query(
       `
-          SELECT
-            id,
-            code,
-            name,
-            status,
-            church_id
-
-          FROM students
-
-          WHERE id IN (${placeholders})
-            AND church_id = ?
-        `,
-      [...uniqueStudentIds, churchId],
+        SELECT
+          id,
+          code,
+          name
+        FROM students
+        WHERE church_id = ?
+          AND id IN (${placeholders})
+      `,
+      [churchId, ...uniqueStudentIds],
     );
-
-    const foundIds = new Set(students.map((student) => Number(student.id)));
-
-    const notFoundIds = uniqueStudentIds.filter(
-      (id) => !foundIds.has(Number(id)),
-    );
-
-    if (notFoundIds.length) {
-      await safeRollback(connection, transactionStarted, requestId);
-
-      transactionStarted = false;
-
-      return res.status(404).json({
-        success: false,
-
-        code: "STUDENTS_NOT_FOUND",
-
-        message: "Một số học sinh không thuộc giáo xứ",
-
-        data: {
-          not_found_student_ids: notFoundIds,
-        },
-      });
-    }
-
-    // =====================================================
-    // CURRENT RELATIONS
-    // =====================================================
-
-    const [relations] = await connection.query(
-      `
-          SELECT
-            cs.id,
-            cs.class_id,
-            cs.student_id,
-
-            cs.status,
-            cs.joined_at,
-            cs.left_at,
-
-            c.name AS class_name,
-            c.code AS class_code,
-            c.category AS class_category,
-            c.academic_year,
-
-            c.church_id AS class_church_id
-
-          FROM class_students cs
-
-          INNER JOIN classes c
-            ON c.id = cs.class_id
-
-          INNER JOIN students s
-            ON s.id = cs.student_id
-
-          WHERE cs.student_id IN (${placeholders})
-
-            AND c.church_id = ?
-            AND s.church_id = ?
-
-          ORDER BY cs.id DESC
-        `,
-      [...uniqueStudentIds, churchId, churchId],
-    );
-
-    // =====================================================
-    // MAP
-    // =====================================================
-
-    const relationMap = new Map();
-
-    for (const relation of relations) {
-      const studentId = Number(relation.student_id);
-
-      if (!relationMap.has(studentId)) {
-        relationMap.set(studentId, []);
-      }
-
-      relationMap.get(studentId).push(relation);
-    }
-
-    // =====================================================
-    // RESULT
-    // =====================================================
-
-    const updated = [];
-    const inserted = [];
-    const alreadyInTarget = [];
-
-    // =====================================================
-    // PROCESS
-    // =====================================================
-
-    for (const studentId of uniqueStudentIds) {
-      console.log("");
-
-      console.log(`👤 [${requestId}] PROCESS STUDENT ${studentId}`);
-
-      const studentRelations = relationMap.get(studentId) || [];
-
-      // ===================================================
-      // TARGET RELATION
-      // ===================================================
-
-      const targetRelation = studentRelations.find(
-        (relation) => Number(relation.class_id) === Number(newClassId),
-      );
-
-      if (targetRelation) {
-        // =================================================
-        // ACTIVE TARGET
-        // =================================================
-
-        if (targetRelation.status === "studying" && !targetRelation.left_at) {
-          alreadyInTarget.push(studentId);
-
-          continue;
-        }
-
-        // =================================================
-        // REACTIVATE TARGET
-        // =================================================
-
-        const [reactivateResult] = await connection.query(
-          `
-            UPDATE class_students
-
-            SET
-              status = 'studying',
-              joined_at = NOW(),
-              left_at = NULL
-
-            WHERE id = ?
-          `,
-          [targetRelation.id],
-        );
-
-        if (!reactivateResult.affectedRows) {
-          throw new Error(
-            `Không thể kích hoạt lại relation ${targetRelation.id}`,
-          );
-        }
-
-        updated.push({
-          student_id: studentId,
-
-          relation_id: Number(targetRelation.id),
-
-          old_class_id: Number(targetRelation.class_id),
-
-          new_class_id: newClassId,
-
-          academic_year: newClass.academic_year,
-
-          type: "reactivated",
-        });
-
-        continue;
-      }
-
-      // ===================================================
-      // ACTIVE CLASS
-      // ===================================================
-
-      const activeRelation = studentRelations.find(
-        (relation) => relation.status === "studying" && !relation.left_at,
-      );
-
-      if (activeRelation) {
-        // =================================================
-        // MOVE EXISTING RELATION
-        // =================================================
-
-        const [updateResult] = await connection.query(
-          `
-            UPDATE class_students
-
-            SET
-              class_id = ?,
-              status = 'studying',
-              left_at = NULL
-
-            WHERE id = ?
-          `,
-          [newClassId, activeRelation.id],
-        );
-
-        if (!updateResult.affectedRows) {
-          throw new Error(`Không thể chuyển relation ${activeRelation.id}`);
-        }
-
-        updated.push({
-          student_id: studentId,
-
-          relation_id: Number(activeRelation.id),
-
-          old_class_id: Number(activeRelation.class_id),
-
-          new_class_id: newClassId,
-
-          old_academic_year: activeRelation.academic_year,
-
-          new_academic_year: newClass.academic_year,
-
-          type: "transferred",
-        });
-
-        continue;
-      }
-
-      // ===================================================
-      // NO ACTIVE CLASS
-      // ===================================================
-
-      const [insertResult] = await connection.query(
-        `
-          INSERT INTO class_students
-          (
-            class_id,
-            student_id,
-            status,
-            joined_at,
-            left_at
-          )
-
-          VALUES
-          (
-            ?,
-            ?,
-            'studying',
-            NOW(),
-            NULL
-          )
-        `,
-        [newClassId, studentId],
-      );
-
-      inserted.push({
-        student_id: studentId,
-
-        relation_id: Number(insertResult.insertId),
-
-        new_class_id: newClassId,
-
-        academic_year: newClass.academic_year,
-      });
-    }
-
-    // =====================================================
-    // COMMIT
-    // =====================================================
-
-    await connection.commit();
-
-    transactionStarted = false;
-
-    // =====================================================
-    // LOG
-    // =====================================================
 
     const studentMap = new Map(
       students.map((student) => [Number(student.id), student]),
     );
 
-    const studentNames = uniqueStudentIds
-      .map((id) => {
-        const student = studentMap.get(Number(id));
+    const result = {
+      total: uniqueStudentIds.length,
+      success: [],
+      alreadyInTarget: [],
+      failed: [],
+    };
 
-        return student ? `${student.name} (${student.code || "—"})` : `#${id}`;
-      })
-      .join(", ");
+    // ---------------------------------------------------
+    // PROCESS EACH STUDENT
+    // ---------------------------------------------------
 
-    await safeWriteLog(req, {
+    for (const studentId of uniqueStudentIds) {
+      const student = studentMap.get(studentId);
+
+      if (!student) {
+        result.failed.push({
+          student_id: studentId,
+          reason: "STUDENT_NOT_FOUND",
+        });
+
+        continue;
+      }
+
+      try {
+        const targetRelation = await getClassStudentRelation(
+          connection,
+          classId,
+          studentId,
+          churchId,
+        );
+
+        // ---------------------------------------------
+        // ĐANG Ở LỚP ĐÍCH
+        // ---------------------------------------------
+
+        if (
+          targetRelation &&
+          targetRelation.status === "studying" &&
+          targetRelation.left_at === null
+        ) {
+          result.alreadyInTarget.push({
+            student_id: studentId,
+            student_name: student.name,
+          });
+
+          continue;
+        }
+
+        // ---------------------------------------------
+        // QUAN HỆ CŨ Ở LỚP ĐÍCH
+        // ---------------------------------------------
+
+        if (targetRelation) {
+          const activeOther = await getActiveStudentRelation(
+            connection,
+            studentId,
+            churchId,
+            classId,
+          );
+
+          if (activeOther) {
+            result.failed.push({
+              student_id: studentId,
+              student_name: student.name,
+              reason: "STUDENT_ALREADY_STUDYING",
+              class_id: activeOther.class_id,
+              class_name: activeOther.class_name,
+            });
+
+            continue;
+          }
+
+          await connection.query(
+            `
+              UPDATE class_students
+              SET
+                status = 'studying',
+                joined_at = ?,
+                left_at = NULL
+              WHERE id = ?
+            `,
+            [new Date(), targetRelation.id],
+          );
+
+          result.success.push({
+            student_id: studentId,
+            student_name: student.name,
+            action: "reactivated",
+          });
+
+          continue;
+        }
+
+        // ---------------------------------------------
+        // TÌM LỚP ĐANG HỌC
+        // ---------------------------------------------
+
+        const activeRelation = await getActiveStudentRelation(
+          connection,
+          studentId,
+          churchId,
+        );
+
+        if (activeRelation) {
+          await connection.query(
+            `
+              UPDATE class_students
+              SET
+                class_id = ?,
+                status = 'studying',
+                joined_at = ?,
+                left_at = NULL
+              WHERE id = ?
+            `,
+            [classId, new Date(), activeRelation.id],
+          );
+
+          result.success.push({
+            student_id: studentId,
+            student_name: student.name,
+            action: "moved",
+            old_class_id: activeRelation.class_id,
+            old_class_name: activeRelation.class_name,
+          });
+
+          continue;
+        }
+
+        // ---------------------------------------------
+        // INSERT MỚI
+        // ---------------------------------------------
+
+        await connection.query(
+          `
+            INSERT INTO class_students (
+              class_id,
+              student_id,
+              status,
+              joined_at,
+              left_at
+            )
+            VALUES (?, ?, 'studying', ?, NULL)
+          `,
+          [classId, studentId, new Date()],
+        );
+
+        result.success.push({
+          student_id: studentId,
+          student_name: student.name,
+          action: "inserted",
+        });
+      } catch (studentError) {
+        console.error(`❌ STUDENT ${studentId} ERROR:`, studentError.message);
+
+        result.failed.push({
+          student_id: studentId,
+          student_name: student.name,
+          reason: studentError.message,
+        });
+      }
+    }
+
+    await connection.commit();
+
+    await safeWriteLog({
+      church_id: churchId,
       action: "CHANGE_CLASS_STUDENTS",
-
-      target_type: "class_students",
-
-      target_id: newClassId,
-
-      description:
-        `Xếp/chuyển ${uniqueStudentIds.length} học sinh ` +
-        `sang lớp "${newClass.name}" ` +
-        `(${newClass.code || "—"}) ` +
-        `- năm học ${newClass.academic_year || "—"}: ` +
-        `${studentNames}`,
+      description: `Chuyển ${result.success.length} học sinh vào lớp ${targetClass.name}`,
+      user_id: req.user?.id || null,
     });
 
-    // =====================================================
-    // RESPONSE
-    // =====================================================
+    console.log("");
+    console.log("MULTI CHANGE RESULT");
+    console.log("--------------------");
+    console.log("TOTAL:", result.total);
+    console.log("SUCCESS:", result.success.length);
+    console.log("ALREADY IN TARGET:", result.alreadyInTarget.length);
+    console.log("FAILED:", result.failed.length);
 
-    return res.json({
+    return res.status(200).json({
       success: true,
-
-      message: "Đã xử lý danh sách học sinh",
+      message: "Xử lý chuyển lớp hoàn tất",
+      request_id: requestId,
 
       data: {
-        student_ids: uniqueStudentIds,
-
-        total: uniqueStudentIds.length,
-
-        updated,
-
-        inserted,
-
-        already_in_target: alreadyInTarget,
-
-        updated_count: updated.length,
-
-        inserted_count: inserted.length,
-
-        already_in_target_count: alreadyInTarget.length,
-
-        new_class_id: newClassId,
-
-        new_class_name: newClass.name,
-
-        new_class_code: newClass.code || null,
-
-        new_academic_year: newClass.academic_year || null,
-      },
-
-      debug: {
-        request_id: requestId,
+        class: targetClass,
+        summary: {
+          total: result.total,
+          success: result.success.length,
+          already_in_target: result.alreadyInTarget.length,
+          failed: result.failed.length,
+        },
+        result,
       },
     });
   } catch (error) {
-    await safeRollback(connection, transactionStarted, requestId);
+    await safeRollback(connection);
 
-    transactionStarted = false;
-
-    console.error("");
-    console.error(`💥 [${requestId}] BULK CHANGE ERROR`);
-
-    console.error("MESSAGE:", error.message);
-
-    console.error("CODE:", error.code);
-
-    console.error("SQL:", error.sqlMessage);
-
-    return res.status(500).json({
-      success: false,
-
-      code: "BULK_CHANGE_CLASS_ERROR",
-
-      message: "Không thể chuyển học sinh sang lớp mới",
-
-      debug: {
-        request_id: requestId,
-      },
-    });
+    return sendServerError(
+      res,
+      requestId,
+      error,
+      "CHANGE MULTIPLE STUDENTS ERROR",
+    );
   } finally {
     if (connection) {
       connection.release();
@@ -2482,176 +1538,107 @@ exports.changeClassStudents = async (req, res) => {
 
 // =====================================================
 // 7. REMOVE STUDENT FROM CLASS
-//
-// DELETE /api/class-students/:classId/:studentId
 // =====================================================
 
 exports.removeStudentFromClass = async (req, res) => {
-  const requestId = createRequestId("REMOVE-STUDENT");
+  const requestId = createRequestId("REMOVE-STUDENT-CLASS");
 
-  let connection = null;
+  console.log("");
+  console.log(
+    "================================================================",
+  );
+  console.log(`🗑️ [${requestId}] REMOVE STUDENT FROM CLASS`);
+  console.log(
+    "================================================================",
+  );
+
+  let connection;
 
   try {
     const classId = toPositiveInt(req.params.classId);
-
     const studentId = toPositiveInt(req.params.studentId);
+    const churchId = toPositiveInt(getChurchId(req));
 
-    const churchId = toPositiveInt(req.user?.church_id);
-
-    console.log("");
-    console.log(
-      "================================================================",
-    );
-    console.log(`🗑️ [${requestId}] REMOVE STUDENT FROM CLASS`);
-    console.log(
-      "================================================================",
-    );
-
-    console.log({
-      classId,
-      studentId,
-      churchId,
-    });
-
-    // =====================================================
-    // AUTH
-    // =====================================================
-
-    if (!churchId) {
-      return res.status(403).json({
-        success: false,
-        code: "NO_CHURCH_ID",
-        message: "Tài khoản chưa được liên kết với giáo xứ",
-      });
-    }
-
-    // =====================================================
-    // VALIDATE
-    // =====================================================
+    console.log("CLASS ID:", classId);
+    console.log("STUDENT ID:", studentId);
+    console.log("CHURCH ID:", churchId);
 
     if (!classId || !studentId) {
       return res.status(400).json({
         success: false,
-        code: "INVALID_ID",
-        message: "classId và studentId không hợp lệ",
+        message: "classId hoặc studentId không hợp lệ",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // CONNECTION
-    // =====================================================
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ",
+        request_id: requestId,
+      });
+    }
 
     connection = await db.getConnection();
 
-    // =====================================================
-    // RELATION
-    // =====================================================
+    await connection.beginTransaction();
 
     const relation = await getClassStudentRelation(
+      connection,
       classId,
       studentId,
       churchId,
-      connection,
     );
 
     if (!relation) {
+      await safeRollback(connection);
+
       return res.status(404).json({
         success: false,
-        code: "RELATION_NOT_FOUND",
-        message: "Học sinh không thuộc lớp này hoặc không thuộc giáo xứ",
+        message: "Không tìm thấy học sinh trong lớp",
+        request_id: requestId,
       });
     }
 
-    // =====================================================
-    // DELETE
-    // =====================================================
-
-    const [result] = await connection.query(
+    await connection.query(
       `
-          DELETE FROM class_students
-
-          WHERE id = ?
-        `,
+        DELETE FROM class_students
+        WHERE id = ?
+      `,
       [relation.id],
     );
 
-    if (!result.affectedRows) {
-      return res.status(404).json({
-        success: false,
-        code: "DELETE_FAILED",
-        message: "Không thể xóa học sinh khỏi lớp",
-      });
-    }
+    await connection.commit();
 
-    // =====================================================
-    // LOG
-    // =====================================================
-
-    await safeWriteLog(req, {
-      action: "DELETE_CLASS_STUDENT",
-
-      target_type: "class_students",
-
-      target_id: relation.id,
-
-      description:
-        `Xóa học sinh "${relation.student_name}" ` +
-        `(${relation.student_code || "—"}) ` +
-        `khỏi lớp "${relation.class_name}" ` +
-        `(${relation.class_code || "—"}) ` +
-        `- năm học ${relation.academic_year || "—"}`,
+    await safeWriteLog({
+      church_id: churchId,
+      action: "REMOVE_STUDENT_FROM_CLASS",
+      description: `Xóa học sinh ${relation.student_name} khỏi lớp ${relation.class_name}`,
+      user_id: req.user?.id || null,
     });
 
-    // =====================================================
-    // RESPONSE
-    // =====================================================
+    console.log("REMOVED RELATION ID:", relation.id);
 
-    return res.json({
+    return res.status(200).json({
       success: true,
-
-      message: `Đã xóa học sinh "${relation.student_name}" khỏi lớp`,
+      message: "Xóa học sinh khỏi lớp thành công",
+      request_id: requestId,
 
       data: {
-        id: Number(relation.id),
-
+        class_student_id: relation.id,
         class_id: classId,
-
         student_id: studentId,
-
-        student_name: relation.student_name,
-
-        class_name: relation.class_name,
-
-        class_code: relation.class_code,
-
-        academic_year: relation.academic_year,
-      },
-
-      debug: {
-        request_id: requestId,
       },
     });
   } catch (error) {
-    console.error("");
-    console.error(`💥 [${requestId}] REMOVE STUDENT ERROR`);
+    await safeRollback(connection);
 
-    console.error("MESSAGE:", error.message);
-
-    console.error("CODE:", error.code);
-
-    console.error("SQL:", error.sqlMessage);
-
-    return res.status(500).json({
-      success: false,
-
-      code: "REMOVE_CLASS_STUDENT_ERROR",
-
-      message: "Không thể xóa học sinh khỏi lớp",
-
-      debug: {
-        request_id: requestId,
-      },
-    });
+    return sendServerError(
+      res,
+      requestId,
+      error,
+      "REMOVE STUDENT FROM CLASS ERROR",
+    );
   } finally {
     if (connection) {
       connection.release();

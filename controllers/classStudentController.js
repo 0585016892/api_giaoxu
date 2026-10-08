@@ -55,26 +55,37 @@ const safeRollback = async (connection) => {
 };
 
 // =====================================================
-// AVATAR URL
+// AVATAR
 // =====================================================
 
-const getApiPublicUrl = () => {
-  return (
-    process.env.API_PUBLIC_URL ||
-    process.env.BACKEND_URL ||
-    process.env.BASE_URL ||
-    "http://localhost:5000"
-  ).replace(/\/+$/, "");
-};
-
-const getUploadsPath = () => {
-  return (process.env.UPLOADS_PATH || "/uploads")
-    .replace(/^\/?/, "/")
-    .replace(/\/+$/, "");
-};
+/**
+ * Chuẩn hóa avatar thành path tương đối.
+ *
+ * Ví dụ:
+ *
+ * C:\Users\HungML\Downloads\giaoxu\api_giaoxu\uploads\students\abc.png
+ * =>
+ * /uploads/students/abc.png
+ *
+ * http://localhost:5000/uploads/students/abc.png
+ * =>
+ * /uploads/students/abc.png
+ *
+ * uploads/students/abc.png
+ * =>
+ * /uploads/students/abc.png
+ *
+ * students/abc.png
+ * =>
+ * /uploads/students/abc.png
+ *
+ * abc.png
+ * =>
+ * /uploads/students/abc.png
+ */
 
 const normalizeAvatarUrl = (avatar) => {
-  if (!avatar) {
+  if (avatar === null || avatar === undefined) {
     return null;
   }
 
@@ -84,41 +95,98 @@ const normalizeAvatarUrl = (avatar) => {
     return null;
   }
 
-  // URL đầy đủ
+  // ===================================================
+  // 1. URL HTTP / HTTPS
+  // ===================================================
+
   if (/^https?:\/\//i.test(value)) {
+    try {
+      const url = new URL(value);
+
+      value = url.pathname;
+    } catch (error) {
+      console.warn("⚠️ INVALID AVATAR URL:", value);
+    }
+  }
+
+  // ===================================================
+  // 2. WINDOWS PATH -> /
+  // ===================================================
+
+  value = value.replace(/\\/g, "/");
+
+  // ===================================================
+  // 3. LOẠI BỎ QUERY / HASH
+  // ===================================================
+
+  value = value.split("?")[0];
+  value = value.split("#")[0];
+
+  value = value.trim();
+
+  // ===================================================
+  // 4. TÌM /uploads/
+  // ===================================================
+
+  const lowerValue = value.toLowerCase();
+
+  const uploadsIndex = lowerValue.indexOf("/uploads/");
+
+  if (uploadsIndex !== -1) {
+    value = value.substring(uploadsIndex);
+
     return value;
   }
 
-  // Data URL
-  if (value.startsWith("data:")) {
-    return value;
+  // ===================================================
+  // 5. uploads/students/abc.png
+  // ===================================================
+
+  if (lowerValue.startsWith("uploads/")) {
+    return `/${value}`;
   }
 
-  const baseUrl = getApiPublicUrl();
-  const uploadsPath = getUploadsPath();
+  // ===================================================
+  // 6. /students/abc.png
+  // ===================================================
 
-  // Chuẩn hóa slash
-  value = value.replace(/^\/+/, "");
-
-  // Nếu DB đã lưu uploads/...
-  if (value.toLowerCase().startsWith("uploads/")) {
-    value = value.substring("uploads/".length);
+  if (lowerValue.startsWith("/students/")) {
+    return `/uploads${value}`;
   }
 
-  // Nếu DB lưu đường dẫn có /uploads/...
-  if (
-    value
-      .toLowerCase()
-      .startsWith(uploadsPath.replace(/^\/+/, "").toLowerCase() + "/")
-  ) {
-    value = value.substring(uploadsPath.replace(/^\/+/, "").length + 1);
+  // ===================================================
+  // 7. students/abc.png
+  // ===================================================
+
+  if (lowerValue.startsWith("students/")) {
+    return `/uploads/${value}`;
   }
 
-  return `${baseUrl}${uploadsPath}/${value}`;
+  // ===================================================
+  // 8. CHỈ CÓ TÊN FILE
+  // ===================================================
+
+  if (!value.includes("/")) {
+    return `/uploads/students/${value}`;
+  }
+
+  // ===================================================
+  // 9. FALLBACK
+  // ===================================================
+
+  const parts = value.split("/").filter(Boolean);
+
+  const filename = parts[parts.length - 1];
+
+  if (!filename) {
+    return null;
+  }
+
+  return `/uploads/students/${filename}`;
 };
 
 // =====================================================
-// ADD AVATAR URL TO STUDENT
+// FORMAT ONE STUDENT
 // =====================================================
 
 const formatStudent = (student) => {
@@ -147,18 +215,27 @@ const formatStudents = (students = []) => {
 
 const sendServerError = (res, requestId, error, title) => {
   console.error("");
+
   console.error(
     "================================================================",
   );
+
   console.error(`💥 [${requestId}] ${title}`);
+
   console.error(
     "================================================================",
   );
+
   console.error("MESSAGE:", error.message);
+
   console.error("CODE:", error.code);
+
   console.error("ERRNO:", error.errno);
+
   console.error("SQL STATE:", error.sqlState);
+
   console.error("SQL MESSAGE:", error.sqlMessage);
+
   console.error(
     "================================================================",
   );
@@ -166,7 +243,9 @@ const sendServerError = (res, requestId, error, title) => {
   return res.status(500).json({
     success: false,
     message: "Lỗi máy chủ",
+
     error: process.env.NODE_ENV === "development" ? error.message : undefined,
+
     request_id: requestId,
   });
 };
@@ -225,7 +304,8 @@ const getSchedulesByClassId = async (connection, classId, churchId) => {
       INNER JOIN classes c
         ON c.id = cs.class_id
 
-      WHERE cs.class_id = ?
+      WHERE
+        cs.class_id = ?
         AND c.church_id = ?
 
       ORDER BY
@@ -239,6 +319,7 @@ const getSchedulesByClassId = async (connection, classId, churchId) => {
           WHEN cs.day_of_week = 0 THEN 7
           ELSE 8
         END,
+
         cs.start_time ASC,
         cs.id ASC
     `,
@@ -268,6 +349,10 @@ const getClassStudentRelation = async (
         cs.joined_at,
         cs.left_at,
 
+        s.name AS student_name,
+        s.code AS student_code,
+        s.avatar AS student_avatar,
+
         c.name AS class_name,
         c.code AS class_code,
         c.category AS class_category,
@@ -283,7 +368,8 @@ const getClassStudentRelation = async (
       INNER JOIN classes c
         ON c.id = cs.class_id
 
-      WHERE cs.class_id = ?
+      WHERE
+        cs.class_id = ?
         AND cs.student_id = ?
         AND c.church_id = ?
         AND s.church_id = ?
@@ -328,7 +414,8 @@ const getStudentRelations = async (connection, studentId, churchId) => {
       INNER JOIN students s
         ON s.id = cs.student_id
 
-      WHERE cs.student_id = ?
+      WHERE
+        cs.student_id = ?
         AND c.church_id = ?
         AND s.church_id = ?
 
@@ -479,9 +566,9 @@ exports.getStudentsByClass = async (req, res) => {
 
     connection = await db.getConnection();
 
-    // ================================
+    // =================================================
     // LẤY LỚP
-    // ================================
+    // =================================================
 
     const classInfo = await getClassById(connection, classId, churchId);
 
@@ -493,9 +580,9 @@ exports.getStudentsByClass = async (req, res) => {
       });
     }
 
-    // ================================
+    // =================================================
     // LẤY LỊCH HỌC
-    // ================================
+    // =================================================
 
     const schedules = await getSchedulesByClassId(
       connection,
@@ -503,30 +590,21 @@ exports.getStudentsByClass = async (req, res) => {
       churchId,
     );
 
-    // ================================
-    // LẤY FULL HỌC SINH
-    // ================================
+    // =================================================
+    // LẤY HỌC SINH
+    // =================================================
 
     const [rows] = await connection.query(
       `
           SELECT
             s.*,
 
-            -- ==========================
-            -- QUAN HỆ LỚP
-            -- ==========================
-
             cs.id AS class_student_id,
             cs.class_id,
             cs.student_id,
-
             cs.status AS enrollment_status,
             cs.joined_at,
             cs.left_at,
-
-            -- ==========================
-            -- THÔNG TIN LỚP
-            -- ==========================
 
             c.id AS current_class_id,
             c.name AS class_name,
@@ -567,13 +645,21 @@ exports.getStudentsByClass = async (req, res) => {
     const students = formatStudents(rows);
 
     console.log("");
+
     console.log("==========================================================");
+
     console.log(`📚 [${requestId}] GET STUDENTS BY CLASS`);
+
     console.log("==========================================================");
+
     console.log("CLASS ID:", classId);
+
     console.log("CLASS:", classInfo.name);
+
     console.log("ACADEMIC YEAR:", classInfo.academic_year);
+
     console.log("STUDENT COUNT:", students.length);
+
     console.log("==========================================================");
 
     return res.status(200).json({
@@ -589,9 +675,7 @@ exports.getStudentsByClass = async (req, res) => {
       data: {
         class: classInfo,
         schedules,
-
         students,
-
         total: students.length,
       },
     });
@@ -776,7 +860,10 @@ exports.addStudentToClass = async (req, res) => {
       churchId,
     );
 
+    // =================================================
     // ĐÃ CÓ QUAN HỆ VỚI LỚP
+    // =================================================
+
     if (existingRelation) {
       if (
         existingRelation.status === "studying" &&
@@ -846,7 +933,10 @@ exports.addStudentToClass = async (req, res) => {
       });
     }
 
+    // =================================================
     // KIỂM TRA LỚP ĐANG HỌC
+    // =================================================
+
     if (status === "studying") {
       const activeRelation = await getActiveStudentRelation(
         connection,
@@ -1014,27 +1104,32 @@ exports.updateClassStudent = async (req, res) => {
 
     if (req.body.status !== undefined) {
       updates.push("status = ?");
+
       values.push(nextStatus);
     }
 
     if (req.body.joined_at !== undefined) {
       updates.push("joined_at = ?");
+
       values.push(req.body.joined_at || null);
     }
 
     if (req.body.left_at !== undefined) {
       updates.push("left_at = ?");
+
       values.push(req.body.left_at || null);
     }
 
     if (nextStatus === "studying" && relation.status !== "studying") {
       if (req.body.joined_at === undefined) {
         updates.push("joined_at = ?");
+
         values.push(new Date());
       }
 
       if (req.body.left_at === undefined) {
         updates.push("left_at = ?");
+
         values.push(null);
       }
     }
@@ -1045,6 +1140,7 @@ exports.updateClassStudent = async (req, res) => {
       req.body.left_at === undefined
     ) {
       updates.push("left_at = ?");
+
       values.push(new Date());
     }
 
@@ -1354,8 +1450,11 @@ exports.changeClassStudents = async (req, res) => {
 
     const result = {
       total: uniqueStudentIds.length,
+
       success: [],
+
       alreadyInTarget: [],
+
       failed: [],
     };
 
@@ -1518,8 +1617,11 @@ exports.changeClassStudents = async (req, res) => {
 
         summary: {
           total: result.total,
+
           success: result.success.length,
+
           already_in_target: result.alreadyInTarget.length,
+
           failed: result.failed.length,
         },
 
@@ -1597,9 +1699,9 @@ exports.removeStudentFromClass = async (req, res) => {
 
     await connection.query(
       `
-          DELETE FROM class_students
-          WHERE id = ?
-        `,
+        DELETE FROM class_students
+        WHERE id = ?
+      `,
       [relation.id],
     );
 
@@ -1608,18 +1710,23 @@ exports.removeStudentFromClass = async (req, res) => {
     await safeWriteLog({
       church_id: churchId,
       action: "REMOVE_STUDENT_FROM_CLASS",
+
       description: `Xóa học sinh ${relation.student_name} khỏi lớp ${relation.class_name}`,
+
       user_id: req.user?.id || null,
     });
 
     return res.status(200).json({
       success: true,
       message: "Xóa học sinh khỏi lớp thành công",
+
       request_id: requestId,
 
       data: {
         class_student_id: relation.id,
+
         class_id: classId,
+
         student_id: studentId,
       },
     });
@@ -1733,7 +1840,9 @@ exports.cleanupDuplicateActiveClasses = async (req, res) => {
 
         cleaned: activeRelations.slice(1).map((relation) => ({
           id: relation.id,
+
           class_id: relation.class_id,
+
           class_name: relation.class_name,
         })),
       });

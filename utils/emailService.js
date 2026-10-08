@@ -680,10 +680,279 @@ const sendRegisterOtpEmail = async ({
     rejected: result.rejected || [],
   };
 };
+// =========================================================
+// SEND FORGOT PASSWORD OTP EMAIL
+// =========================================================
+
+const sendForgotPasswordOtpEmail = async ({
+  to,
+  fullName,
+  otp,
+  expiresMinutes = 5,
+}) => {
+  if (!to) {
+    throw new Error("Email người nhận không hợp lệ");
+  }
+
+  if (!otp) {
+    throw new Error("OTP không hợp lệ");
+  }
+
+  const safeName = escapeHtml(fullName || "Bạn");
+  const safeOtp = escapeHtml(otp);
+
+  const mail = {
+    from: {
+      name: process.env.SMTP_FROM_NAME || "FaithEdu",
+      address: process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER,
+    },
+
+    to,
+
+    subject: "[FaithEdu] Mã xác thực khôi phục tài khoản",
+
+    text: [
+      `Xin chào ${fullName || "Bạn"},`,
+      "",
+      "Bạn đang thực hiện khôi phục tài khoản FaithEdu.",
+      "",
+      `Mã xác thực của bạn là: ${otp}`,
+      "",
+      `Mã có hiệu lực trong ${expiresMinutes} phút.`,
+      "",
+      "Không chia sẻ mã này với bất kỳ ai.",
+      "",
+      "Nếu bạn không thực hiện yêu cầu này, vui lòng bỏ qua email.",
+      "",
+      "FaithEdu",
+      "Số hóa giáo lý - Kết nối đức tin",
+    ].join("\n"),
+
+    html: `
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+
+  <title>Mã xác thực khôi phục tài khoản</title>
+</head>
+
+<body
+  style="
+    margin:0;
+    padding:0;
+    background:#f7f9fc;
+    font-family:Arial,Helvetica,sans-serif;
+    color:#334155;
+  "
+>
+  <div
+    style="
+      width:100%;
+      padding:40px 15px;
+      box-sizing:border-box;
+    "
+  >
+    <div
+      style="
+        max-width:620px;
+        margin:0 auto;
+        background:#ffffff;
+        border-radius:20px;
+        overflow:hidden;
+        border:1px solid #e2e8f0;
+      "
+    >
+
+      <!-- HEADER -->
+
+      <div
+        style="
+          padding:32px 30px;
+          background:linear-gradient(
+            135deg,
+            #eef3f7 0%,
+            #fbf5e7 100%
+          );
+          border-bottom:1px solid #e2e8f0;
+        "
+      >
+        <div
+          style="
+            font-size:12px;
+            font-weight:700;
+            letter-spacing:2px;
+            color:#173b5e;
+            margin-bottom:8px;
+          "
+        >
+          FAITHEDU
+        </div>
+
+        <div
+          style="
+            font-size:26px;
+            font-weight:800;
+            color:#173b5e;
+          "
+        >
+          Khôi phục tài khoản
+        </div>
+      </div>
+
+      <!-- CONTENT -->
+
+      <div style="padding:32px 30px;">
+
+        <div
+          style="
+            font-size:15px;
+            color:#64748b;
+            margin-bottom:20px;
+          "
+        >
+          Xin chào
+          <strong style="color:#173b5e;">
+            ${safeName}
+          </strong>,
+        </div>
+
+        <div
+          style="
+            font-size:15px;
+            line-height:1.8;
+            color:#475569;
+          "
+        >
+          Bạn đang thực hiện khôi phục tài khoản
+          <strong>FaithEdu</strong>.
+        </div>
+
+        <!-- OTP -->
+
+        <div
+          style="
+            margin:30px 0;
+            padding:24px;
+            background:#fbf5e7;
+            border:1px solid #ead9a8;
+            border-radius:16px;
+            text-align:center;
+          "
+        >
+
+          <div
+            style="
+              font-size:12px;
+              font-weight:700;
+              letter-spacing:1.5px;
+              color:#8a6a20;
+              margin-bottom:12px;
+            "
+          >
+            MÃ XÁC THỰC
+          </div>
+
+          <div
+            style="
+              font-size:38px;
+              line-height:1;
+              font-weight:800;
+              letter-spacing:10px;
+              color:#173b5e;
+              padding-left:10px;
+            "
+          >
+            ${safeOtp}
+          </div>
+
+          <div
+            style="
+              margin-top:16px;
+              font-size:13px;
+              color:#64748b;
+            "
+          >
+            Mã có hiệu lực trong
+            <strong>${expiresMinutes} phút</strong>.
+          </div>
+
+        </div>
+
+        <!-- SECURITY -->
+
+        <div
+          style="
+            padding:16px 18px;
+            background:#f8fafc;
+            border-radius:12px;
+            font-size:13px;
+            line-height:1.7;
+            color:#64748b;
+          "
+        >
+          Vì lý do bảo mật, không chia sẻ mã xác thực này
+          với bất kỳ người nào.
+        </div>
+
+        <div
+          style="
+            margin-top:28px;
+            padding-top:20px;
+            border-top:1px solid #e2e8f0;
+            font-size:13px;
+            line-height:1.7;
+            color:#94a3b8;
+          "
+        >
+          Nếu bạn không thực hiện yêu cầu khôi phục tài khoản,
+          vui lòng bỏ qua email này.
+        </div>
+
+      </div>
+
+      <!-- FOOTER -->
+
+      <div
+        style="
+          padding:20px 30px;
+          background:#fafafa;
+          border-top:1px solid #f1f5f9;
+          text-align:center;
+          font-size:12px;
+          color:#94a3b8;
+        "
+      >
+        © ${new Date().getFullYear()} FaithEdu
+        <br />
+        Số hóa giáo lý - Kết nối đức tin
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>
+`,
+  };
+
+  const result = await transporter.sendMail(mail);
+
+  return {
+    messageId: result.messageId,
+    accepted: result.accepted || [],
+    rejected: result.rejected || [],
+  };
+};
 module.exports = {
   transporter,
   verifyEmailConnection,
   sendNotificationEmail,
   sendNotificationEmails,
   sendRegisterOtpEmail,
+  sendForgotPasswordOtpEmail,
 };

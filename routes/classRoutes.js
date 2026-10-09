@@ -39,25 +39,14 @@ const {
 // GET /api/classes
 // =========================================================
 
-router.get("/", verifyToken, globalApiLimiter, getClasses);
+router.get("/", verifyToken, getClasses);
 
 // =========================================================
 // LỚP CỦA GIÁO LÝ VIÊN ĐANG ĐĂNG NHẬP
 // GET /api/classes/teacher-class
 // =========================================================
 
-router.get(
-  "/teacher-class",
-  verifyToken,
-  globalApiLimiter,
-  (req, res, next) => {
-    console.log("🔥 HIT GET /api/classes/teacher-class");
-    console.log("USER:", req.user);
-
-    next();
-  },
-  getClassesByTeacherId,
-);
+router.get("/teacher-class", verifyToken, getClassesByTeacherId);
 
 // =========================================================
 // LỊCH HỌC CỦA TOÀN BỘ GIÁO XỨ

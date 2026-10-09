@@ -3,58 +3,414 @@ const fs = require("fs");
 const db = require("../config/db");
 
 // ============================================================
-// XÓA FILE CŨ
+// CONSTANTS
+// ============================================================
+
+const UPLOAD_DIRECTORY = path.resolve(
+  process.cwd(),
+  "uploads",
+  "church-settings",
+);
+
+const BOOLEAN_FIELDS = [
+  "catechism_enabled",
+  "catechism_attendance_enabled",
+  "allow_late",
+  "auto_absent",
+  "attendance_enabled",
+  "attendance_qr_enabled",
+  "attendance_manual_enabled",
+  "attendance_edit_enabled",
+  "attendance_auto_lock",
+  "attendance_auto_absent",
+  "attendance_late_enabled",
+  "bot_enabled",
+];
+
+const INTEGER_FIELDS = {
+  late_minutes: {
+    min: 0,
+    max: 1440,
+    defaultValue: 15,
+  },
+  attendance_duration_minutes: {
+    min: 1,
+    max: 10080,
+    defaultValue: 120,
+  },
+};
+
+const ALLOWED_BODY_FIELDS = new Set([
+  "slogan",
+  ...BOOLEAN_FIELDS,
+  "catechism_start_time",
+  "catechism_end_time",
+  ...Object.keys(INTEGER_FIELDS),
+]);
+
+const SETTINGS_COLUMNS = [
+  "id",
+  "church_id",
+  "logo",
+  "cover_image",
+  "slogan",
+  "catechism_enabled",
+  "catechism_attendance_enabled",
+  "catechism_start_time",
+  "catechism_end_time",
+  "allow_late",
+  "late_minutes",
+  "auto_absent",
+  "attendance_enabled",
+  "attendance_qr_enabled",
+  "attendance_manual_enabled",
+  "attendance_edit_enabled",
+  "attendance_duration_minutes",
+  "attendance_auto_lock",
+  "attendance_auto_absent",
+  "attendance_late_enabled",
+  "created_at",
+  "updated_at",
+  "bot_enabled",
+];
+
+// ============================================================
+// REQUEST ID
+// ============================================================
+
+const createRequestId = (prefix = "CHURCH-SETTINGS") => {
+  return `${prefix}-${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 8)
+    .toUpperCase()}`;
+};
+
+// ============================================================
+// GET CHURCH ID
+// ============================================================
+
+const getChurchId = (req) => {
+  const rawChurchId = req.user?.church_id ?? req.user?.parish_id ?? null;
+
+  if (rawChurchId === null || rawChurchId === undefined || rawChurchId === "") {
+    return null;
+  }
+
+  const churchId = Number(rawChurchId);
+
+  if (!Number.isSafeInteger(churchId) || churchId <= 0) {
+    return null;
+  }
+
+  return churchId;
+};
+
+// ============================================================
+// PARSE BOOLEAN
+// ============================================================
+
+const parseBoolean = (value, fieldName) => {
+  if (typeof value === "boolean") {
+    return value ? 1 : 0;
+  }
+
+  if (value === 1 || value === "1") {
+    return 1;
+  }
+
+  if (value === 0 || value === "0") {
+    return 0;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+
+    if (normalized === "true") {
+      return 1;
+    }
+
+    if (normalized === "false") {
+      return 0;
+    }
+  }
+
+  throw new Error(`Trường ${fieldName} chỉ chấp nhận true, false, 1 hoặc 0`);
+};
+
+// ============================================================
+// PARSE INTEGER
+// ============================================================
+
+const parseInteger = (value, fieldName) => {
+  const config = INTEGER_FIELDS[fieldName];
+
+  if (!config) {
+    throw new Error(`Trường số không hợp lệ: ${fieldName}`);
+  }
+
+  if (
+    value === null ||
+    value === undefined ||
+    (typeof value === "string" && value.trim() === "")
+  ) {
+    throw new Error(`Trường ${fieldName} không được để trống`);
+  }
+
+  const number = Number(value);
+
+  if (
+    !Number.isSafeInteger(number) ||
+    number < config.min ||
+    number > config.max
+  ) {
+    throw new Error(
+      `${fieldName} phải là số nguyên từ ${config.min} đến ${config.max}`,
+    );
+  }
+
+  return number;
+};
+
+// ============================================================
+// PARSE SLOGAN
+// ============================================================
+
+const parseSlogan = (value) => {
+  if (value === null || value === "") {
+    return null;
+  }
+
+  if (typeof value !== "string") {
+    throw new Error("Slogan không hợp lệ");
+  }
+
+  const slogan = value.trim();
+
+  if (slogan.length > 255) {
+    throw new Error("Slogan không được vượt quá 255 ký tự");
+  }
+
+  return slogan || null;
+};
+
+// ============================================================
+// PARSE TIME
+// ============================================================
+
+const parseTime = (value, fieldName) => {
+  if (value === null || value === "") {
+    return null;
+  }
+
+  if (typeof value !== "string") {
+    throw new Error(`Thời gian ${fieldName} không hợp lệ`);
+  }
+
+  const time = value.trim();
+
+  const match = time.match(/^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/);
+
+  if (!match) {
+    throw new Error(`${fieldName} phải có định dạng HH:mm hoặc HH:mm:ss`);
+  }
+
+  return `${match[1]}:${match[2]}:${match[3] || "00"}`;
+};
+
+// ============================================================
+// VALIDATE REQUEST BODY
+// ============================================================
+
+const validateRequestBody = (body) => {
+  const updates = {};
+
+  for (const [field, value] of Object.entries(body || {})) {
+    if (!ALLOWED_BODY_FIELDS.has(field)) {
+      console.warn("[CHURCH SETTINGS] Bỏ qua trường:", field);
+      continue;
+    }
+
+    if (BOOLEAN_FIELDS.includes(field)) {
+      updates[field] = parseBoolean(value, field);
+      continue;
+    }
+
+    if (field === "slogan") {
+      updates[field] = parseSlogan(value);
+      continue;
+    }
+
+    if (field === "catechism_start_time" || field === "catechism_end_time") {
+      updates[field] = parseTime(value, field);
+      continue;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(INTEGER_FIELDS, field)) {
+      updates[field] = parseInteger(value, field);
+    }
+  }
+
+  return updates;
+};
+
+// ============================================================
+// FILE PATH
+// Chỉ thao tác với file trong uploads/church-settings
+// ============================================================
+
+const getManagedFilePath = (fileUrl) => {
+  if (typeof fileUrl !== "string" || !fileUrl.trim()) {
+    return null;
+  }
+
+  const normalized = fileUrl.replace(/\\/g, "/");
+
+  const match = normalized.match(/^\/?uploads\/church-settings\/([^/]+)$/);
+
+  if (!match) {
+    console.warn(
+      "[CHURCH SETTINGS] Không xóa đường dẫn ngoài thư mục quản lý:",
+      fileUrl,
+    );
+
+    return null;
+  }
+
+  const filename = match[1];
+
+  if (filename === "." || filename === ".." || filename.includes("\0")) {
+    return null;
+  }
+
+  const absolutePath = path.resolve(UPLOAD_DIRECTORY, filename);
+
+  if (path.dirname(absolutePath) !== UPLOAD_DIRECTORY) {
+    return null;
+  }
+
+  return absolutePath;
+};
+
+// ============================================================
+// DELETE OLD FILE
 // ============================================================
 
 const deleteOldFile = (fileUrl) => {
   try {
-    if (!fileUrl) {
+    const absolutePath = getManagedFilePath(fileUrl);
+
+    if (!absolutePath) {
       return;
     }
 
-    let filePath = fileUrl;
-
-    // --------------------------------------------------------
-    // Nếu DB lưu:
-    // /uploads/church-settings/abc.png
-    // --------------------------------------------------------
-
-    if (filePath.startsWith("/")) {
-      filePath = filePath.substring(1);
+    if (!fs.existsSync(absolutePath)) {
+      console.log("[FILE] File không tồn tại:", absolutePath);
+      return;
     }
 
-    const absolutePath = path.join(process.cwd(), filePath);
+    fs.unlinkSync(absolutePath);
 
-    if (fs.existsSync(absolutePath)) {
-      fs.unlinkSync(absolutePath);
-
-      console.log("[FILE] Deleted old file:", absolutePath);
-    }
+    console.log("[FILE] Đã xóa file:", absolutePath);
   } catch (error) {
-    console.error("[FILE] Cannot delete old file:", error.message);
+    console.error("[FILE] Lỗi xóa file:", error.message);
   }
 };
-const getChurchId = (req) => {
-  return req.user?.church_id || req.user?.parish_id || null;
+
+// ============================================================
+// CLEANUP UPLOADED FILES
+// ============================================================
+
+const cleanupUploadedFiles = (files) => {
+  const uploadedFiles = [files?.logo?.[0], files?.cover_image?.[0]].filter(
+    Boolean,
+  );
+
+  for (const file of uploadedFiles) {
+    if (!file?.filename) {
+      continue;
+    }
+
+    deleteOldFile(`/uploads/church-settings/${path.basename(file.filename)}`);
+  }
 };
+
 // ============================================================
-// UPDATE CHURCH SETTINGS
+// NORMALIZE RESPONSE
 // ============================================================
 
-exports.updateChurchSettings = async (req, res) => {
+const normalizeSettings = (setting) => {
+  if (!setting) {
+    return null;
+  }
+
+  const result = { ...setting };
+
+  for (const field of BOOLEAN_FIELDS) {
+    if (result[field] !== undefined && result[field] !== null) {
+      result[field] = Number(result[field]) === 1;
+    }
+  }
+
+  for (const field of Object.keys(INTEGER_FIELDS)) {
+    if (result[field] !== undefined && result[field] !== null) {
+      result[field] = Number(result[field]);
+    }
+  }
+
+  return result;
+};
+
+// ============================================================
+// SELECT SETTINGS
+// ============================================================
+
+const selectChurchSettings = async (churchId) => {
+  const [rows] = await db.query(
+    `
+      SELECT ${SETTINGS_COLUMNS.join(", ")}
+      FROM setting_church
+      WHERE church_id = ?
+      LIMIT 1
+    `,
+    [churchId],
+  );
+
+  return rows[0] || null;
+};
+
+// ============================================================
+// ENSURE SETTINGS EXISTS
+// ============================================================
+
+const ensureChurchSettings = async (churchId) => {
+  await db.query(
+    `
+      INSERT IGNORE INTO setting_church (church_id)
+      VALUES (?)
+    `,
+    [churchId],
+  );
+
+  return selectChurchSettings(churchId);
+};
+
+// ============================================================
+// GET CHURCH SETTINGS
+// GET /api/settings/church
+// ============================================================
+
+exports.getChurchSettings = async (req, res) => {
+  const requestId = createRequestId("GET-SETTINGS");
+
+  console.log("");
+  console.log("============================================================");
+  console.log(`[${requestId}] GET CHURCH SETTINGS`);
+  console.log("============================================================");
+
   try {
-    console.log("");
-    console.log("============================================================");
-    console.log("                UPDATE CHURCH SETTINGS");
-    console.log("============================================================");
-
-    // ========================================================
-    // 1. CHURCH ID
-    // ========================================================
-
     const churchId = getChurchId(req);
 
-    console.log("[CHURCH SETTINGS] CHURCH ID:", churchId);
+    console.log(`[${requestId}] CHURCH ID:`, churchId);
 
     if (!churchId) {
       return res.status(403).json({
@@ -63,370 +419,185 @@ exports.updateChurchSettings = async (req, res) => {
       });
     }
 
-    // ========================================================
-    // 2. FILE UPLOAD
-    // ========================================================
+    const setting = await ensureChurchSettings(churchId);
+
+    if (!setting) {
+      throw new Error("Không thể khởi tạo cấu hình giáo xứ");
+    }
+
+    console.log(`[${requestId}] SETTING ID:`, setting.id);
+    console.log(`[${requestId}] GET SUCCESS`);
+
+    return res.status(200).json({
+      success: true,
+      message: "Lấy cấu hình giáo xứ thành công",
+      data: normalizeSettings(setting),
+    });
+  } catch (error) {
+    console.error(`[${requestId}] GET ERROR:`, error.message);
+    console.error(error.stack);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể lấy cấu hình giáo xứ",
+    });
+  }
+};
+
+// ============================================================
+// UPDATE CHURCH SETTINGS
+// PUT /api/settings/church
+// ============================================================
+
+exports.updateChurchSettings = async (req, res) => {
+  const requestId = createRequestId("UPDATE-SETTINGS");
+
+  let databaseUpdated = false;
+
+  console.log("");
+  console.log("============================================================");
+  console.log(`[${requestId}] UPDATE CHURCH SETTINGS`);
+  console.log("============================================================");
+
+  try {
+    const churchId = getChurchId(req);
+
+    console.log(`[${requestId}] CHURCH ID:`, churchId);
+    console.log(`[${requestId}] BODY:`, req.body);
+    console.log(
+      `[${requestId}] LOGO:`,
+      req.files?.logo?.[0]?.originalname || "Không thay đổi",
+    );
+    console.log(
+      `[${requestId}] COVER:`,
+      req.files?.cover_image?.[0]?.originalname || "Không thay đổi",
+    );
+
+    if (!churchId) {
+      cleanupUploadedFiles(req.files);
+
+      return res.status(403).json({
+        success: false,
+        message: "Tài khoản chưa được gán giáo xứ",
+      });
+    }
+
+    // 1. Validate dữ liệu trước khi ghi database.
+    const updates = validateRequestBody(req.body);
+
+    // 2. Đảm bảo cấu hình tồn tại.
+    const currentSetting = await ensureChurchSettings(churchId);
+
+    if (!currentSetting) {
+      throw new Error("Không thể lấy cấu hình giáo xứ hiện tại");
+    }
 
     const logoFile = req.files?.logo?.[0] || null;
-
     const coverImageFile = req.files?.cover_image?.[0] || null;
 
-    console.log(
-      "[UPLOAD] LOGO:",
-      logoFile ? logoFile.originalname : "Không upload",
-    );
+    // 3. Chỉ thay đổi đường dẫn khi thực sự có file mới.
+    const newLogo = logoFile
+      ? `/uploads/church-settings/${path.basename(logoFile.filename)}`
+      : currentSetting.logo;
 
-    console.log(
-      "[UPLOAD] COVER:",
-      coverImageFile ? coverImageFile.originalname : "Không upload",
-    );
+    const newCoverImage = coverImageFile
+      ? `/uploads/church-settings/${path.basename(coverImageFile.filename)}`
+      : currentSetting.cover_image;
 
-    // ========================================================
-    // 3. KIỂM TRA / TẠO BẢNG
-    // ========================================================
-
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS setting_church (
-        id INT NOT NULL AUTO_INCREMENT,
-        church_id INT NOT NULL,
-
-        logo VARCHAR(500) DEFAULT NULL,
-        cover_image VARCHAR(500) DEFAULT NULL,
-        slogan VARCHAR(255) DEFAULT NULL,
-
-        catechism_enabled TINYINT(1) NOT NULL DEFAULT 1,
-        catechism_attendance_enabled TINYINT(1) NOT NULL DEFAULT 1,
-        catechism_start_time TIME DEFAULT NULL,
-        catechism_end_time TIME DEFAULT NULL,
-
-        allow_late TINYINT(1) NOT NULL DEFAULT 1,
-        late_minutes INT NOT NULL DEFAULT 15,
-        auto_absent TINYINT(1) NOT NULL DEFAULT 0,
-
-        attendance_enabled TINYINT(1) NOT NULL DEFAULT 1,
-        attendance_qr_enabled TINYINT(1) NOT NULL DEFAULT 1,
-        attendance_manual_enabled TINYINT(1) NOT NULL DEFAULT 1,
-        attendance_edit_enabled TINYINT(1) NOT NULL DEFAULT 1,
-
-        attendance_duration_minutes INT NOT NULL DEFAULT 120,
-        attendance_auto_lock TINYINT(1) NOT NULL DEFAULT 1,
-        attendance_auto_absent TINYINT(1) NOT NULL DEFAULT 0,
-        attendance_late_enabled TINYINT(1) NOT NULL DEFAULT 1,
-
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-          ON UPDATE CURRENT_TIMESTAMP,
-
-        PRIMARY KEY (id),
-
-        UNIQUE KEY uk_setting_church_church_id (church_id),
-
-        CONSTRAINT fk_setting_church_church
-          FOREIGN KEY (church_id)
-          REFERENCES churches(id)
-          ON DELETE CASCADE
-          ON UPDATE CASCADE
-
-      ) ENGINE=InnoDB
-      DEFAULT CHARSET=utf8mb4
-      COLLATE=utf8mb4_unicode_ci
-    `);
-
-    // ========================================================
-    // 4. LẤY SETTING HIỆN TẠI
-    // ========================================================
-
-    const [currentRows] = await db.query(
-      `
-      SELECT *
-      FROM setting_church
-      WHERE church_id = ?
-      LIMIT 1
-      `,
-      [churchId],
-    );
-
-    const currentSetting = currentRows[0] || null;
-
-    console.log("[SETTING] CURRENT:", currentSetting);
-
-    // ========================================================
-    // 5. REQUEST BODY
-    // ========================================================
-
-    const {
-      slogan = null,
-
-      catechism_enabled = true,
-      catechism_attendance_enabled = true,
-
-      catechism_start_time = null,
-      catechism_end_time = null,
-
-      allow_late = true,
-      late_minutes = 15,
-      auto_absent = false,
-
-      attendance_enabled = true,
-      attendance_qr_enabled = true,
-      attendance_manual_enabled = true,
-      attendance_edit_enabled = true,
-
-      attendance_duration_minutes = 120,
-      attendance_auto_lock = true,
-      attendance_auto_absent = false,
-      attendance_late_enabled = true,
-    } = req.body || {};
-
-    console.log("[REQUEST BODY]", req.body);
-
-    // ========================================================
-    // 6. IMAGE PATH
-    // ========================================================
-
-    let logo = currentSetting?.logo || null;
-
-    let coverImage = currentSetting?.cover_image || null;
-
-    // --------------------------------------------------------
-    // LOGO MỚI
-    // --------------------------------------------------------
+    const updateValues = {
+      ...updates,
+    };
 
     if (logoFile) {
-      logo = `/uploads/church-settings/${logoFile.filename}`;
-
-      console.log("[UPLOAD] NEW LOGO:", logo);
+      updateValues.logo = newLogo;
     }
-
-    // --------------------------------------------------------
-    // COVER MỚI
-    // --------------------------------------------------------
 
     if (coverImageFile) {
-      coverImage = `/uploads/church-settings/${coverImageFile.filename}`;
-
-      console.log("[UPLOAD] NEW COVER:", coverImage);
+      updateValues.cover_image = newCoverImage;
     }
 
-    // ========================================================
-    // 7. VALIDATE NUMBER
-    // ========================================================
+    const columns = Object.keys(updateValues);
 
-    const safeLateMinutes = Math.max(0, Number(late_minutes) || 0);
+    // Không có thay đổi thì trả cấu hình hiện tại.
+    if (columns.length === 0) {
+      console.log(`[${requestId}] Không có trường cần cập nhật`);
 
-    const safeAttendanceDuration = Math.max(
-      1,
-      Number(attendance_duration_minutes) || 120,
-    );
+      return res.status(200).json({
+        success: true,
+        message: "Không có thay đổi cần cập nhật",
+        data: normalizeSettings(currentSetting),
+      });
+    }
 
-    // ========================================================
-    // 8. UPSERT
-    // ========================================================
+    // 4. Cập nhật các trường được phép.
+    const setClause = columns.map((column) => `\`${column}\` = ?`).join(", ");
+
+    const values = columns.map((column) => updateValues[column]);
 
     await db.query(
       `
-      INSERT INTO setting_church (
-        church_id,
-
-        logo,
-        cover_image,
-        slogan,
-
-        catechism_enabled,
-        catechism_attendance_enabled,
-        catechism_start_time,
-        catechism_end_time,
-
-        allow_late,
-        late_minutes,
-        auto_absent,
-
-        attendance_enabled,
-        attendance_qr_enabled,
-        attendance_manual_enabled,
-        attendance_edit_enabled,
-
-        attendance_duration_minutes,
-        attendance_auto_lock,
-        attendance_auto_absent,
-        attendance_late_enabled
-
-      )
-      VALUES (
-        ?,
-        ?,
-        ?,
-        ?,
-
-        ?,
-        ?,
-        ?,
-        ?,
-
-        ?,
-        ?,
-        ?,
-
-        ?,
-        ?,
-        ?,
-        ?,
-
-        ?,
-        ?,
-        ?,
-        ?
-
-      )
-
-      ON DUPLICATE KEY UPDATE
-
-        logo = VALUES(logo),
-
-        cover_image = VALUES(cover_image),
-
-        slogan = VALUES(slogan),
-
-        catechism_enabled =
-          VALUES(catechism_enabled),
-
-        catechism_attendance_enabled =
-          VALUES(catechism_attendance_enabled),
-
-        catechism_start_time =
-          VALUES(catechism_start_time),
-
-        catechism_end_time =
-          VALUES(catechism_end_time),
-
-        allow_late =
-          VALUES(allow_late),
-
-        late_minutes =
-          VALUES(late_minutes),
-
-        auto_absent =
-          VALUES(auto_absent),
-
-        attendance_enabled =
-          VALUES(attendance_enabled),
-
-        attendance_qr_enabled =
-          VALUES(attendance_qr_enabled),
-
-        attendance_manual_enabled =
-          VALUES(attendance_manual_enabled),
-
-        attendance_edit_enabled =
-          VALUES(attendance_edit_enabled),
-
-        attendance_duration_minutes =
-          VALUES(attendance_duration_minutes),
-
-        attendance_auto_lock =
-          VALUES(attendance_auto_lock),
-
-        attendance_auto_absent =
-          VALUES(attendance_auto_absent),
-
-        attendance_late_enabled =
-          VALUES(attendance_late_enabled)
+        UPDATE setting_church
+        SET ${setClause}
+        WHERE church_id = ?
+        LIMIT 1
       `,
-      [
-        churchId,
-
-        logo,
-        coverImage,
-        slogan,
-
-        Number(!!catechism_enabled),
-        Number(!!catechism_attendance_enabled),
-
-        catechism_start_time || null,
-        catechism_end_time || null,
-
-        Number(!!allow_late),
-        safeLateMinutes,
-        Number(!!auto_absent),
-
-        Number(!!attendance_enabled),
-        Number(!!attendance_qr_enabled),
-        Number(!!attendance_manual_enabled),
-        Number(!!attendance_edit_enabled),
-
-        safeAttendanceDuration,
-
-        Number(!!attendance_auto_lock),
-        Number(!!attendance_auto_absent),
-        Number(!!attendance_late_enabled),
-      ],
+      [...values, churchId],
     );
 
-    // ========================================================
-    // 9. XÓA ẢNH CŨ SAU KHI UPDATE DB THÀNH CÔNG
-    // ========================================================
+    databaseUpdated = true;
 
-    if (logoFile && currentSetting?.logo && currentSetting.logo !== logo) {
-      console.log("[FILE] DELETE OLD LOGO:", currentSetting.logo);
+    console.log(`[${requestId}] DATABASE UPDATE SUCCESS`);
 
+    // 5. Xóa ảnh cũ sau khi database đã lưu đường dẫn mới.
+    if (logoFile && currentSetting.logo && currentSetting.logo !== newLogo) {
       deleteOldFile(currentSetting.logo);
     }
 
     if (
       coverImageFile &&
-      currentSetting?.cover_image &&
-      currentSetting.cover_image !== coverImage
+      currentSetting.cover_image &&
+      currentSetting.cover_image !== newCoverImage
     ) {
-      console.log("[FILE] DELETE OLD COVER:", currentSetting.cover_image);
-
       deleteOldFile(currentSetting.cover_image);
     }
 
-    // ========================================================
-    // 10. LẤY DATA SAU UPDATE
-    // ========================================================
+    // 6. Lấy dữ liệu mới nhất.
+    const updatedSetting = await selectChurchSettings(churchId);
 
-    const [rows] = await db.query(
-      `
-      SELECT *
-      FROM setting_church
-      WHERE church_id = ?
-      LIMIT 1
-      `,
-      [churchId],
-    );
+    if (!updatedSetting) {
+      throw new Error("Không thể đọc cấu hình sau khi cập nhật");
+    }
 
-    console.log("[SETTING] UPDATED:", rows[0]);
+    console.log(`[${requestId}] UPDATE SUCCESS`);
+    console.log(`[${requestId}] SETTING ID:`, updatedSetting.id);
 
-    // ========================================================
-    // 11. RESPONSE
-    // ========================================================
-
-    return res.json({
+    return res.status(200).json({
       success: true,
-
       message: "Cập nhật cấu hình giáo xứ thành công",
-
-      data: rows[0],
+      data: normalizeSettings(updatedSetting),
     });
   } catch (error) {
-    console.error("");
-    console.error(
-      "============================================================",
-    );
-    console.error("              UPDATE CHURCH SETTINGS ERROR");
-    console.error(
-      "============================================================",
-    );
+    console.error(`[${requestId}] UPDATE ERROR:`, error.message);
+    console.error(error.stack);
 
-    console.error("[ERROR MESSAGE]:", error.message);
+    // Nếu chưa cập nhật DB thành công thì xóa các file upload mới.
+    if (!databaseUpdated) {
+      cleanupUploadedFiles(req.files);
+    }
 
-    console.error("[ERROR STACK]:", error.stack);
+    const validationError =
+      error.message?.startsWith("Trường ") ||
+      error.message?.startsWith("Slogan ") ||
+      error.message?.startsWith("Thời gian ") ||
+      error.message?.startsWith("late_minutes ") ||
+      error.message?.startsWith("attendance_duration_minutes ");
 
-    // ========================================================
-    // MULTER ERROR
-    // ========================================================
+    if (validationError) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
 
     if (error.code === "LIMIT_FILE_SIZE") {
       return res.status(400).json({
@@ -435,187 +606,16 @@ exports.updateChurchSettings = async (req, res) => {
       });
     }
 
+    if (error.code === "LIMIT_UNEXPECTED_FILE") {
+      return res.status(400).json({
+        success: false,
+        message: "Trường upload ảnh không hợp lệ",
+      });
+    }
+
     return res.status(500).json({
       success: false,
       message: "Không thể cập nhật cấu hình giáo xứ",
-
-      error: error.message,
-    });
-  }
-};
-
-// ============================================================
-// GET CHURCH SETTINGS
-// GET /api/settings/church
-// ============================================================
-exports.getChurchSettings = async (req, res) => {
-  try {
-    console.log("");
-    console.log("============================================================");
-    console.log("                  GET CHURCH SETTINGS");
-    console.log("============================================================");
-
-    const churchId = getChurchId(req);
-
-    console.log("CHURCH ID:", churchId);
-
-    if (!churchId) {
-      return res.status(403).json({
-        success: false,
-        message: "Tài khoản chưa được gán giáo xứ",
-      });
-    }
-
-    // ========================================================
-    // 1. KIỂM TRA / TẠO BẢNG
-    // ========================================================
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS setting_church (
-        id INT NOT NULL AUTO_INCREMENT,
-        church_id INT NOT NULL,
-
-        logo VARCHAR(500) DEFAULT NULL,
-        cover_image VARCHAR(500) DEFAULT NULL,
-        slogan VARCHAR(255) DEFAULT NULL,
-
-        catechism_enabled TINYINT(1) NOT NULL DEFAULT 1,
-        catechism_attendance_enabled TINYINT(1) NOT NULL DEFAULT 1,
-        catechism_start_time TIME DEFAULT NULL,
-        catechism_end_time TIME DEFAULT NULL,
-
-        allow_late TINYINT(1) NOT NULL DEFAULT 1,
-        late_minutes INT NOT NULL DEFAULT 15,
-        auto_absent TINYINT(1) NOT NULL DEFAULT 0,
-
-        attendance_enabled TINYINT(1) NOT NULL DEFAULT 1,
-        attendance_qr_enabled TINYINT(1) NOT NULL DEFAULT 1,
-        attendance_manual_enabled TINYINT(1) NOT NULL DEFAULT 1,
-        attendance_edit_enabled TINYINT(1) NOT NULL DEFAULT 1,
-
-        attendance_duration_minutes INT NOT NULL DEFAULT 120,
-        attendance_auto_lock TINYINT(1) NOT NULL DEFAULT 1,
-        attendance_auto_absent TINYINT(1) NOT NULL DEFAULT 0,
-        attendance_late_enabled TINYINT(1) NOT NULL DEFAULT 1,
-
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-          ON UPDATE CURRENT_TIMESTAMP,
-
-        PRIMARY KEY (id),
-        UNIQUE KEY uk_setting_church_church_id (church_id),
-
-        CONSTRAINT fk_setting_church_church
-          FOREIGN KEY (church_id)
-          REFERENCES churches(id)
-          ON DELETE CASCADE
-          ON UPDATE CASCADE
-
-      ) ENGINE=InnoDB
-      DEFAULT CHARSET=utf8mb4
-      COLLATE=utf8mb4_unicode_ci
-    `);
-
-    console.log("SETTING TABLE: OK");
-
-    // ========================================================
-    // 2. LẤY SETTING
-    // ========================================================
-    const [rows] = await db.query(
-      `
-      SELECT
-        id,
-        church_id,
-
-        logo,
-        cover_image,
-        slogan,
-
-        catechism_enabled,
-        catechism_attendance_enabled,
-        catechism_start_time,
-        catechism_end_time,
-
-        allow_late,
-        late_minutes,
-        auto_absent,
-
-        attendance_enabled,
-        attendance_qr_enabled,
-        attendance_manual_enabled,
-        attendance_edit_enabled,
-        attendance_duration_minutes,
-        attendance_auto_lock,
-        attendance_auto_absent,
-        attendance_late_enabled,
-
-        created_at,
-        updated_at
-
-      FROM setting_church
-      WHERE church_id = ?
-      LIMIT 1
-      `,
-      [churchId],
-    );
-
-    // ========================================================
-    // 3. CHƯA CÓ → TẠO MẶC ĐỊNH
-    // ========================================================
-    if (!rows.length) {
-      console.log("SETTING: CHƯA CÓ → TẠO MẶC ĐỊNH");
-
-      await db.query(
-        `
-        INSERT INTO setting_church (
-          church_id
-        )
-        VALUES (?)
-        `,
-        [churchId],
-      );
-
-      const [newRows] = await db.query(
-        `
-        SELECT *
-        FROM setting_church
-        WHERE church_id = ?
-        LIMIT 1
-        `,
-        [churchId],
-      );
-
-      console.log("SETTING: CREATED");
-      console.log("SETTING ID:", newRows[0]?.id);
-
-      return res.json({
-        success: true,
-        message: "Lấy cấu hình giáo xứ thành công",
-        data: newRows[0],
-      });
-    }
-
-    console.log("SETTING ID:", rows[0].id);
-
-    return res.json({
-      success: true,
-      message: "Lấy cấu hình giáo xứ thành công",
-      data: rows[0],
-    });
-  } catch (error) {
-    console.error("");
-    console.error(
-      "============================================================",
-    );
-    console.error("               GET CHURCH SETTINGS ERROR");
-    console.error(
-      "============================================================",
-    );
-    console.error(error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Không thể lấy cấu hình giáo xứ",
-      error: error.message,
     });
   }
 };

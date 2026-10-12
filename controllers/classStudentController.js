@@ -335,105 +335,95 @@ const finishRelation = async (
 // =====================================================
 
 exports.getStudentsByClass = async (req, res) => {
-  const requestId = createRequestId("GET-CLASS-STUDENTS");
+  const { classId } = req.params;
+  const churchId = req.user?.church_id;
+
+  if (!classId || !churchId) {
+    return res.status(400).json({
+      success: false,
+      message: "Thiếu thông tin lớp học hoặc giáo xứ",
+    });
+  }
+
   let connection;
 
   try {
-    const classId = toPositiveInt(req.params.classId);
-    const churchId = toPositiveInt(getChurchId(req));
+    connection = await pool.getConnection();
 
-    if (!classId) {
-      return res.status(400).json({
-        success: false,
-        message: "classId không hợp lệ",
-        request_id: requestId,
-      });
-    }
-
-    if (!churchId) {
-      return res.status(403).json({
-        success: false,
-        message: "Không xác định được giáo xứ",
-        request_id: requestId,
-      });
-    }
-
-    connection = await db.getConnection();
-
+    // Lấy thông tin lớp học và năm học
     const classInfo = await getClassById(connection, classId, churchId);
 
     if (!classInfo) {
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy lớp học",
-        request_id: requestId,
       });
     }
 
-    const schedules = await getSchedulesByClassId(
-      connection,
-      classId,
-      churchId,
-    );
+    if (!classInfo.academic_year) {
+      return res.status(400).json({
+        success: false,
+        message: "Lớp học chưa được thiết lập năm học",
+      });
+    }
 
-    const [rows] = await connection.query(
+    // Lấy lịch học của lớp
+    const schedules = await getClassSchedules(connection, classId);
+
+    // Chỉ lấy học sinh đang học tại lớp trong năm học hiện tại
+    const [students] = await connection.execute(
       `
-        SELECT
-          s.*,
-          cs.id AS class_student_id,
-          cs.status AS enrollment_status,
-          cs.joined_at,
-          cs.left_at,
-          c.id AS current_class_id,
-          c.name AS class_name,
-          c.code AS class_code,
-          c.category AS class_category,
-          c.status AS class_status,
-          c.academic_year AS class_academic_year
-        FROM class_students cs
-        INNER JOIN students s
-          ON s.id = cs.student_id
-        INNER JOIN classes c
-          ON c.id = cs.class_id
-        WHERE cs.class_id = ?
-          AND c.church_id = ?
-          AND s.church_id = ?
-        ORDER BY
-          CASE cs.status
-            WHEN 'studying' THEN 1
-            WHEN 'completed' THEN 2
-            WHEN 'transferred' THEN 3
-            WHEN 'dropped' THEN 4
-            ELSE 5
-          END,
-          s.name ASC,
-          s.id ASC
+      SELECT
+        s.*,
+        cs.id AS class_student_id,
+        cs.status AS enrollment_status,
+        cs.joined_at,
+        cs.left_at,
+        c.id AS current_class_id,
+        c.name AS class_name,
+        c.code AS class_code,
+        c.category AS class_category,
+        c.status AS class_status,
+        c.academic_year AS class_academic_year
+      FROM class_students cs
+      INNER JOIN students s
+        ON s.id = cs.student_id
+      INNER JOIN classes c
+        ON c.id = cs.class_id
+      WHERE cs.class_id = ?
+        AND c.church_id = ?
+        AND s.church_id = ?
+        AND c.academic_year = ?
+        AND cs.status = 'studying'
+        AND cs.left_at IS NULL
+      ORDER BY s.name ASC, s.id ASC
       `,
-      [classId, churchId, churchId],
+      [classId, churchId, churchId, classInfo.academic_year],
     );
 
-    const students = formatStudents(rows);
+    // Giữ định dạng dữ liệu học sinh theo controller hiện tại
+    const formattedStudents = formatStudents(students);
 
     return res.status(200).json({
       success: true,
-      message: "Lấy danh sách học sinh thành công",
-      request_id: requestId,
       data: {
         class: classInfo,
         schedules,
-        students,
-        total: students.length,
+        students: formattedStudents,
+        total: formattedStudents.length,
       },
     });
   } catch (error) {
-    return sendServerError(
-      res,
-      requestId,
-      error,
-      "GET STUDENTS BY CLASS ERROR",
-    );
+    console.error("Lỗi lấy danh sách học sinh theo lớp:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi máy chủ khi lấy danh sách học sinh",
+    });
   } finally {
-    if (connection) connection.release();
+    if (connection) {
+      connection.release();
+    }
   }
 };
 

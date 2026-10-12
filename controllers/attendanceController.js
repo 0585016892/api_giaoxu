@@ -1,40 +1,6 @@
 const db = require("../config/db");
 const ExcelJS = require("exceljs");
 
-/**
- * =========================================================
- * EXPORT EXCEL ATTENDANCE
- * GET /attendance/export-excel
- *
- * Query:
- * - date
- * - attendance_type: mass | catechism
- * - class_id: bắt buộc với catechism
- * - search
- * - status
- * =========================================================
- */
-
-/**
- * =========================================================
- * ATTENDANCE CONTROLLER
- * =========================================================
- *
- * 2 LOẠI ĐIỂM DANH:
- *
- * 1. catechism = Học giáo lý
- *    - Có class_id
- *    - Teacher chỉ được điểm danh lớp mình phụ trách
- *
- * 2. mass = Thánh lễ
- *    - Frontend KHÔNG cần class_id
- *    - Danh sách = toàn bộ học sinh trong giáo xứ
- *    - Backend tự lấy lớp hiện tại của từng học sinh
- *      chỉ để lưu vào attendances.class_id
- *
- * =========================================================
- */
-
 const VALID_STATUS = ["present", "absent", "late", "excused"];
 
 const VALID_ATTENDANCE_TYPES = ["mass", "catechism"];
@@ -51,12 +17,6 @@ const ATTENDANCE_TYPE_CONFIG = {
 
 const MAX_BULK_STUDENTS = 1000;
 const MAX_NOTE_LENGTH = 255;
-
-/**
- * =========================================================
- * AUTH HELPERS
- * =========================================================
- */
 
 const getAuthUser = (req) => {
   return req?.user || {};
@@ -81,18 +41,6 @@ const getChurchId = (req) => {
   return toPositiveInt(user.church_id || user.parish_id || 0);
 };
 
-/**
- * Teacher ID
- *
- * QUAN TRỌNG:
- * Không dùng req.user.id làm teacher_id một cách mặc định.
- *
- * Vì:
- * req.user.id thường là admins.id.
- *
- * Teacher phải dùng:
- * req.user.teacher_id
- */
 const getTeacherId = (req) => {
   const user = getAuthUser(req);
 
@@ -108,12 +56,6 @@ const getUserRole = (req) => {
 const isTeacher = (req) => {
   return getUserRole(req) === "teacher";
 };
-
-/**
- * =========================================================
- * ATTENDANCE TYPE
- * =========================================================
- */
 
 const normalizeAttendanceType = (value) => {
   if (typeof value !== "string") {
@@ -621,6 +563,10 @@ const getAllParishStudents = async (executor, churchId) => {
 
 const getAttendance = async (req, res) => {
   try {
+    console.log("\n====================================================");
+    console.log("[GET ATTENDANCE] BẮT ĐẦU");
+    console.log("====================================================");
+
     const churchId = getChurchId(req);
 
     if (!churchId) {
@@ -640,7 +586,6 @@ const getAttendance = async (req, res) => {
     );
 
     let page = Number.parseInt(req?.query?.page, 10);
-
     let limit = Number.parseInt(req?.query?.limit, 10);
 
     const search =
@@ -651,11 +596,19 @@ const getAttendance = async (req, res) => {
         ? req.query.status.trim().toLowerCase()
         : "all";
 
-    /**
-     * =====================================================
-     * VALIDATE
-     * =====================================================
-     */
+    const academicYear = getCurrentAcademicYear();
+
+    console.log("[GET ATTENDANCE] CHURCH ID:", churchId);
+    console.log("[GET ATTENDANCE] ACADEMIC YEAR:", academicYear);
+    console.log("[GET ATTENDANCE] DATE:", date);
+    console.log("[GET ATTENDANCE] TYPE:", attendanceType);
+    console.log("[GET ATTENDANCE] CLASS ID:", requestedClassId);
+    console.log("[GET ATTENDANCE] SEARCH:", search);
+    console.log("[GET ATTENDANCE] STATUS:", status);
+
+    // =====================================================
+    // 1. VALIDATE
+    // =====================================================
 
     if (!isValidDate(date)) {
       return res.status(400).json({
@@ -699,19 +652,24 @@ const getAttendance = async (req, res) => {
       });
     }
 
-    /**
-     * =====================================================
-     * CATECHISM
-     * =====================================================
-     */
+    const offset = (page - 1) * limit;
+
+    // =====================================================
+    // 2. HỌC GIÁO LÝ
+    // =====================================================
 
     if (attendanceType === "catechism") {
+      // ---------------------------------------------------
+      // 2.1. Xác định lớp và kiểm tra quyền truy cập
+      // ---------------------------------------------------
+
       const classResult = await resolveCatechismClass(
         db,
         req,
         churchId,
         requestedClassId,
       );
+
       if (!classResult.ok) {
         const errorStatus =
           Number.isInteger(classResult.status) && classResult.status >= 400
@@ -720,28 +678,86 @@ const getAttendance = async (req, res) => {
 
         return res.status(errorStatus).json({
           success: false,
-          message:
-            classResult.message || "Giáo viên không được phân công lớp giáo lý",
+          message: classResult.message || "Không có quyền truy cập lớp giáo lý",
           ...(Array.isArray(classResult.classes)
-            ? {
-                classes: classResult.classes,
-              }
+            ? { classes: classResult.classes }
             : {}),
         });
       }
 
-      const classInfo = classResult.class;
+      const resolvedClassId = toPositiveInt(classResult.class?.id);
 
+      if (!resolvedClassId) {
+        return res.status(400).json({
+          success: false,
+          message: "Lớp giáo lý không hợp lệ",
+        });
+      }
+
+      // ---------------------------------------------------
+      // 2.2. Kiểm tra lại lớp trong năm học hiện tại
+      // ---------------------------------------------------
+
+      const [classRows] = await db.execute(
+        `
+          SELECT
+            id,
+            name,
+            code,
+            academic_year
+          FROM classes
+          WHERE
+            id = ?
+            AND church_id = ?
+            AND academic_year = ?
+          LIMIT 1
+        `,
+        [resolvedClassId, churchId, academicYear],
+      );
+
+      if (!classRows.length) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Lớp không thuộc giáo xứ hoặc không nằm trong năm học hiện tại",
+          academic_year: academicYear,
+        });
+      }
+
+      const classInfo = classRows[0];
       const classId = Number(classInfo.id);
 
+      console.log("[GET ATTENDANCE] CLASS:", {
+        id: classId,
+        name: classInfo.name,
+        academic_year: classInfo.academic_year,
+      });
+
+      // ---------------------------------------------------
+      // 2.3. Lấy lịch học của lớp
+      // ---------------------------------------------------
+
       const classSchedule = await getClassSchedule(db, classId, date);
+
+      // ---------------------------------------------------
+      // 2.4. Bộ lọc danh sách
+      //
+      // BẮT BUỘC:
+      // - Đúng lớp
+      // - Đúng giáo xứ
+      // - Đúng năm học
+      // - class_students.status = studying
+      // ---------------------------------------------------
 
       let whereSql = `
         WHERE
           cs.class_id = ?
+          AND cs.status = 'studying'
+          AND c.church_id = ?
+          AND c.academic_year = ?
       `;
 
-      const params = [classId];
+      const filterParams = [classId, churchId, academicYear];
 
       if (search) {
         whereSql += `
@@ -751,7 +767,7 @@ const getAttendance = async (req, res) => {
           )
         `;
 
-        params.push(`%${search}%`, `%${search}%`);
+        filterParams.push(`%${search}%`, `%${search}%`);
       }
 
       if (status === "not_attended") {
@@ -763,168 +779,217 @@ const getAttendance = async (req, res) => {
           AND a.status = ?
         `;
 
-        params.push(status);
+        filterParams.push(status);
       }
 
-      /**
-       * COUNT
-       */
+      // ---------------------------------------------------
+      // 2.5. COUNT
+      //
+      // Thứ tự params phải khớp với thứ tự placeholder:
+      // students.church_id
+      // attendance.class_id, church_id, date, type
+      // WHERE class_id, church_id, academic_year
+      // search/status
+      // ---------------------------------------------------
 
-      const [countRows] = await db.execute(
-        `
-            SELECT
-              COUNT(*) AS total
+      const countSql = `
+        SELECT
+          COUNT(*) AS total
+        FROM class_students cs
 
-            FROM class_students cs
+        INNER JOIN classes c
+          ON c.id = cs.class_id
 
-            INNER JOIN students s
-              ON s.id = cs.student_id
-              AND s.church_id = ?
+        INNER JOIN students s
+          ON s.id = cs.student_id
+          AND s.church_id = ?
 
-            LEFT JOIN attendances a
-              ON a.student_id = s.id
-              AND a.class_id = ?
-              AND a.church_id = ?
-              AND a.attendance_date = ?
-              AND a.attendance_type = ?
+        LEFT JOIN attendances a
+          ON a.student_id = s.id
+          AND a.class_id = ?
+          AND a.church_id = ?
+          AND a.attendance_date = ?
+          AND a.attendance_type = ?
 
-            ${whereSql}
-          `,
-        [churchId, classId, churchId, date, attendanceType, ...params],
-      );
+        ${whereSql}
+      `;
+
+      const countParams = [
+        churchId,
+        classId,
+        churchId,
+        date,
+        attendanceType,
+        ...filterParams,
+      ];
+
+      const [countRows] = await db.execute(countSql, countParams);
 
       const total = Number(countRows[0]?.total || 0);
 
-      const offset = (page - 1) * limit;
+      // ---------------------------------------------------
+      // 2.6. DANH SÁCH HỌC SINH
+      // ---------------------------------------------------
 
-      /**
-       * DATA
-       */
+      const dataSql = `
+        SELECT
+          s.id,
+          s.code,
+          s.name,
+          s.gender,
+          s.date_of_birth,
 
-      const [rows] = await db.execute(
-        `
-            SELECT
-              s.id,
-              s.code,
-              s.name,
-              s.gender,
-              s.date_of_birth,
+          a.id AS attendance_id,
+          a.attendance_type,
+          a.status,
+          a.check_in_time,
+          a.note,
+          a.teacher_id,
+          a.attendance_date,
+          a.created_at,
+          a.updated_at
 
-              a.id AS attendance_id,
-              a.attendance_type,
-              a.status,
-              a.check_in_time,
-              a.note,
-              a.teacher_id,
-              a.attendance_date,
-              a.created_at,
-              a.updated_at
+        FROM class_students cs
 
-            FROM class_students cs
+        INNER JOIN classes c
+          ON c.id = cs.class_id
 
-            INNER JOIN students s
-              ON s.id = cs.student_id
-              AND s.church_id = ?
+        INNER JOIN students s
+          ON s.id = cs.student_id
+          AND s.church_id = ?
 
-            LEFT JOIN attendances a
-              ON a.student_id = s.id
-              AND a.class_id = ?
-              AND a.church_id = ?
-              AND a.attendance_date = ?
-              AND a.attendance_type = ?
+        LEFT JOIN attendances a
+          ON a.student_id = s.id
+          AND a.class_id = ?
+          AND a.church_id = ?
+          AND a.attendance_date = ?
+          AND a.attendance_type = ?
 
-            ${whereSql}
+        ${whereSql}
 
-            ORDER BY
-              s.name ASC,
-              s.id ASC
+        ORDER BY
+          s.name ASC,
+          s.id ASC
 
-            LIMIT ${limit}
-            OFFSET ${offset}
-          `,
-        [churchId, classId, churchId, date, attendanceType, ...params],
-      );
+        LIMIT ${limit}
+        OFFSET ${offset}
+      `;
 
-      /**
-       * STATISTICS
-       */
+      const dataParams = [
+        churchId,
+        classId,
+        churchId,
+        date,
+        attendanceType,
+        ...filterParams,
+      ];
 
-      const [statsRows] = await db.execute(
-        `
-            SELECT
-              COUNT(*) AS total,
+      const [rows] = await db.execute(dataSql, dataParams);
 
-              SUM(
-                CASE
-                  WHEN a.status = 'present'
-                  THEN 1
-                  ELSE 0
-                END
-              ) AS present,
+      // ---------------------------------------------------
+      // 2.7. THỐNG KÊ CẢ LỚP
+      //
+      // Thống kê toàn bộ học sinh đang học trong lớp,
+      // không bị ảnh hưởng bởi search hoặc status lọc UI.
+      // ---------------------------------------------------
 
-              SUM(
-                CASE
-                  WHEN a.status = 'absent'
-                  THEN 1
-                  ELSE 0
-                END
-              ) AS absent,
+      const statsSql = `
+        SELECT
+          COUNT(*) AS total,
 
-              SUM(
-                CASE
-                  WHEN a.status = 'late'
-                  THEN 1
-                  ELSE 0
-                END
-              ) AS late,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.status = 'present' THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS present,
 
-              SUM(
-                CASE
-                  WHEN a.status = 'excused'
-                  THEN 1
-                  ELSE 0
-                END
-              ) AS excused,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.status = 'absent' THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS absent,
 
-              SUM(
-                CASE
-                  WHEN a.id IS NULL
-                  THEN 1
-                  ELSE 0
-                END
-              ) AS not_attended
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.status = 'late' THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS late,
 
-            FROM class_students cs
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.status = 'excused' THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS excused,
 
-            INNER JOIN students s
-              ON s.id = cs.student_id
-              AND s.church_id = ?
+          COALESCE(
+            SUM(
+              CASE
+                WHEN a.id IS NULL THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS not_attended
 
-            LEFT JOIN attendances a
-              ON a.student_id = s.id
-              AND a.class_id = ?
-              AND a.church_id = ?
-              AND a.attendance_date = ?
-              AND a.attendance_type = ?
+        FROM class_students cs
 
-            WHERE
-              cs.class_id = ?
-          `,
-        [churchId, classId, churchId, date, attendanceType, classId],
-      );
+        INNER JOIN classes c
+          ON c.id = cs.class_id
+
+        INNER JOIN students s
+          ON s.id = cs.student_id
+          AND s.church_id = ?
+
+        LEFT JOIN attendances a
+          ON a.student_id = s.id
+          AND a.class_id = ?
+          AND a.church_id = ?
+          AND a.attendance_date = ?
+          AND a.attendance_type = ?
+
+        WHERE
+          cs.class_id = ?
+          AND cs.status = 'studying'
+          AND c.church_id = ?
+          AND c.academic_year = ?
+      `;
+
+      const statsParams = [
+        churchId,
+        classId,
+        churchId,
+        date,
+        attendanceType,
+        classId,
+        churchId,
+        academicYear,
+      ];
+
+      const [statsRows] = await db.execute(statsSql, statsParams);
 
       const stats = statsRows[0] || {};
 
       const totalStudents = Number(stats.total || 0);
-
       const present = Number(stats.present || 0);
-
       const absent = Number(stats.absent || 0);
-
       const late = Number(stats.late || 0);
-
       const excused = Number(stats.excused || 0);
-
       const notAttended = Number(stats.not_attended || 0);
 
       const attended = present + late;
@@ -934,20 +999,28 @@ const getAttendance = async (req, res) => {
           ? Number(((attended / totalStudents) * 100).toFixed(2))
           : 0;
 
+      console.log("[GET ATTENDANCE] CATECHISM RESULT:", {
+        classId,
+        academicYear,
+        totalStudents,
+        returnedRows: rows.length,
+        totalFiltered: total,
+      });
+
       return res.json({
         success: true,
 
         class: {
-          id: classInfo.id,
+          id: classId,
           name: classInfo.name,
           code: classInfo.code || null,
+          academic_year: classInfo.academic_year,
           start_time: classSchedule?.start_time || null,
         },
 
         date,
 
         attendance_type: "catechism",
-
         attendance_type_label: "Học giáo lý",
 
         statistics: {
@@ -969,214 +1042,226 @@ const getAttendance = async (req, res) => {
 
         data: rows.map((row) => ({
           ...row,
-
           attendance_id: row.attendance_id || null,
-
           status: row.status || null,
-
           check_in_time: row.check_in_time || null,
-
           note: row.note || null,
         })),
       });
     }
 
-    /**
-     * =====================================================
-     * MASS
-     * =====================================================
-     *
-     * KHÔNG class_id.
-     *
-     * KHÔNG resolveCatechismClass().
-     *
-     * TOÀN BỘ HỌC SINH GIÁO XỨ.
-     * =====================================================
-     */
+    // =====================================================
+    // 3. THÁNH LỄ
+    //
+    // Giữ nghiệp vụ hiện có:
+    // - Không yêu cầu class_id.
+    // - Không lọc theo năm học lớp.
+    // - Lấy toàn bộ học sinh thuộc giáo xứ.
+    // =====================================================
 
-    let whereSql = `
+    let massWhereSql = `
       WHERE
         s.church_id = ?
     `;
 
-    const params = [churchId];
+    const massFilterParams = [churchId];
 
     if (search) {
-      whereSql += `
+      massWhereSql += `
         AND (
           s.name LIKE ?
           OR s.code LIKE ?
         )
       `;
 
-      params.push(`%${search}%`, `%${search}%`);
+      massFilterParams.push(`%${search}%`, `%${search}%`);
     }
 
     if (status === "not_attended") {
-      whereSql += `
+      massWhereSql += `
         AND a.id IS NULL
       `;
     } else if (status !== "all") {
-      whereSql += `
+      massWhereSql += `
         AND a.status = ?
       `;
 
-      params.push(status);
+      massFilterParams.push(status);
     }
 
-    /**
-     * COUNT
-     */
+    // -----------------------------------------------------
+    // 3.1. COUNT THÁNH LỄ
+    // -----------------------------------------------------
 
-    const [countRows] = await db.execute(
-      `
-          SELECT
-            COUNT(*) AS total
+    const massCountSql = `
+      SELECT
+        COUNT(*) AS total
+      FROM students s
 
-          FROM students s
+      LEFT JOIN attendances a
+        ON a.student_id = s.id
+        AND a.church_id = ?
+        AND a.attendance_date = ?
+        AND a.attendance_type = 'mass'
 
-          LEFT JOIN attendances a
-            ON a.student_id = s.id
-            AND a.church_id = ?
-            AND a.attendance_date = ?
-            AND a.attendance_type = 'mass'
+      ${massWhereSql}
+    `;
 
-          ${whereSql}
-        `,
-      [churchId, date, ...params],
-    );
+    const massCountParams = [churchId, date, ...massFilterParams];
 
-    const total = Number(countRows[0]?.total || 0);
+    const [massCountRows] = await db.execute(massCountSql, massCountParams);
 
-    const offset = (page - 1) * limit;
+    const massTotal = Number(massCountRows[0]?.total || 0);
 
-    /**
-     * DATA
-     */
+    // -----------------------------------------------------
+    // 3.2. DANH SÁCH THÁNH LỄ
+    // -----------------------------------------------------
 
-    const [rows] = await db.execute(
-      `
-          SELECT
-            s.id,
-            s.code,
-            s.name,
-            s.gender,
-            s.date_of_birth,
+    const massDataSql = `
+      SELECT
+        s.id,
+        s.code,
+        s.name,
+        s.gender,
+        s.date_of_birth,
 
-            a.id AS attendance_id,
-            a.attendance_type,
-            a.status,
-            a.check_in_time,
-            a.note,
-            a.teacher_id,
-            a.attendance_date,
-            a.class_id,
-            a.created_at,
-            a.updated_at
+        a.id AS attendance_id,
+        a.attendance_type,
+        a.status,
+        a.check_in_time,
+        a.note,
+        a.teacher_id,
+        a.attendance_date,
+        a.class_id,
+        a.created_at,
+        a.updated_at
 
-          FROM students s
+      FROM students s
 
-          LEFT JOIN attendances a
-            ON a.student_id = s.id
-            AND a.church_id = ?
-            AND a.attendance_date = ?
-            AND a.attendance_type = 'mass'
+      LEFT JOIN attendances a
+        ON a.student_id = s.id
+        AND a.church_id = ?
+        AND a.attendance_date = ?
+        AND a.attendance_type = 'mass'
 
-          ${whereSql}
+      ${massWhereSql}
 
-          ORDER BY
-            s.name ASC,
-            s.id ASC
+      ORDER BY
+        s.name ASC,
+        s.id ASC
 
-          LIMIT ${limit}
-          OFFSET ${offset}
-        `,
-      [churchId, date, ...params],
-    );
+      LIMIT ${limit}
+      OFFSET ${offset}
+    `;
 
-    /**
-     * STATISTICS
-     */
+    const massDataParams = [churchId, date, ...massFilterParams];
 
-    const [statsRows] = await db.execute(
-      `
-          SELECT
-            COUNT(*) AS total,
+    const [massRows] = await db.execute(massDataSql, massDataParams);
 
-            SUM(
-              CASE
-                WHEN a.status = 'present'
-                THEN 1
-                ELSE 0
-              END
-            ) AS present,
+    // -----------------------------------------------------
+    // 3.3. THỐNG KÊ THÁNH LỄ
+    //
+    // Thống kê toàn bộ học sinh giáo xứ, không phụ thuộc
+    // vào search, status hoặc phân trang.
+    // -----------------------------------------------------
 
-            SUM(
-              CASE
-                WHEN a.status = 'absent'
-                THEN 1
-                ELSE 0
-              END
-            ) AS absent,
+    const massStatsSql = `
+      SELECT
+        COUNT(*) AS total,
 
-            SUM(
-              CASE
-                WHEN a.status = 'late'
-                THEN 1
-                ELSE 0
-              END
-            ) AS late,
+        COALESCE(
+          SUM(
+            CASE
+              WHEN a.status = 'present' THEN 1
+              ELSE 0
+            END
+          ),
+          0
+        ) AS present,
 
-            SUM(
-              CASE
-                WHEN a.status = 'excused'
-                THEN 1
-                ELSE 0
-              END
-            ) AS excused,
+        COALESCE(
+          SUM(
+            CASE
+              WHEN a.status = 'absent' THEN 1
+              ELSE 0
+            END
+          ),
+          0
+        ) AS absent,
 
-            SUM(
-              CASE
-                WHEN a.id IS NULL
-                THEN 1
-                ELSE 0
-              END
-            ) AS not_attended
+        COALESCE(
+          SUM(
+            CASE
+              WHEN a.status = 'late' THEN 1
+              ELSE 0
+            END
+          ),
+          0
+        ) AS late,
 
-          FROM students s
+        COALESCE(
+          SUM(
+            CASE
+              WHEN a.status = 'excused' THEN 1
+              ELSE 0
+            END
+          ),
+          0
+        ) AS excused,
 
-          LEFT JOIN attendances a
-            ON a.student_id = s.id
-            AND a.church_id = ?
-            AND a.attendance_date = ?
-            AND a.attendance_type = 'mass'
+        COALESCE(
+          SUM(
+            CASE
+              WHEN a.id IS NULL THEN 1
+              ELSE 0
+            END
+          ),
+          0
+        ) AS not_attended
 
-          WHERE
-            s.church_id = ?
-        `,
-      [churchId, date, churchId],
-    );
+      FROM students s
 
-    const stats = statsRows[0] || {};
+      LEFT JOIN attendances a
+        ON a.student_id = s.id
+        AND a.church_id = ?
+        AND a.attendance_date = ?
+        AND a.attendance_type = 'mass'
 
-    const totalStudents = Number(stats.total || 0);
+      WHERE
+        s.church_id = ?
+    `;
 
-    const present = Number(stats.present || 0);
+    const massStatsParams = [churchId, date, churchId];
 
-    const absent = Number(stats.absent || 0);
+    const [massStatsRows] = await db.execute(massStatsSql, massStatsParams);
 
-    const late = Number(stats.late || 0);
+    const massStats = massStatsRows[0] || {};
 
-    const excused = Number(stats.excused || 0);
+    const massTotalStudents = Number(massStats.total || 0);
 
-    const notAttended = Number(stats.not_attended || 0);
+    const massPresent = Number(massStats.present || 0);
 
-    const attended = present + late;
+    const massAbsent = Number(massStats.absent || 0);
 
-    const attendanceRate =
-      totalStudents > 0
-        ? Number(((attended / totalStudents) * 100).toFixed(2))
+    const massLate = Number(massStats.late || 0);
+
+    const massExcused = Number(massStats.excused || 0);
+
+    const massNotAttended = Number(massStats.not_attended || 0);
+
+    const massAttended = massPresent + massLate;
+
+    const massAttendanceRate =
+      massTotalStudents > 0
+        ? Number(((massAttended / massTotalStudents) * 100).toFixed(2))
         : 0;
+
+    console.log("[GET ATTENDANCE] MASS RESULT:", {
+      churchId,
+      totalStudents: massTotalStudents,
+      returnedRows: massRows.length,
+      totalFiltered: massTotal,
+    });
 
     return res.json({
       success: true,
@@ -1186,52 +1271,47 @@ const getAttendance = async (req, res) => {
       date,
 
       attendance_type: "mass",
-
       attendance_type_label: "Thánh lễ",
 
       statistics: {
-        total: totalStudents,
-        present,
-        absent,
-        late,
-        excused,
-        not_attended: notAttended,
-        attendance_rate: attendanceRate,
+        total: massTotalStudents,
+        present: massPresent,
+        absent: massAbsent,
+        late: massLate,
+        excused: massExcused,
+        not_attended: massNotAttended,
+        attendance_rate: massAttendanceRate,
       },
 
       pagination: {
         page,
         limit,
-        total,
-        total_pages: total > 0 ? Math.ceil(total / limit) : 0,
+        total: massTotal,
+        total_pages: massTotal > 0 ? Math.ceil(massTotal / limit) : 0,
       },
 
-      data: rows.map((row) => ({
+      data: massRows.map((row) => ({
         ...row,
-
         attendance_id: row.attendance_id || null,
-
         class_id: row.class_id || null,
-
         status: row.status || null,
-
         check_in_time: row.check_in_time || null,
-
         note: row.note || null,
       })),
     });
   } catch (error) {
-    console.error("GET ATTENDANCE ERROR:", error);
+    console.error("\n====================================================");
+    console.error("[GET ATTENDANCE] ERROR");
+    console.error("====================================================");
+    console.error("Message:", error.message);
+    console.error("Code:", error.code);
+    console.error("SQL:", error.sqlMessage);
+    console.error("Stack:", error.stack);
 
     return res.status(500).json({
       success: false,
       message: "Không thể tải dữ liệu điểm danh",
-
-      ...(getErrorMessage(error)
-        ? {
-            error: getErrorMessage(error),
-          }
-        : {}),
+      error: error.message,
     });
   }
 };

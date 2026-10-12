@@ -368,8 +368,11 @@ exports.getStudentsByClass = async (req, res) => {
     }
 
     // Lấy lịch học của lớp
-    const schedules = await getClassSchedules(connection, classId);
-
+    const schedules = await getSchedulesByClassId(
+      connection,
+      classId,
+      churchId,
+    );
     // Chỉ lấy học sinh đang học tại lớp trong năm học hiện tại
     const [students] = await connection.execute(
       `

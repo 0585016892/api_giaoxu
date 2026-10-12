@@ -219,7 +219,20 @@ const getClassSchedule = async (executor, classId, date) => {
 
   return rows[0] || null;
 };
+// =====================================================
+// GET CURRENT ACADEMIC YEAR
+// Định dạng: YYYY-YYYY
+// Ví dụ: 2026-2027
+// =====================================================
+const getCurrentAcademicYear = () => {
+  const now = new Date();
 
+  // Năm học mới bắt đầu vào tháng 9.
+  const currentYear =
+    now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
+
+  return `${currentYear}-${currentYear + 1}`;
+};
 /**
  * =========================================================
  * QR

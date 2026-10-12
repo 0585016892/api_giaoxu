@@ -1506,46 +1506,22 @@ exports.getStudentsByClass = async (req, res) => {
  */
 
 exports.getStudentsByTeacher = async (req, res) => {
-  console.log("\n");
-  console.log("======================================================");
-  console.log("🔎 GET STUDENTS BY TEACHER");
-  console.log("======================================================");
-
   try {
     // =====================================================
-    // 0. LẤY THÔNG TIN USER
+    // 1. LẤY THÔNG TIN TÀI KHOẢN ĐANG ĐĂNG NHẬP
     // =====================================================
-    console.log("\n---------- AUTH ----------");
-
-    console.log("REQ.USER:", req.user);
 
     const churchId = getChurchId(req);
+    const username = normalizeValue(req.user?.username);
 
-    const rawUsername = req.user?.username;
-    const username = normalizeValue(rawUsername);
-
-    console.log("⛪ CHURCH ID:", churchId);
-    console.log("👤 RAW USERNAME:", rawUsername);
-    console.log("👤 NORMALIZED USERNAME:", username);
-
-    // =====================================================
-    // CHECK CHURCH
-    // =====================================================
     if (!churchId) {
-      console.log("❌ KHÔNG XÁC ĐỊNH ĐƯỢC CHURCH ID");
-
       return res.status(403).json({
         success: false,
         message: "Không xác định được giáo xứ",
       });
     }
 
-    // =====================================================
-    // CHECK USERNAME
-    // =====================================================
     if (!username) {
-      console.log("❌ KHÔNG XÁC ĐỊNH ĐƯỢC USERNAME");
-
       return res.status(401).json({
         success: false,
         message: "Không xác định được tài khoản giáo lý viên",
@@ -1553,20 +1529,33 @@ exports.getStudentsByTeacher = async (req, res) => {
     }
 
     // =====================================================
-    // 1. TÌM GIÁO LÝ VIÊN
+    // 2. XÁC ĐỊNH NĂM HỌC HIỆN TẠI
     // =====================================================
-    console.log("\n---------- CHECK CATECHIST ----------");
 
-    console.log("🔎 Tìm catechist:");
-    console.log("   church_id      =", churchId);
-    console.log("   catechist_code =", username);
+    // Có thể cấu hình CURRENT_ACADEMIC_YEAR trong file .env,
+    // ví dụ: CURRENT_ACADEMIC_YEAR=2026-2027
+
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const academicStartYear =
+      now.getMonth() >= 7 ? currentYear : currentYear - 1;
+
+    const currentAcademicYear =
+      process.env.CURRENT_ACADEMIC_YEAR ||
+      `${academicStartYear}-${academicStartYear + 1}`;
+
+    console.log("===== GET STUDENTS BY TEACHER =====");
+    console.log("Church ID:", churchId);
+    console.log("Username:", username);
+    console.log("Academic year:", currentAcademicYear);
+
+    // =====================================================
+    // 3. TÌM GIÁO LÝ VIÊN
+    // =====================================================
 
     const [catechistRows] = await db.execute(
       `
-        SELECT
-          id,
-          church_id,
-          catechist_code
+        SELECT id, church_id, catechist_code
         FROM catechists
         WHERE church_id = ?
           AND catechist_code = ?
@@ -1575,337 +1564,81 @@ exports.getStudentsByTeacher = async (req, res) => {
       [churchId, username],
     );
 
-    console.log("👨‍🏫 CATECHIST ROWS:", catechistRows);
-    console.log("👨‍🏫 CATECHIST COUNT:", catechistRows.length);
-
     if (!catechistRows.length) {
-      console.log("❌ KHÔNG TÌM THẤY GIÁO LÝ VIÊN");
-
-      return res.json({
+      return res.status(200).json({
         success: true,
         data: [],
         total: 0,
-        debug: {
-          churchId,
-          username,
-          catechistFound: false,
-          catechistId: null,
-          classCount: 0,
-          classStudentCount: 0,
-          studentCount: 0,
-        },
+        message: "Không tìm thấy giáo lý viên",
       });
     }
 
-    const catechist = catechistRows[0];
-    const catechistId = Number(catechist.id);
-
-    console.log("✅ TÌM THẤY CATECHIST");
-    console.log("👨‍🏫 CATECHIST ID:", catechistId);
+    const catechistId = Number(catechistRows[0].id);
 
     // =====================================================
-    // 2. TÌM LỚP CỦA GIÁO LÝ VIÊN
+    // 4. LẤY HỌC SINH THUỘC LỚP ĐƯỢC PHÂN CÔNG
+    //    VÀ ĐANG HỌC TRONG NĂM HỌC HIỆN TẠI
     // =====================================================
-    console.log("\n---------- CHECK CATECHIST CLASSES ----------");
 
-    console.log("🔎 Tìm lớp của catechist:");
-    console.log("   catechist_id =", catechistId);
-    console.log("   church_id    =", churchId);
-
-    const [classRows] = await db.execute(
+    const [rows] = await db.execute(
       `
-        SELECT
-          c.id,
-          c.church_id,
-          c.name,
-          c.code,
-          c.category,
-          c.catechist_id,
-          c.description,
-          c.start_date,
-          c.end_date,
-          c.status,
+        SELECT DISTINCT
+          s.id,
+          s.church_id,
+          s.code,
+          s.name,
+          s.gender,
+          s.date_of_birth,
+          s.phone,
+          s.email,
+          s.address,
+          s.avatar,
+          s.status,
+          s.catechism_status,
+
+          c.id AS class_id,
+          c.name AS class_name,
+          c.code AS class_code,
+          c.category AS class_category,
+          c.status AS class_status,
+          c.academic_year,
 
           cc.id AS catechist_class_id
 
-        FROM catechist_classes cc
+        FROM students s
+
+        INNER JOIN class_students cs
+          ON cs.student_id = s.id
+          AND cs.status = 'studying'
+          AND cs.left_at IS NULL
 
         INNER JOIN classes c
-          ON c.id = cc.class_id
+          ON c.id = cs.class_id
           AND c.church_id = ?
+          AND c.academic_year = ?
 
-        WHERE cc.catechist_id = ?
+        INNER JOIN catechist_classes cc
+          ON cc.class_id = c.id
+          AND cc.catechist_id = ?
 
-        ORDER BY
-          c.id ASC
-      `,
-      [churchId, catechistId],
-    );
-
-    console.log("🏫 CLASS ROWS:", classRows);
-    console.log("🏫 CLASS COUNT:", classRows.length);
-
-    // =====================================================
-    // KHÔNG CÓ LỚP
-    // =====================================================
-    if (!classRows.length) {
-      console.log("❌ GIÁO LÝ VIÊN CHƯA ĐƯỢC GÁN LỚP");
-      console.log("❌ Kiểm tra bảng catechist_classes");
-
-      return res.json({
-        success: true,
-        data: [],
-        total: 0,
-        debug: {
-          churchId,
-          username,
-          catechistFound: true,
-          catechistId,
-          classCount: 0,
-          classStudentCount: 0,
-          studentCount: 0,
-        },
-      });
-    }
-
-    // =====================================================
-    // CLASS IDS
-    // =====================================================
-    const classIds = [
-      ...new Set(
-        classRows
-          .map((item) => Number(item.id))
-          .filter((id) => Number.isInteger(id) && id > 0),
-      ),
-    ];
-
-    console.log("🏫 CLASS IDS:", classIds);
-
-    if (!classIds.length) {
-      console.log("❌ KHÔNG CÓ CLASS ID HỢP LỆ");
-
-      return res.json({
-        success: true,
-        data: [],
-        total: 0,
-        debug: {
-          churchId,
-          username,
-          catechistFound: true,
-          catechistId,
-          classCount: classRows.length,
-          classIds: [],
-          classStudentCount: 0,
-          studentCount: 0,
-        },
-      });
-    }
-
-    // =====================================================
-    // 3. KIỂM TRA CLASS_STUDENTS
-    // =====================================================
-    console.log("\n---------- CHECK CLASS STUDENTS ----------");
-
-    const classPlaceholders = classIds.map(() => "?").join(",");
-
-    const [classStudentRows] = await db.execute(
-      `
-        SELECT
-          cs.id,
-          cs.class_id,
-          cs.student_id,
-          cs.status,
-          cs.joined_at,
-          cs.left_at
-
-        FROM class_students cs
-
-        WHERE cs.class_id IN (${classPlaceholders})
+        WHERE s.church_id = ?
 
         ORDER BY
-          cs.class_id ASC,
-          cs.student_id ASC
+          s.name ASC,
+          s.id ASC
       `,
-      classIds,
+      [churchId, currentAcademicYear, catechistId, churchId],
     );
 
-    console.log("🔗 CLASS_STUDENT ROWS:", classStudentRows);
-    console.log("🔗 CLASS_STUDENT COUNT:", classStudentRows.length);
-
     // =====================================================
-    // KHÔNG CÓ HỌC SINH
+    // 5. CHUẨN HÓA ĐƯỜNG DẪN AVATAR
     // =====================================================
-    if (!classStudentRows.length) {
-      console.log("❌ CÁC LỚP KHÔNG CÓ HỌC SINH");
 
-      return res.json({
-        success: true,
-        data: [],
-        total: 0,
-        debug: {
-          churchId,
-          username,
-          catechistFound: true,
-          catechistId,
-          classCount: classRows.length,
-          classIds,
-          classStudentCount: 0,
-          studentCount: 0,
-        },
-      });
-    }
-
-    // =====================================================
-    // 4. LẤY STUDENT IDS
-    // =====================================================
-    const studentIds = [
-      ...new Set(
-        classStudentRows
-          .map((item) => Number(item.student_id))
-          .filter((id) => Number.isInteger(id) && id > 0),
-      ),
-    ];
-
-    console.log("\n---------- STUDENT IDS ----------");
-
-    console.log("👨‍🎓 STUDENT IDS:", studentIds);
-    console.log("👨‍🎓 STUDENT COUNT:", studentIds.length);
-
-    if (!studentIds.length) {
-      console.log("❌ KHÔNG CÓ STUDENT ID HỢP LỆ");
-
-      return res.json({
-        success: true,
-        data: [],
-        total: 0,
-        debug: {
-          churchId,
-          username,
-          catechistFound: true,
-          catechistId,
-          classCount: classRows.length,
-          classIds,
-          classStudentCount: classStudentRows.length,
-          studentCount: 0,
-        },
-      });
-    }
-
-    // =====================================================
-    // 5. CHECK STUDENTS
-    // =====================================================
-    console.log("\n---------- CHECK STUDENTS ----------");
-
-    const studentPlaceholders = studentIds.map(() => "?").join(",");
-
-    const [studentCheckRows] = await db.execute(
-      `
-        SELECT
-          id,
-          church_id,
-          code,
-          name,
-          gender,
-          date_of_birth,
-          phone,
-          email,
-          address,
-          avatar,
-          status,
-          catechism_status
-
-        FROM students
-
-        WHERE church_id = ?
-          AND id IN (${studentPlaceholders})
-
-        ORDER BY
-          name ASC,
-          id ASC
-      `,
-      [churchId, ...studentIds],
-    );
-
-    console.log("👨‍🎓 STUDENT CHECK ROWS:", studentCheckRows);
-
-    console.log("👨‍🎓 STUDENT CHECK COUNT:", studentCheckRows.length);
-
-    // =====================================================
-    // 6. MAIN QUERY
-    // =====================================================
-    console.log("\n---------- MAIN STUDENT QUERY ----------");
-
-    const mainSql = `
-      SELECT DISTINCT
-
-        -- ==========================
-        -- STUDENT
-        -- ==========================
-        s.id,
-        s.church_id,
-        s.code,
-        s.name,
-        s.gender,
-        s.date_of_birth,
-        s.phone,
-        s.email,
-        s.address,
-        s.avatar,
-        s.status,
-        s.catechism_status,
-
-        -- ==========================
-        -- CLASS
-        -- ==========================
-        c.id AS class_id,
-        c.name AS class_name,
-        c.code AS class_code,
-        c.category AS class_category,
-        c.status AS class_status,
-
-        -- ==========================
-        -- CATECHIST CLASS
-        -- ==========================
-        cc.id AS catechist_class_id
-
-      FROM students s
-
-      INNER JOIN class_students cs
-        ON cs.student_id = s.id
-
-      INNER JOIN classes c
-        ON c.id = cs.class_id
-        AND c.church_id = ?
-
-      INNER JOIN catechist_classes cc
-        ON cc.class_id = c.id
-
-      WHERE s.church_id = ?
-        AND cc.catechist_id = ?
-
-      ORDER BY
-        s.name ASC,
-        s.id ASC
-    `;
-
-    const mainParams = [churchId, churchId, catechistId];
-
-    console.log("📌 MAIN PARAMS:", mainParams);
-    console.log("📌 MAIN SQL:", mainSql);
-
-    const [rows] = await db.execute(mainSql, mainParams);
-
-    // =====================================================
-    // 7. HÀM CHUẨN HÓA AVATAR
-    // =====================================================
     const API_PUBLIC_URL = (
       process.env.API_PUBLIC_URL || "https://api.amsacviet.online"
     ).replace(/\/+$/, "");
 
-    console.log("🌐 API PUBLIC URL:", API_PUBLIC_URL);
-
     const normalizeAvatarUrl = (avatar) => {
-      // Không có avatar
       if (
         avatar === null ||
         avatar === undefined ||
@@ -1916,64 +1649,34 @@ exports.getStudentsByTeacher = async (req, res) => {
 
       let value = String(avatar).trim();
 
-      // ---------------------------------------------
-      // Nếu đã là URL hoàn chỉnh
-      // ---------------------------------------------
-      if (value.startsWith("http://") || value.startsWith("https://")) {
+      // Đã là URL hoàn chỉnh
+      if (/^https?:\/\//i.test(value)) {
         return value;
       }
 
-      // ---------------------------------------------
-      // Chuẩn hóa Windows path
-      //
-      // C:\Users\HungML\...\uploads\students\a.png
-      //
-      // thành:
-      //
-      // C:/Users/HungML/.../uploads/students/a.png
-      // ---------------------------------------------
+      // Chuẩn hóa đường dẫn Windows
       value = value.replace(/\\/g, "/");
 
-      // ---------------------------------------------
-      // Tìm /uploads/
-      // ---------------------------------------------
       const lowerValue = value.toLowerCase();
 
+      // Có sẵn đường dẫn /uploads/
       const uploadIndex = lowerValue.indexOf("/uploads/");
 
       if (uploadIndex !== -1) {
-        const relativePath = value.substring(uploadIndex);
-
-        return `${API_PUBLIC_URL}${relativePath}`;
+        return `${API_PUBLIC_URL}${value.substring(uploadIndex)}`;
       }
 
-      // ---------------------------------------------
-      // Trường hợp:
       // uploads/students/avatar.png
-      // ---------------------------------------------
       if (lowerValue.startsWith("uploads/")) {
         return `${API_PUBLIC_URL}/${value}`;
       }
 
-      // ---------------------------------------------
-      // Trường hợp:
-      // /uploads/students/avatar.png
-      // ---------------------------------------------
-      if (lowerValue.startsWith("/uploads/")) {
-        return `${API_PUBLIC_URL}${value}`;
-      }
-
-      // ---------------------------------------------
-      // Trường hợp DB chỉ lưu:
       // students/avatar.png
-      // ---------------------------------------------
       if (lowerValue.startsWith("students/")) {
         return `${API_PUBLIC_URL}/uploads/${value}`;
       }
 
-      // ---------------------------------------------
-      // Trường hợp DB chỉ lưu tên file
-      // ---------------------------------------------
+      // Chỉ có tên file hoặc đường dẫn khác
       const fileName = value.split("/").filter(Boolean).pop();
 
       if (fileName) {
@@ -1986,192 +1689,40 @@ exports.getStudentsByTeacher = async (req, res) => {
     };
 
     // =====================================================
-    // 8. CHUẨN HÓA DATA TRẢ VỀ
+    // 6. CHUẨN HÓA DANH SÁCH HỌC SINH
     // =====================================================
-    const students = rows.map((student) => {
-      const originalAvatar = student.avatar;
 
-      const normalizedAvatar = normalizeAvatarUrl(originalAvatar);
-
-      return {
-        ...student,
-
-        avatar: normalizedAvatar,
-      };
-    });
+    const students = rows.map((student) => ({
+      ...student,
+      avatar: normalizeAvatarUrl(student.avatar),
+    }));
 
     // =====================================================
-    // 9. LOG KẾT QUẢ
+    // 7. TRẢ KẾT QUẢ
     // =====================================================
-    console.log("\n---------- RESULT ----------");
 
-    console.log("👨‍🎓 STUDENTS FOUND:", students.length);
+    console.log("Catechist ID:", catechistId);
+    console.log("Academic year:", currentAcademicYear);
+    console.log("Students found:", students.length);
 
-    if (students.length > 0) {
-      console.log(
-        "👨‍🎓 STUDENTS:",
-        students.map((student) => ({
-          id: student.id,
-          code: student.code,
-          name: student.name,
-
-          original_avatar:
-            rows.find((item) => Number(item.id) === Number(student.id))
-              ?.avatar || null,
-
-          avatar: student.avatar,
-
-          church_id: student.church_id,
-
-          class_id: student.class_id,
-          class_name: student.class_name,
-          class_code: student.class_code,
-
-          catechist_class_id: student.catechist_class_id,
-        })),
-      );
-    } else {
-      console.log("⚠️ KHÔNG TÌM THẤY HỌC SINH SAU MAIN QUERY");
-
-      // ===================================================
-      // 10. DEEP DEBUG
-      // ===================================================
-      console.log("\n---------- DEEP DEBUG ----------");
-
-      const [deepRows] = await db.execute(
-        `
-          SELECT
-
-            cc.id AS catechist_class_id,
-            cc.catechist_id,
-            cc.class_id,
-
-            c.id AS real_class_id,
-            c.name AS class_name,
-            c.code AS class_code,
-            c.church_id AS class_church_id,
-
-            cs.id AS class_student_id,
-            cs.student_id,
-            cs.status AS class_student_status,
-
-            s.id AS student_real_id,
-            s.name AS student_name,
-            s.code AS student_code,
-            s.avatar AS student_avatar,
-            s.church_id AS student_church_id
-
-          FROM catechist_classes cc
-
-          LEFT JOIN classes c
-            ON c.id = cc.class_id
-
-          LEFT JOIN class_students cs
-            ON cs.class_id = cc.class_id
-
-          LEFT JOIN students s
-            ON s.id = cs.student_id
-
-          WHERE cc.catechist_id = ?
-
-          ORDER BY
-            cc.class_id ASC,
-            cs.student_id ASC
-        `,
-        [catechistId],
-      );
-
-      console.log("🔍 DEEP DEBUG ROWS:", deepRows);
-
-      console.log(
-        "🔍 DEEP DEBUG SUMMARY:",
-        deepRows.map((row) => ({
-          catechist_class_id: row.catechist_class_id,
-
-          catechist_id: row.catechist_id,
-
-          class_id: row.class_id,
-
-          real_class_id: row.real_class_id,
-
-          class_name: row.class_name,
-
-          class_code: row.class_code,
-
-          class_church_id: row.class_church_id,
-
-          class_student_id: row.class_student_id,
-
-          student_id: row.student_id,
-
-          class_student_status: row.class_student_status,
-
-          student_real_id: row.student_real_id,
-
-          student_name: row.student_name,
-
-          student_code: row.student_code,
-
-          student_avatar: row.student_avatar,
-
-          student_church_id: row.student_church_id,
-        })),
-      );
-    }
-
-    // =====================================================
-    // 11. SUCCESS
-    // =====================================================
-    console.log("\n======================================================");
-    console.log("✅ GET STUDENTS BY TEACHER FINISHED");
-    console.log("======================================================");
-
-    return res.json({
+    return res.status(200).json({
       success: true,
-
       data: students,
-
       total: students.length,
-
       debug: {
         churchId,
         username,
-
-        catechistFound: true,
         catechistId,
-
-        classCount: classRows.length,
-        classIds,
-
-        classStudentCount: classStudentRows.length,
-
-        studentCheckCount: studentCheckRows.length,
-
+        academicYear: currentAcademicYear,
         studentCount: students.length,
-
-        avatarBaseUrl: `${API_PUBLIC_URL}/uploads/students`,
       },
     });
   } catch (error) {
-    // =====================================================
-    // ERROR
-    // =====================================================
-    console.log("\n");
-    console.log("======================================================");
-    console.log("❌ GET STUDENTS BY TEACHER ERROR");
-    console.log("======================================================");
-
-    console.log("ERROR CODE:", error.code);
-    console.log("ERROR MESSAGE:", error.message);
-    console.log("ERROR SQL:", error.sql);
-    console.log("ERROR STACK:", error.stack);
-
-    console.log("======================================================");
+    console.error("GET STUDENTS BY TEACHER ERROR:", error);
 
     return res.status(500).json({
       success: false,
       message: "Không thể lấy danh sách học sinh của giáo lý viên",
-
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }

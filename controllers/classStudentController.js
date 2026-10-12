@@ -348,7 +348,7 @@ exports.getStudentsByClass = async (req, res) => {
   let connection;
 
   try {
-    connection = await pool.getConnection();
+    connection = await db.getConnection();
 
     // Lấy thông tin lớp học và năm học
     const classInfo = await getClassById(connection, classId, churchId);

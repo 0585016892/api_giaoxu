@@ -1364,7 +1364,159 @@ exports.changeClassStudents = async (req, res) => {
     if (connection) connection.release();
   }
 };
+// =====================================================
+// 9. GET ALL STUDENTS BY CHURCH AND ACADEMIC YEAR
+// Bao gồm cả học sinh chưa được xếp lớp
+// =====================================================
 
+exports.getStudentsByChurch = async (req, res) => {
+  const requestId = createRequestId("GET-STUDENTS-BY-CHURCH");
+  let connection;
+
+  try {
+    const churchId = toPositiveInt(getChurchId(req));
+    const academicYear = String(req.query.academic_year || "").trim();
+
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ",
+        request_id: requestId,
+      });
+    }
+
+    if (!academicYear) {
+      return res.status(400).json({
+        success: false,
+        code: "ACADEMIC_YEAR_REQUIRED",
+        message: "Vui lòng truyền năm học, ví dụ 2026-2027",
+        request_id: requestId,
+      });
+    }
+
+    connection = await db.getConnection();
+
+    // Lấy tất cả học sinh thuộc giáo xứ.
+    // LEFT JOIN bảo đảm học sinh chưa có lớp vẫn xuất hiện.
+    const [rows] = await connection.query(
+      `
+        SELECT
+          s.*,
+
+          current_relation.id AS class_student_id,
+          current_relation.class_id AS current_class_id,
+          current_relation.enrollment_status,
+          current_relation.joined_at,
+          current_relation.left_at,
+
+          current_relation.class_name,
+          current_relation.class_code,
+          current_relation.class_category,
+          current_relation.class_academic_year,
+
+          CASE
+            WHEN current_relation.id IS NULL THEN 1
+            ELSE 0
+          END AS is_unassigned
+
+        FROM students s
+
+        LEFT JOIN (
+          SELECT
+            cs.id,
+            cs.student_id,
+            cs.class_id,
+            cs.status AS enrollment_status,
+            cs.joined_at,
+            cs.left_at,
+
+            c.name AS class_name,
+            c.code AS class_code,
+            c.category AS class_category,
+            c.academic_year AS class_academic_year
+
+          FROM class_students cs
+
+          INNER JOIN classes c
+            ON c.id = cs.class_id
+
+          WHERE c.church_id = ?
+            AND c.academic_year = ?
+            AND cs.status = 'studying'
+            AND cs.left_at IS NULL
+
+            AND cs.id = (
+              SELECT cs2.id
+              FROM class_students cs2
+
+              INNER JOIN classes c2
+                ON c2.id = cs2.class_id
+
+              WHERE cs2.student_id = cs.student_id
+                AND c2.church_id = c.church_id
+                AND c2.academic_year = c.academic_year
+                AND cs2.status = 'studying'
+                AND cs2.left_at IS NULL
+
+              ORDER BY
+                cs2.joined_at DESC,
+                cs2.id DESC
+
+              LIMIT 1
+            )
+        ) AS current_relation
+          ON current_relation.student_id = s.id
+
+        WHERE s.church_id = ?
+
+        ORDER BY
+          is_unassigned DESC,
+          s.name ASC,
+          s.id ASC
+      `,
+      [churchId, academicYear, churchId],
+    );
+
+    const students = formatStudents(rows);
+
+    const unassignedStudents = students.filter(
+      (student) => Number(student.is_unassigned) === 1,
+    );
+
+    const assignedStudents = students.filter(
+      (student) => Number(student.is_unassigned) === 0,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Lấy danh sách học sinh theo năm học thành công",
+      request_id: requestId,
+
+      data: {
+        academic_year: academicYear,
+
+        summary: {
+          total_students: students.length,
+          assigned_students: assignedStudents.length,
+          unassigned_students: unassignedStudents.length,
+        },
+
+        students,
+        assigned_students: assignedStudents,
+        unassigned_students: unassignedStudents,
+      },
+    });
+  } catch (error) {
+    return sendServerError(
+      res,
+      requestId,
+      error,
+      "GET STUDENTS BY CHURCH ERROR",
+    );
+  } finally {
+    if (connection) connection.release();
+  }
+};
 // =====================================================
 // 7. REMOVE STUDENT FROM CLASS
 // =====================================================

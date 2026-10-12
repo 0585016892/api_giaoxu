@@ -38,7 +38,7 @@ router.get(
   globalApiLimiter,
   controller.getClassesByStudent,
 );
-
+router.get("/students", globalApiLimiter, controller.getStudentsByChurch);
 // =====================================================
 // THÊM HỌC SINH VÀO LỚP
 // POST /api/class-students

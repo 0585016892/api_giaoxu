@@ -1684,25 +1684,31 @@ exports.updateClass = async (req, res) => {
 //
 // ============================================================
 
+// =====================================================
+// DELETE CLASS + RELATED DATA
+// Xóa lớp, lịch học, giáo lý viên và liên kết học sinh
+// =====================================================
+
 exports.deleteClass = async (req, res) => {
+  let connection;
+  let transactionStarted = false;
+
+  const classId = Number(req.params.id);
+  const churchId = getChurchId(req);
+  const adminId = getAdminId(req);
+
+  console.log("");
+  console.log("============================================================");
+  console.log("              DELETE CLASS AND RELATED DATA");
+  console.log("============================================================");
+  console.log("CLASS ID:", classId);
+  console.log("CHURCH ID:", churchId);
+  console.log("ADMIN ID:", adminId);
+
   try {
-    const classId = Number(req.params.id);
-
-    const churchId = getChurchId(req);
-
-    const adminId = getAdminId(req);
-
-    console.log("");
-
-    console.log("============================================================");
-
-    console.log("                    DELETE CLASS");
-
-    console.log("============================================================");
-
-    console.log("CLASS ID:", classId);
-
-    console.log("CHURCH ID:", churchId);
+    // =====================================================
+    // 1. VALIDATE
+    // =====================================================
 
     if (!churchId) {
       return res.status(403).json({
@@ -1718,121 +1724,250 @@ exports.deleteClass = async (req, res) => {
       });
     }
 
-    // ========================================================
-    // LOAD CLASS
-    // ========================================================
+    // =====================================================
+    // 2. GET CONNECTION + START TRANSACTION
+    // =====================================================
 
-    const classData = await getClassByIdInternal(classId, churchId);
+    connection = await db.getConnection();
+
+    await connection.beginTransaction();
+    transactionStarted = true;
+
+    // =====================================================
+    // 3. LOCK AND LOAD CLASS
+    // Kiểm tra lớp thuộc đúng giáo xứ đang đăng nhập
+    // =====================================================
+
+    const [classRows] = await connection.query(
+      `
+        SELECT
+          c.id,
+          c.name,
+          c.code,
+          c.academic_year,
+          c.category,
+          c.level_order,
+          c.church_id
+        FROM classes c
+        WHERE c.id = ?
+          AND c.church_id = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [classId, churchId],
+    );
+
+    const classData = classRows[0];
 
     if (!classData) {
+      await connection.rollback();
+      transactionStarted = false;
+
       return res.status(404).json({
         success: false,
         message: "Không tìm thấy lớp học trong giáo xứ của bạn.",
       });
     }
 
-    // ========================================================
-    // CHECK STUDENTS
-    // ========================================================
+    console.log("CLASS FOUND:", {
+      id: classData.id,
+      name: classData.name,
+      code: classData.code,
+      academic_year: classData.academic_year,
+    });
 
-    const [studentRows] = await db.query(
+    // =====================================================
+    // 4. COUNT RELATED DATA BEFORE DELETE
+    // =====================================================
+
+    const [[scheduleCountRow]] = await connection.query(
       `
-          SELECT
-            COUNT(*) AS total
-
-          FROM class_students
-
-          WHERE class_id = ?
-        `,
+        SELECT COUNT(*) AS total
+        FROM class_schedules
+        WHERE class_id = ?
+      `,
       [classId],
     );
 
-    const studentCount = Number(studentRows[0]?.total || 0);
-
-    console.log("STUDENT COUNT:", studentCount);
-
-    if (studentCount > 0) {
-      return res.status(409).json({
-        success: false,
-
-        message:
-          "Không thể xóa lớp vì lớp đã có dữ liệu học sinh. Hãy xử lý dữ liệu lớp trước.",
-
-        code: "CLASS_HAS_STUDENTS",
-
-        student_count: studentCount,
-      });
-    }
-
-    // ========================================================
-    // DELETE
-    // ========================================================
-
-    const [result] = await db.query(
+    const [[catechistCountRow]] = await connection.query(
       `
-          DELETE FROM classes
+        SELECT COUNT(*) AS total
+        FROM class_catechist
+        WHERE class_id = ?
+      `,
+      [classId],
+    );
 
-          WHERE id = ?
-            AND church_id = ?
-        `,
+    const [[studentCountRow]] = await connection.query(
+      `
+        SELECT COUNT(*) AS total
+        FROM class_students
+        WHERE class_id = ?
+      `,
+      [classId],
+    );
+
+    const beforeDelete = {
+      schedules: Number(scheduleCountRow.total || 0),
+      catechists: Number(catechistCountRow.total || 0),
+      students: Number(studentCountRow.total || 0),
+    };
+
+    console.log("RELATED DATA BEFORE DELETE:", beforeDelete);
+
+    // =====================================================
+    // 5. DELETE CLASS SCHEDULES
+    // =====================================================
+
+    const [scheduleResult] = await connection.query(
+      `
+        DELETE FROM class_schedules
+        WHERE class_id = ?
+      `,
+      [classId],
+    );
+
+    console.log("CLASS SCHEDULES DELETED:", scheduleResult.affectedRows);
+
+    // =====================================================
+    // 6. DELETE CLASS CATECHISTS
+    // =====================================================
+
+    const [catechistResult] = await connection.query(
+      `
+        DELETE FROM class_catechist
+        WHERE class_id = ?
+      `,
+      [classId],
+    );
+
+    console.log("CLASS CATECHISTS DELETED:", catechistResult.affectedRows);
+
+    // =====================================================
+    // 7. DELETE CLASS STUDENTS
+    // Chỉ xóa liên kết; không xóa hồ sơ students
+    // =====================================================
+
+    const [studentResult] = await connection.query(
+      `
+        DELETE FROM class_students
+        WHERE class_id = ?
+      `,
+      [classId],
+    );
+
+    console.log("CLASS STUDENTS DELETED:", studentResult.affectedRows);
+
+    // =====================================================
+    // 8. DELETE CLASS
+    // Chỉ xóa lớp sau khi xóa các dữ liệu phụ thuộc
+    // =====================================================
+
+    const [classResult] = await connection.query(
+      `
+        DELETE FROM classes
+        WHERE id = ?
+          AND church_id = ?
+      `,
       [classId, churchId],
     );
 
-    if (!result.affectedRows) {
-      return res.status(404).json({
-        success: false,
-        message: "Không thể xóa lớp học.",
-      });
+    if (classResult.affectedRows !== 1) {
+      throw new Error("Không thể xóa lớp học hoặc lớp đã bị thay đổi.");
     }
 
-    // ========================================================
-    // LOG
-    // ========================================================
+    console.log("CLASS DELETED:", classResult.affectedRows);
 
-    await writeLog({
-      admin_id: adminId,
+    // =====================================================
+    // 9. COMMIT
+    // =====================================================
 
-      action: "DELETE_CLASS",
+    await connection.commit();
+    transactionStarted = false;
 
-      target_type: "classes",
+    console.log("TRANSACTION COMMITTED SUCCESSFULLY");
 
-      target_id: classId,
+    // =====================================================
+    // 10. ACTIVITY LOG
+    // Ghi log sau commit để tránh log thất bại làm rollback
+    // =====================================================
 
-      description:
-        `Xóa lớp "${classData.name}" ` +
-        `(${classData.code}), ` +
-        `năm học ${classData.academic_year || "—"}, ` +
-        `level_order=${classData.level_order ?? "NULL"}.`,
+    try {
+      await writeLog({
+        church_id: churchId,
+        admin_id: adminId,
+        action: "DELETE_CLASS",
+        target_type: "classes",
+        target_id: classId,
+        description:
+          `Xóa lớp "${classData.name}" ` +
+          `(${classData.code}), ` +
+          `năm học ${classData.academic_year || "—"}, ` +
+          `level_order=${classData.level_order ?? "NULL"}. ` +
+          `Đã xóa ${scheduleResult.affectedRows} lịch học, ` +
+          `${catechistResult.affectedRows} liên kết giáo lý viên ` +
+          `và ${studentResult.affectedRows} liên kết học sinh.`,
+        ip_address: req.ip,
+      });
+    } catch (logError) {
+      // Lớp đã xóa thành công; lỗi ghi log không được biến
+      // kết quả xóa thành thất bại.
+      console.error("[DELETE CLASS] ACTIVITY LOG ERROR:", logError.message);
+    }
 
-      ip_address: req.ip,
-    });
+    // =====================================================
+    // 11. RESPONSE
+    // =====================================================
 
-    console.log("DELETE SUCCESS:", classId);
+    console.log("DELETE CLASS SUCCESS:", classId);
+    console.log("============================================================");
 
     return res.status(200).json({
       success: true,
-
-      message: `Đã xóa lớp "${classData.name}".`,
-
+      message: `Đã xóa lớp "${classData.name}" và dữ liệu liên quan.`,
       data: {
         id: Number(classData.id),
-
         name: classData.name,
-
         code: classData.code,
-
         academic_year: classData.academic_year || null,
-
         category: classData.category || null,
-
         level_order:
           classData.level_order !== null && classData.level_order !== undefined
             ? Number(classData.level_order)
             : null,
+        deleted: {
+          class_schedules: Number(scheduleResult.affectedRows || 0),
+          class_catechist: Number(catechistResult.affectedRows || 0),
+          class_students: Number(studentResult.affectedRows || 0),
+          classes: Number(classResult.affectedRows || 0),
+        },
+        related_data_before_delete: beforeDelete,
       },
     });
   } catch (error) {
-    console.error("deleteClass error:", error);
+    console.error("");
+    console.error(
+      "============================================================",
+    );
+    console.error("DELETE CLASS ERROR");
+    console.error("CLASS ID:", classId);
+    console.error("CHURCH ID:", churchId);
+    console.error("MESSAGE:", error.message);
+    console.error("CODE:", error.code);
+    console.error("SQL MESSAGE:", error.sqlMessage);
+    console.error(
+      "============================================================",
+    );
+
+    if (connection && transactionStarted) {
+      try {
+        await connection.rollback();
+        transactionStarted = false;
+        console.log("DELETE CLASS TRANSACTION ROLLED BACK");
+      } catch (rollbackError) {
+        console.error("DELETE CLASS ROLLBACK ERROR:", rollbackError.message);
+      }
+    }
 
     if (
       error.code === "ER_ROW_IS_REFERENCED_2" ||
@@ -1840,15 +1975,25 @@ exports.deleteClass = async (req, res) => {
     ) {
       return res.status(409).json({
         success: false,
-        message: "Không thể xóa lớp vì đang có dữ liệu liên quan.",
+        code: "CLASS_HAS_RELATED_DATA",
+        message:
+          "Không thể xóa lớp vì vẫn còn dữ liệu ở bảng khác tham chiếu đến lớp này.",
+        detail:
+          process.env.NODE_ENV === "development"
+            ? error.sqlMessage || error.message
+            : undefined,
       });
     }
 
     return res.status(500).json({
       success: false,
       message: "Không thể xóa lớp học.",
-      error: error.message,
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
   }
 };
 

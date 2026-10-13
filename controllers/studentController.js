@@ -4283,7 +4283,7 @@ exports.deleteStudentsBulk = async (req, res) => {
  */
 
 exports.importStudentsExcel = async (req, res) => {
-  let connection;
+  let connection = null;
   let transactionStarted = false;
 
   try {
@@ -4295,14 +4295,14 @@ exports.importStudentsExcel = async (req, res) => {
     console.log("============================================================");
 
     // ========================================================
-    // 1. CHURCH
+    // 1. XÁC ĐỊNH GIÁO XỨ
     // ========================================================
 
-    const churchId = getChurchId(req);
+    const churchId = Number(getChurchId(req));
 
-    console.log("CHURCH ID:", churchId);
+    console.log("[IMPORT] CHURCH ID:", churchId);
 
-    if (!churchId) {
+    if (!Number.isInteger(churchId) || churchId <= 0) {
       return res.status(403).json({
         success: false,
         message: "Không xác định được giáo xứ",
@@ -4310,7 +4310,7 @@ exports.importStudentsExcel = async (req, res) => {
     }
 
     // ========================================================
-    // 2. FILE
+    // 2. KIỂM TRA FILE
     // ========================================================
 
     if (!req.file) {
@@ -4329,10 +4329,17 @@ exports.importStudentsExcel = async (req, res) => {
       });
     }
 
-    console.log("FILE:", req.file.originalname);
+    if (!req.file.buffer) {
+      return res.status(400).json({
+        success: false,
+        message: "Không đọc được nội dung file Excel",
+      });
+    }
+
+    console.log("[IMPORT] FILE:", req.file.originalname);
 
     // ========================================================
-    // 3. READ EXCEL
+    // 3. ĐỌC FILE EXCEL
     // ========================================================
 
     const workbook = XLSX.read(req.file.buffer, {
@@ -4370,11 +4377,11 @@ exports.importStudentsExcel = async (req, res) => {
       });
     }
 
-    console.log("SHEET:", sheetName);
-    console.log("TOTAL ROWS:", rows.length);
+    console.log("[IMPORT] SHEET:", sheetName);
+    console.log("[IMPORT] TOTAL ROWS:", rows.length);
 
     // ========================================================
-    // 4. NORMALIZE HEADER
+    // 4. HÀM CHUẨN HÓA
     // ========================================================
 
     const normalizeHeader = (value) =>
@@ -4386,16 +4393,131 @@ exports.importStudentsExcel = async (req, res) => {
         .replace(/đ/g, "d")
         .replace(/\s+/g, " ");
 
-    // Chuẩn hóa giá trị Excel
     const normalizeValue = (value) => {
-      if (value === null || value === undefined) return null;
+      if (value === null || value === undefined) {
+        return null;
+      }
 
       const result = String(value).trim();
       return result || null;
     };
 
     // ========================================================
-    // 5. HEADER ALIASES
+    // 5. CHUYỂN NGÀY SINH THÀNH YYYY-MM-DD
+    // ========================================================
+    // Cột DB: students.date_of_birth (DATE)
+    //
+    // 2016        -> 2016-01-01
+    // 28/2/16     -> 2016-02-28
+    // 11/10/16    -> 2016-10-11
+    // 22/8/15     -> 2015-08-22
+    // 2015-08-22  -> 2015-08-22
+    // Ô trống     -> null
+    //
+    // Ngày dạng dd/mm/yy:
+    // 00-30 => 2000-2030
+    // 31-99 => 1931-1999
+
+    const parseDateOfBirth = (value) => {
+      if (
+        value === null ||
+        value === undefined ||
+        String(value).trim() === ""
+      ) {
+        return null;
+      }
+
+      let year;
+      let month = 1;
+      let day = 1;
+
+      // Trường hợp XLSX trả về Date object
+      if (value instanceof Date) {
+        if (Number.isNaN(value.getTime())) {
+          throw new Error("Ngày sinh trong Excel không hợp lệ");
+        }
+
+        year = value.getFullYear();
+        month = value.getMonth() + 1;
+        day = value.getDate();
+      } else if (typeof value === "number" && Number.isFinite(value)) {
+        // Excel có thể lưu năm dưới dạng số 2016
+        if (Number.isInteger(value) && value >= 1900 && value <= 2100) {
+          year = value;
+        } else {
+          // Excel serial date
+          const parsed = XLSX.SSF.parse_date_code(value);
+
+          if (!parsed) {
+            throw new Error(`Không đọc được ngày sinh: ${value}`);
+          }
+
+          year = parsed.y;
+          month = parsed.m;
+          day = parsed.d;
+        }
+      } else {
+        const text = String(value).trim();
+
+        // Chỉ có năm: 2016
+        if (/^\d{4}$/.test(text)) {
+          year = Number(text);
+        } else {
+          // dd/mm/yy hoặc dd/mm/yyyy
+          const dmy = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
+
+          // yyyy-mm-dd hoặc yyyy/mm/dd
+          const ymd = text.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+
+          if (dmy) {
+            day = Number(dmy[1]);
+            month = Number(dmy[2]);
+            year = Number(dmy[3]);
+
+            if (dmy[3].length === 2) {
+              year += year <= 30 ? 2000 : 1900;
+            }
+          } else if (ymd) {
+            year = Number(ymd[1]);
+            month = Number(ymd[2]);
+            day = Number(ymd[3]);
+          } else {
+            throw new Error(
+              `Định dạng ngày sinh không hợp lệ: "${text}". ` +
+                "Hãy nhập năm YYYY, ngày dd/mm/yy hoặc dd/mm/yyyy.",
+            );
+          }
+        }
+      }
+
+      const currentYear = new Date().getFullYear();
+
+      if (!Number.isInteger(year) || year < 1900 || year > currentYear) {
+        throw new Error(`Năm sinh không hợp lệ: ${year}`);
+      }
+
+      const checkDate = new Date(Date.UTC(year, month - 1, day));
+
+      if (
+        checkDate.getUTCFullYear() !== year ||
+        checkDate.getUTCMonth() !== month - 1 ||
+        checkDate.getUTCDate() !== day
+      ) {
+        throw new Error(
+          `Ngày sinh không tồn tại: ${String(day).padStart(2, "0")}/` +
+            `${String(month).padStart(2, "0")}/${year}`,
+        );
+      }
+
+      return (
+        `${String(year).padStart(4, "0")}-` +
+        `${String(month).padStart(2, "0")}-` +
+        `${String(day).padStart(2, "0")}`
+      );
+    };
+
+    // ========================================================
+    // 6. CẤU HÌNH TÊN CỘT EXCEL
     // ========================================================
 
     const HEADER_ALIASES = {
@@ -4433,6 +4555,7 @@ exports.importStudentsExcel = async (req, res) => {
         "nam sinh",
         "namsinh",
         "birth year",
+        "birth_year",
         "date_of_birth",
         "year of birth",
         "nam sinh hoc sinh",
@@ -4444,17 +4567,21 @@ exports.importStudentsExcel = async (req, res) => {
     };
 
     // ========================================================
-    // 6. FIND HEADER
+    // 7. ÁNH XẠ HEADER
     // ========================================================
 
     const originalHeaders = Object.keys(rows[0]);
 
-    console.log("ORIGINAL HEADERS:", originalHeaders);
+    console.log("[IMPORT] ORIGINAL HEADERS:", originalHeaders);
 
     const normalizedHeaders = {};
 
     originalHeaders.forEach((header) => {
-      normalizedHeaders[normalizeHeader(header)] = header;
+      const normalized = normalizeHeader(header);
+
+      if (normalized) {
+        normalizedHeaders[normalized] = header;
+      }
     });
 
     const findHeader = (aliases) => {
@@ -4483,17 +4610,10 @@ exports.importStudentsExcel = async (req, res) => {
       date_of_birth: findHeader(HEADER_ALIASES.date_of_birth),
     };
 
-    console.log("");
-    console.log("COLUMN MAP:");
-    console.log("Tên thánh :", columnMap.saint_name);
-    console.log("Họ tên     :", columnMap.name);
-    console.log("Họ tên cha :", columnMap.father_name);
-    console.log("Họ tên mẹ  :", columnMap.mother_name);
-    console.log("Giáo xứ    :", columnMap.parish);
-    console.log("Năm sinh   :", columnMap.date_of_birth);
+    console.log("[IMPORT] COLUMN MAP:", columnMap);
 
     // ========================================================
-    // 7. CHECK REQUIRED COLUMN
+    // 8. KIỂM TRA CỘT BẮT BUỘC
     // ========================================================
 
     if (!columnMap.name) {
@@ -4512,17 +4632,15 @@ exports.importStudentsExcel = async (req, res) => {
     }
 
     // ========================================================
-    // 8. TRANSACTION
+    // 9. BẮT ĐẦU TRANSACTION
     // ========================================================
 
     await connection.beginTransaction();
     transactionStarted = true;
 
     // ========================================================
-    // 9. LẤY ID CUỐI CÙNG TRONG ĐÚNG GIÁO XỨ
+    // 10. LẤY MÃ HỌC SINH TIẾP THEO
     // ========================================================
-    // Không dùng ID toàn bảng để xác định code học sinh.
-    // Sinh mã dựa trên số lớn nhất trong giáo xứ hiện tại.
 
     const [lastStudentRows] = await connection.execute(
       `
@@ -4548,18 +4666,14 @@ exports.importStudentsExcel = async (req, res) => {
       }
     }
 
-    console.log("NEXT STUDENT CODE NUMBER:", nextCodeNumber);
+    console.log("[IMPORT] NEXT STUDENT CODE:", nextCodeNumber);
 
     // ========================================================
-    // 10. RESULT
+    // 11. IMPORT TỪNG DÒNG
     // ========================================================
 
     const successRows = [];
     const errorRows = [];
-
-    // ========================================================
-    // 11. IMPORT
-    // ========================================================
 
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index];
@@ -4586,78 +4700,19 @@ exports.importStudentsExcel = async (req, res) => {
           ? normalizeValue(row[columnMap.parish])
           : null;
 
-        // ====================================================
-        // BIRTH YEAR
-        // ====================================================
-
-        let birthYear = null;
-
-        if (columnMap.date_of_birth) {
-          const rawBirthYear = row[columnMap.date_of_birth];
-
-          if (
-            rawBirthYear !== null &&
-            rawBirthYear !== undefined &&
-            String(rawBirthYear).trim() !== ""
-          ) {
-            let yearValue = null;
-
-            // Excel có thể trả về Date nếu ô được định dạng ngày tháng.
-            if (rawBirthYear instanceof Date) {
-              yearValue = rawBirthYear.getFullYear();
-            } else {
-              const rawText = String(rawBirthYear).trim();
-
-              // Cho phép nhập năm dạng 2015 hoặc ngày dạng dd/mm/yyyy,
-              // yyyy-mm-dd, dd-mm-yyyy.
-              if (/^\d{4}$/.test(rawText)) {
-                yearValue = Number(rawText);
-              } else {
-                const yearMatch = rawText.match(/(?:^|[/-])(\d{4})(?:$|[/-])/);
-
-                if (yearMatch) {
-                  yearValue = Number(yearMatch[1]);
-                } else if (
-                  typeof rawBirthYear === "number" &&
-                  Number.isFinite(rawBirthYear)
-                ) {
-                  // Trường hợp Excel lưu năm dưới dạng số.
-                  yearValue = Math.trunc(rawBirthYear);
-                }
-              }
-            }
-
-            const currentYear = new Date().getFullYear();
-
-            if (
-              !Number.isInteger(yearValue) ||
-              yearValue < 1900 ||
-              yearValue > currentYear
-            ) {
-              throw new Error(`Năm sinh không hợp lệ: ${String(rawBirthYear)}`);
-            }
-
-            birthYear = yearValue;
-          }
-        }
-
-        // ====================================================
-        // REQUIRED NAME
-        // ====================================================
-
         if (!name) {
           throw new Error("Thiếu họ tên học sinh");
         }
 
-        // ====================================================
-        // CODE
-        // ====================================================
+        const dateOfBirth = columnMap.date_of_birth
+          ? parseDateOfBirth(row[columnMap.date_of_birth])
+          : null;
+
+        const birthYear = dateOfBirth
+          ? Number(dateOfBirth.substring(0, 4))
+          : null;
 
         const code = `HS${String(nextCodeNumber).padStart(6, "0")}`;
-
-        // ====================================================
-        // QR TOKEN
-        // ====================================================
 
         const qrToken = [
           churchId,
@@ -4666,10 +4721,18 @@ exports.importStudentsExcel = async (req, res) => {
           Math.random().toString(36).substring(2, 10),
         ].join("-");
 
-        // ====================================================
-        // INSERT
-        // ====================================================
+        console.log(
+          `[IMPORT] ROW ${excelRow}:`,
+          JSON.stringify({
+            name,
+            code,
+            parish,
+            date_of_birth: dateOfBirth,
+          }),
+        );
 
+        // Quan trọng: truyền dateOfBirth, KHÔNG truyền birthYear
+        // vào cột DATE của MySQL.
         const [result] = await connection.execute(
           `
             INSERT INTO students (
@@ -4694,7 +4757,7 @@ exports.importStudentsExcel = async (req, res) => {
             fatherName,
             motherName,
             parish,
-            birthYear,
+            dateOfBirth,
           ],
         );
 
@@ -4709,18 +4772,15 @@ exports.importStudentsExcel = async (req, res) => {
           father_name: fatherName,
           mother_name: motherName,
           parish,
-          date_of_birth: birthYear,
+          date_of_birth: dateOfBirth,
+          birth_year: birthYear,
         });
 
-        console.log(
-          `ROW ${excelRow}: ${name} -> ${code} | Giáo xứ: ${
-            parish || "Không nhập"
-          } | Năm sinh: ${birthYear ?? "Không nhập"}`,
-        );
+        console.log(`[IMPORT] ROW ${excelRow} SUCCESS: ${name} -> ${code}`);
 
         nextCodeNumber++;
       } catch (rowError) {
-        console.error(`IMPORT ROW ${excelRow} ERROR:`, rowError.message);
+        console.error(`[IMPORT] ROW ${excelRow} ERROR:`, rowError.message);
 
         errorRows.push({
           row: excelRow,
@@ -4731,14 +4791,15 @@ exports.importStudentsExcel = async (req, res) => {
     }
 
     // ========================================================
-    // 12. ROLLBACK NẾU CÓ LỖI
+    // 12. ROLLBACK NẾU CÓ BẤT KỲ DÒNG LỖI
     // ========================================================
 
     if (errorRows.length > 0) {
       await connection.rollback();
       transactionStarted = false;
 
-      console.log("IMPORT FAILED - ROLLBACK ALL DATA");
+      console.error("[IMPORT] FAILED - ROLLBACK ALL DATA");
+      console.error("[IMPORT] ERROR COUNT:", errorRows.length);
 
       return res.status(400).json({
         success: false,
@@ -4793,7 +4854,7 @@ exports.importStudentsExcel = async (req, res) => {
       try {
         await connection.rollback();
       } catch (rollbackError) {
-        console.error("ROLLBACK IMPORT ERROR:", rollbackError.message);
+        console.error("[IMPORT] ROLLBACK ERROR:", rollbackError.message);
       }
     }
 
@@ -4807,7 +4868,6 @@ exports.importStudentsExcel = async (req, res) => {
     }
   }
 };
-
 /**
  * =========================================================
  * EXPORT STUDENTS EXCEL

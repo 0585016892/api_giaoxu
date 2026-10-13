@@ -1792,7 +1792,7 @@ exports.deleteClass = async (req, res) => {
     const [[catechistCountRow]] = await connection.query(
       `
         SELECT COUNT(*) AS total
-        FROM class_catechist
+        FROM catechist_classes
         WHERE class_id = ?
       `,
       [classId],
@@ -1835,7 +1835,7 @@ exports.deleteClass = async (req, res) => {
 
     const [catechistResult] = await connection.query(
       `
-        DELETE FROM class_catechist
+        DELETE FROM catechist_classes
         WHERE class_id = ?
       `,
       [classId],
@@ -1937,7 +1937,7 @@ exports.deleteClass = async (req, res) => {
             : null,
         deleted: {
           class_schedules: Number(scheduleResult.affectedRows || 0),
-          class_catechist: Number(catechistResult.affectedRows || 0),
+          catechist_classes: Number(catechistResult.affectedRows || 0),
           class_students: Number(studentResult.affectedRows || 0),
           classes: Number(classResult.affectedRows || 0),
         },

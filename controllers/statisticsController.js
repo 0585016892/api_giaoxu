@@ -1766,18 +1766,17 @@ const getStudentAttendanceStatistics = async (req, res) => {
 
 const exportAttendanceReport = async (req, res) => {
   try {
-    console.log("");
-    console.log("============================================================");
-    console.log("              EXPORT ATTENDANCE REPORT");
+    console.log(
+      "\n============================================================",
+    );
+    console.log("          EXPORT ATTENDANCE REPORT - FAITHEDU");
     console.log("============================================================");
 
     // =========================================================
-    // CHURCH
+    // 1. CHUẨN BỊ DỮ LIỆU VÀ VALIDATE
     // =========================================================
 
     const churchId = getChurchId(req);
-
-    console.log("CHURCH ID:", churchId);
 
     if (!churchId) {
       return res.status(401).json({
@@ -1785,10 +1784,6 @@ const exportAttendanceReport = async (req, res) => {
         message: "Không xác định được giáo xứ.",
       });
     }
-
-    // =========================================================
-    // QUERY PARAMS
-    // =========================================================
 
     const {
       month: monthQuery,
@@ -1806,56 +1801,33 @@ const exportAttendanceReport = async (req, res) => {
 
     const classId = classIdQuery !== undefined ? toInt(classIdQuery) : null;
 
-    const finalAttendanceType = attendanceTypeQuery || "catechism";
+    const attendanceType = attendanceTypeQuery || "catechism";
 
-    console.log("MONTH:", month);
-    console.log("YEAR:", year);
-    console.log("FROM:", from);
-    console.log("TO:", to);
-    console.log("DATE:", date);
-    console.log("CLASS ID:", classId);
-    console.log("ATTENDANCE TYPE:", finalAttendanceType);
+    console.log("[EXPORT] Church:", churchId);
+    console.log("[EXPORT] Type:", attendanceType);
+    console.log("[EXPORT] Period:", { month, year, from, to, date });
+    console.log("[EXPORT] Class:", classId);
 
-    // =========================================================
-    // VALIDATE ATTENDANCE TYPE
-    // =========================================================
-
-    if (!["catechism", "mass"].includes(finalAttendanceType)) {
+    if (!["catechism", "mass"].includes(attendanceType)) {
       return res.status(400).json({
         success: false,
-        message: "attendance_type không hợp lệ. Chỉ nhận catechism hoặc mass.",
+        message: "Loại điểm danh không hợp lệ.",
       });
     }
 
-    // =========================================================
-    // VALIDATE MONTH
-    // =========================================================
-
-    if (monthQuery !== undefined) {
-      if (!isValidMonth(month)) {
-        return res.status(400).json({
-          success: false,
-          message: "Tháng không hợp lệ. Tháng phải từ 1 đến 12.",
-        });
-      }
+    if (monthQuery !== undefined && !isValidMonth(month)) {
+      return res.status(400).json({
+        success: false,
+        message: "Tháng phải từ 1 đến 12.",
+      });
     }
 
-    // =========================================================
-    // VALIDATE YEAR
-    // =========================================================
-
-    if (yearQuery !== undefined) {
-      if (!isValidYear(year)) {
-        return res.status(400).json({
-          success: false,
-          message: "Năm không hợp lệ.",
-        });
-      }
+    if (yearQuery !== undefined && !isValidYear(year)) {
+      return res.status(400).json({
+        success: false,
+        message: "Năm không hợp lệ.",
+      });
     }
-
-    // =========================================================
-    // MONTH + YEAR
-    // =========================================================
 
     if (
       (month !== null && year === null) ||
@@ -1863,46 +1835,22 @@ const exportAttendanceReport = async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: "Khi xuất theo tháng phải truyền cả month và year.",
+        message: "Phải truyền đồng thời month và year.",
       });
     }
 
-    // =========================================================
-    // VALIDATE DATE
-    // =========================================================
-
-    if (date && !isValidDate(date)) {
-      return res.status(400).json({
-        success: false,
-        message: "Ngày không hợp lệ. Định dạng phải là YYYY-MM-DD.",
-      });
+    for (const [field, value] of [
+      ["date", date],
+      ["from", from],
+      ["to", to],
+    ]) {
+      if (value && !isValidDate(value)) {
+        return res.status(400).json({
+          success: false,
+          message: `${field} không hợp lệ. Định dạng YYYY-MM-DD.`,
+        });
+      }
     }
-
-    // =========================================================
-    // VALIDATE FROM
-    // =========================================================
-
-    if (from && !isValidDate(from)) {
-      return res.status(400).json({
-        success: false,
-        message: "Ngày bắt đầu không hợp lệ. Định dạng phải là YYYY-MM-DD.",
-      });
-    }
-
-    // =========================================================
-    // VALIDATE TO
-    // =========================================================
-
-    if (to && !isValidDate(to)) {
-      return res.status(400).json({
-        success: false,
-        message: "Ngày kết thúc không hợp lệ. Định dạng phải là YYYY-MM-DD.",
-      });
-    }
-
-    // =========================================================
-    // FROM <= TO
-    // =========================================================
 
     if (from && to && from > to) {
       return res.status(400).json({
@@ -1911,351 +1859,277 @@ const exportAttendanceReport = async (req, res) => {
       });
     }
 
-    // =========================================================
-    // CHỈ CHỌN 1 KIỂU THỜI GIAN
-    // =========================================================
-
-    const hasMonthFilter = month !== null || year !== null;
-
-    const hasRangeFilter = !!from || !!to;
-
-    const hasDateFilter = !!date;
-
     const filterCount =
-      Number(hasMonthFilter) + Number(hasRangeFilter) + Number(hasDateFilter);
+      Number(month !== null || year !== null) +
+      Number(Boolean(from || to)) +
+      Number(Boolean(date));
 
     if (filterCount > 1) {
       return res.status(400).json({
         success: false,
         message:
-          "Chỉ được chọn một trong: tháng/năm, từ ngày/đến ngày hoặc ngày cụ thể.",
+          "Chỉ chọn một kiểu lọc: tháng/năm, khoảng ngày hoặc ngày cụ thể.",
       });
     }
 
     // =========================================================
-    // CLASS ID
-    // =========================================================
-    //
-    // CATECHISM:
-    //   Có thể lọc theo class_id.
-    //
-    // MASS:
-    //   KHÔNG bắt buộc class_id.
-    //   Nếu FE không truyền class_id -> toàn bộ Thánh lễ.
-    //
-    // =========================================================
-
-    if (classIdQuery !== undefined) {
-      if (!classId || classId <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "class_id không hợp lệ.",
-        });
-      }
-
-      const [[classExists]] = await db.query(
-        `
-            SELECT
-              id,
-              name,
-              code
-            FROM classes
-            WHERE id = ?
-              AND church_id = ?
-            LIMIT 1
-          `,
-        [classId, churchId],
-      );
-
-      if (!classExists) {
-        return res.status(404).json({
-          success: false,
-          message: "Không tìm thấy lớp trong giáo xứ.",
-        });
-      }
-    }
-
-    // =========================================================
-    // DATE CONDITION
-    // =========================================================
-
-    let dateWhere = "";
-
-    const dateParams = [];
-
-    // ---------------------------------------------------------
-    // THEO THÁNG
-    // ---------------------------------------------------------
-
-    if (month !== null && year !== null) {
-      dateWhere += `
-        AND MONTH(a.attendance_date) = ?
-        AND YEAR(a.attendance_date) = ?
-      `;
-
-      dateParams.push(month, year);
-    }
-
-    // ---------------------------------------------------------
-    // THEO NGÀY CỤ THỂ
-    // ---------------------------------------------------------
-
-    if (date) {
-      dateWhere += `
-        AND a.attendance_date = ?
-      `;
-
-      dateParams.push(date);
-    }
-
-    // ---------------------------------------------------------
-    // TỪ NGÀY
-    // ---------------------------------------------------------
-
-    if (from) {
-      dateWhere += `
-        AND a.attendance_date >= ?
-      `;
-
-      dateParams.push(from);
-    }
-
-    // ---------------------------------------------------------
-    // ĐẾN NGÀY
-    // ---------------------------------------------------------
-
-    if (to) {
-      dateWhere += `
-        AND a.attendance_date <= ?
-      `;
-
-      dateParams.push(to);
-    }
-
-    // =========================================================
-    // CLASS CONDITION
-    // =========================================================
-
-    let classWhere = "";
-
-    const classParams = [];
-
-    if (classId !== null) {
-      classWhere = `
-        AND a.class_id = ?
-      `;
-
-      classParams.push(classId);
-    }
-
-    // =========================================================
-    // LẤY THÔNG TIN GIÁO XỨ
+    // 2. XÁC NHẬN GIÁO XỨ VÀ LỚP
     // =========================================================
 
     const [[church]] = await db.query(
-      `
-          SELECT
-            id,
-            name,
-            code
-          FROM churches
-          WHERE id = ?
-          LIMIT 1
-        `,
+      `SELECT id, name, code
+       FROM churches
+       WHERE id = ?
+       LIMIT 1`,
       [churchId],
     );
 
     if (!church) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy thông tin giáo xứ.",
+        message: "Không tìm thấy giáo xứ.",
       });
     }
 
-    console.log("CHURCH:", church.name, "| CODE:", church.code);
+    let selectedClass = null;
 
-    // =========================================================
-    // LẤY DANH SÁCH LỚP
-    // =========================================================
+    if (classIdQuery !== undefined) {
+      if (!Number.isInteger(classId) || classId <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "class_id không hợp lệ.",
+        });
+      }
 
-    let classes = [];
-
-    // ---------------------------------------------------------
-    // CÓ CLASS_ID
-    // ---------------------------------------------------------
-
-    if (classId !== null) {
-      const [classRows] = await db.query(
-        `
-            SELECT
-              id,
-              name,
-              code
-            FROM classes
-            WHERE id = ?
-              AND church_id = ?
-            LIMIT 1
-          `,
+      const [[foundClass]] = await db.query(
+        `SELECT id, name, code
+         FROM classes
+         WHERE id = ? AND church_id = ?
+         LIMIT 1`,
         [classId, churchId],
       );
 
-      classes = classRows;
+      if (!foundClass) {
+        return res.status(404).json({
+          success: false,
+          message: "Không tìm thấy lớp trong giáo xứ.",
+        });
+      }
+
+      selectedClass = foundClass;
     }
 
-    // ---------------------------------------------------------
-    // CATECHISM + KHÔNG CHỌN LỚP
-    // ---------------------------------------------------------
-    else if (finalAttendanceType === "catechism") {
-      const [classRows] = await db.query(
+    let classes = [];
+
+    if (attendanceType === "catechism") {
+      if (selectedClass) {
+        classes = [selectedClass];
+      } else {
+        const [classRows] = await db.query(
+          `SELECT id, name, code
+           FROM classes
+           WHERE church_id = ?
+             AND (status IS NULL OR status != 'cancelled')
+           ORDER BY name ASC`,
+          [churchId],
+        );
+
+        classes = classRows;
+      }
+    }
+
+    // =========================================================
+    // 3. ĐIỀU KIỆN LỌC NGÀY
+    // =========================================================
+
+    let dateWhere = "";
+    const dateParams = [];
+
+    if (month !== null && year !== null) {
+      dateWhere += `
+        AND a.attendance_date >= ?
+        AND a.attendance_date < ?
+      `;
+
+      dateParams.push(
+        `${year}-${String(month).padStart(2, "0")}-01`,
+        month === 12
+          ? `${year + 1}-01-01`
+          : `${year}-${String(month + 1).padStart(2, "0")}-01`,
+      );
+    }
+
+    if (date) {
+      dateWhere += ` AND a.attendance_date = ?`;
+      dateParams.push(date);
+    }
+
+    if (from) {
+      dateWhere += ` AND a.attendance_date >= ?`;
+      dateParams.push(from);
+    }
+
+    if (to) {
+      dateWhere += ` AND a.attendance_date < DATE_ADD(?, INTERVAL 1 DAY)`;
+      dateParams.push(to);
+    }
+
+    // =========================================================
+    // 4. HÀM LẤY THỐNG KÊ ĐIỂM DANH
+    // =========================================================
+
+    const getAttendanceRows = async (filterClassId = null) => {
+      let classWhere = "";
+      const params = [churchId, attendanceType, ...dateParams];
+
+      if (filterClassId !== null) {
+        classWhere = ` AND a.class_id = ?`;
+        params.push(filterClassId);
+      }
+
+      const [rows] = await db.query(
         `
-            SELECT
-              id,
-              name,
-              code
-            FROM classes
-            WHERE church_id = ?
-              AND status != 'cancelled'
-            ORDER BY
-              name ASC
-          `,
-        [churchId],
+        SELECT
+          s.id AS student_id,
+          s.code AS student_code,
+          s.name AS student_name,
+          s.gender,
+          s.date_of_birth,
+
+          COUNT(a.id) AS total,
+
+          COALESCE(SUM(
+            CASE WHEN a.status = 'present' THEN 1 ELSE 0 END
+          ), 0) AS present,
+
+          COALESCE(SUM(
+            CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END
+          ), 0) AS absent,
+
+          COALESCE(SUM(
+            CASE WHEN a.status = 'late' THEN 1 ELSE 0 END
+          ), 0) AS late,
+
+          COALESCE(SUM(
+            CASE WHEN a.status = 'excused' THEN 1 ELSE 0 END
+          ), 0) AS excused
+
+        FROM attendances a
+
+        INNER JOIN students s
+          ON s.id = a.student_id
+          AND s.church_id = a.church_id
+
+        WHERE a.church_id = ?
+          AND a.attendance_type = ?
+          ${dateWhere}
+          ${classWhere}
+
+        GROUP BY
+          s.id,
+          s.code,
+          s.name,
+          s.gender,
+          s.date_of_birth
+
+        ORDER BY s.name ASC
+        `,
+        params,
       );
 
-      classes = classRows;
-    }
-
-    // ---------------------------------------------------------
-    // MASS
-    //
-    // Không lấy danh sách lớp.
-    // ---------------------------------------------------------
-    else {
-      classes = [];
-    }
-
-    console.log("TOTAL CLASSES:", classes.length);
+      return rows.map((row) => ({
+        ...row,
+        total: Number(row.total || 0),
+        present: Number(row.present || 0),
+        absent: Number(row.absent || 0),
+        late: Number(row.late || 0),
+        excused: Number(row.excused || 0),
+      }));
+    };
 
     // =========================================================
-    // WORKBOOK
+    // 5. THEME EXCEL FAITHEDU
     // =========================================================
 
-    const workbook = XLSX.utils.book_new();
+    const C = {
+      navy: "173B5E",
+      navyDark: "102A43",
+      gold: "D9A441",
+      cream: "FFF9EE",
+      white: "FFFFFF",
+      background: "F4F7FB",
+      border: "DCE5EF",
+      text: "243447",
+      muted: "6B7280",
+      green: "2E7D5B",
+      greenLight: "E8F5EE",
+      red: "C94C4C",
+      redLight: "FDECEC",
+      amber: "B7791F",
+      amberLight: "FFF7E0",
+      blueLight: "EEF3F7",
+    };
+
+    const workbook = new ExcelJS.Workbook();
+
+    workbook.creator = "FaithEdu";
+    workbook.subject = "Báo cáo chuyên cần";
+    workbook.title = "Báo cáo chuyên cần FaithEdu";
+    workbook.created = new Date();
+
+    workbook.views = [
+      {
+        x: 0,
+        y: 0,
+        width: 18000,
+        height: 10000,
+        firstSheet: 0,
+        activeTab: 0,
+      },
+    ];
 
     // =========================================================
-    // HELPER FORMAT DATE
+    // 6. HELPER
     // =========================================================
 
     const formatDate = (value) => {
-      if (!value) {
-        return "";
+      if (!value) return "";
+
+      const str = String(value);
+
+      if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+        const [y, m, d] = str.substring(0, 10).split("-");
+        return `${d}/${m}/${y}`;
       }
 
-      // MySQL DATE thường có dạng YYYY-MM-DD
-      if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
-        const [yearValue, monthValue, dayValue] = value.split("-");
+      const parsed = new Date(value);
 
-        return `${dayValue}/${monthValue}/${yearValue}`;
+      if (Number.isNaN(parsed.getTime())) {
+        return str;
       }
 
-      const parsedDate = new Date(value);
-
-      if (Number.isNaN(parsedDate.getTime())) {
-        return String(value);
-      }
-
-      const dayValue = String(parsedDate.getDate()).padStart(2, "0");
-
-      const monthValue = String(parsedDate.getMonth() + 1).padStart(2, "0");
-
-      const yearValue = parsedDate.getFullYear();
-
-      return `${dayValue}/${monthValue}/${yearValue}`;
+      return [
+        String(parsed.getDate()).padStart(2, "0"),
+        String(parsed.getMonth() + 1).padStart(2, "0"),
+        parsed.getFullYear(),
+      ].join("/");
     };
-
-    // =========================================================
-    // HELPER GENDER
-    // =========================================================
 
     const formatGender = (gender) => {
-      if (!gender) {
-        return "";
-      }
-
-      switch (gender) {
-        case "male":
-          return "Nam";
-
-        case "female":
-          return "Nữ";
-
-        case "other":
-          return "Khác";
-
-        default:
-          return gender;
-      }
+      return (
+        {
+          male: "Nam",
+          female: "Nữ",
+          other: "Khác",
+        }[gender] ||
+        gender ||
+        ""
+      );
     };
 
-    // =========================================================
-    // HELPER CALCULATE RATE
-    // =========================================================
-
-    const calculateRateSafe = (present, total) => {
-      const presentNumber = Number(present || 0);
-
-      const totalNumber = Number(total || 0);
-
-      if (totalNumber <= 0) {
-        return "0.00";
-      }
-
-      return ((presentNumber / totalNumber) * 100).toFixed(2);
+    const rate = (present, total) => {
+      return total > 0 ? present / total : 0;
     };
-
-    // =========================================================
-    // HELPER SHEET NAME
-    // =========================================================
-
-    const makeSafeSheetName = (name, fallback) => {
-      let safeName = String(name || fallback)
-        .replace(/[\\\/\?\*\[\]\:]/g, "")
-        .trim();
-
-      if (!safeName) {
-        safeName = fallback;
-      }
-
-      // Excel tối đa 31 ký tự
-      safeName = safeName.substring(0, 31);
-
-      return safeName;
-    };
-
-    // =========================================================
-    // HELPER UNIQUE SHEET NAME
-    // =========================================================
-
-    const makeUniqueSheetName = (name) => {
-      let baseName = makeSafeSheetName(name, "Bao-cao");
-
-      let finalName = baseName;
-
-      let index = 1;
-
-      while (workbook.SheetNames.includes(finalName)) {
-        const suffix = `-${index}`;
-
-        finalName = `${baseName.substring(0, 31 - suffix.length)}${suffix}`;
-
-        index++;
-      }
-
-      return finalName;
-    };
-
-    // =========================================================
-    // HELPER PERIOD TEXT
-    // =========================================================
 
     const getPeriodText = () => {
       if (month !== null && year !== null) {
@@ -2267,531 +2141,697 @@ const exportAttendanceReport = async (req, res) => {
       }
 
       if (from || to) {
-        return `${from ? formatDate(from) : "..."} đến ${
-          to ? formatDate(to) : "..."
+        return `${from ? formatDate(from) : "Đầu kỳ"} - ${
+          to ? formatDate(to) : "Cuối kỳ"
         }`;
       }
 
       return "Tất cả thời gian";
     };
 
+    const sumRows = (rows) =>
+      rows.reduce(
+        (sum, row) => {
+          sum.total += row.total;
+          sum.present += row.present;
+          sum.absent += row.absent;
+          sum.late += row.late;
+          sum.excused += row.excused;
+          return sum;
+        },
+        {
+          total: 0,
+          present: 0,
+          absent: 0,
+          late: 0,
+          excused: 0,
+        },
+      );
+
+    const safeSheetName = (name) => {
+      let result = String(name || "Bao-cao")
+        .replace(/[\\/*?:[\]]/g, "")
+        .trim()
+        .substring(0, 31);
+
+      if (!result) result = "Bao-cao";
+
+      const base = result;
+      let index = 1;
+
+      while (workbook.getWorksheet(result)) {
+        const suffix = `-${index++}`;
+        result = base.substring(0, 31 - suffix.length) + suffix;
+      }
+
+      return result;
+    };
+
+    const styleTitle = (sheet, title, lastCol) => {
+      sheet.mergeCells(1, 1, 2, lastCol);
+
+      const cell = sheet.getCell(1, 1);
+      cell.value = title;
+      cell.font = {
+        name: "Aptos Display",
+        size: 18,
+        bold: true,
+        color: { argb: C.white },
+      };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: C.navy },
+      };
+      cell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+      };
+
+      sheet.getRow(1).height = 28;
+      sheet.getRow(2).height = 18;
+
+      for (let row = 1; row <= 2; row++) {
+        for (let col = 1; col <= lastCol; col++) {
+          sheet.getCell(row, col).fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: C.navy },
+          };
+        }
+      }
+
+      sheet.mergeCells(3, 1, 3, lastCol);
+      sheet.getCell(3, 1).value =
+        "FAITHEDU  |  SỐ HÓA GIÁO LÝ - KẾT NỐI ĐỨC TIN";
+      sheet.getCell(3, 1).font = {
+        name: "Aptos",
+        size: 10,
+        bold: true,
+        color: { argb: C.gold },
+      };
+      sheet.getCell(3, 1).alignment = {
+        horizontal: "center",
+      };
+      sheet.getRow(3).height = 22;
+    };
+
+    const styleHeader = (row) => {
+      row.height = 32;
+
+      row.eachCell((cell) => {
+        cell.font = {
+          name: "Aptos",
+          size: 10,
+          bold: true,
+          color: { argb: C.white },
+        };
+
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: C.navyDark },
+        };
+
+        cell.alignment = {
+          horizontal: "center",
+          vertical: "middle",
+          wrapText: true,
+        };
+
+        cell.border = {
+          top: { style: "thin", color: { argb: C.border } },
+          bottom: { style: "thin", color: { argb: C.gold } },
+          left: { style: "thin", color: { argb: C.border } },
+          right: { style: "thin", color: { argb: C.border } },
+        };
+      });
+    };
+
+    const styleDataRows = (sheet, startRow, endRow, lastCol) => {
+      for (let r = startRow; r <= endRow; r++) {
+        const row = sheet.getRow(r);
+        row.height = 24;
+
+        for (let col = 1; col <= lastCol; col++) {
+          const cell = row.getCell(col);
+
+          cell.font = {
+            name: "Aptos",
+            size: 10,
+            color: { argb: C.text },
+          };
+
+          cell.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: {
+              argb: r % 2 === 0 ? C.white : C.background,
+            },
+          };
+
+          cell.border = {
+            bottom: { style: "hair", color: { argb: C.border } },
+          };
+
+          cell.alignment = {
+            vertical: "middle",
+          };
+        }
+
+        [1, 6, 7, 8, 9, 10, 11].forEach((col) => {
+          row.getCell(col).alignment = {
+            horizontal: "center",
+            vertical: "middle",
+          };
+        });
+
+        const rateCell = row.getCell(11);
+        rateCell.numFmt = "0.00%";
+        rateCell.font = {
+          name: "Aptos",
+          bold: true,
+          color: {
+            argb:
+              Number(rateCell.value || 0) >= 0.8
+                ? C.green
+                : Number(rateCell.value || 0) >= 0.5
+                  ? C.amber
+                  : C.red,
+          },
+        };
+
+        const statuses = [
+          [7, C.greenLight, C.green],
+          [8, C.redLight, C.red],
+          [9, C.amberLight, C.amber],
+          [10, C.blueLight, C.navy],
+        ];
+
+        statuses.forEach(([col, bg, fg]) => {
+          row.getCell(col).fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: bg },
+          };
+          row.getCell(col).font = {
+            name: "Aptos",
+            bold: true,
+            color: { argb: fg },
+          };
+        });
+      }
+    };
+
     // =========================================================
-    // HELPER CREATE SHEET
+    // 7. TẠO SHEET CHI TIẾT
     // =========================================================
 
     const createAttendanceSheet = ({
       title,
       classInfo = null,
-      rows = [],
+      rows,
       sheetName,
     }) => {
-      const data = [];
+      const sheet = workbook.addWorksheet(safeSheetName(sheetName));
 
-      // =====================================================
-      // TITLE
-      // =====================================================
+      sheet.views = [{ state: "frozen", ySplit: 9, showGridLines: false }];
 
-      data.push([title]);
+      sheet.properties.defaultRowHeight = 22;
 
-      data.push(["Giáo xứ", church?.name || ""]);
+      sheet.columns = [
+        { key: "stt", width: 7 },
+        { key: "code", width: 17 },
+        { key: "name", width: 30 },
+        { key: "gender", width: 12 },
+        { key: "dob", width: 16 },
+        { key: "total", width: 12 },
+        { key: "present", width: 13 },
+        { key: "absent", width: 12 },
+        { key: "late", width: 12 },
+        { key: "excused", width: 13 },
+        { key: "rate", width: 16 },
+      ];
 
-      if (church?.code) {
-        data.push(["Mã giáo xứ", church.code]);
-      }
+      styleTitle(sheet, title, 11);
 
-      // =====================================================
-      // CLASS
-      // =====================================================
+      sheet.mergeCells("A4:B4");
+      sheet.getCell("A4").value = "GIÁO XỨ";
+      sheet.getCell("C4").value = church.name || "";
+
+      sheet.mergeCells("A5:B5");
+      sheet.getCell("A5").value = "MÃ GIÁO XỨ";
+      sheet.getCell("C5").value = church.code || "";
+
+      sheet.mergeCells("A6:B6");
+      sheet.getCell("A6").value = "LOẠI ĐIỂM DANH";
+      sheet.getCell("C6").value =
+        attendanceType === "mass" ? "Thánh lễ" : "Học giáo lý";
+
+      sheet.mergeCells("A7:B7");
+      sheet.getCell("A7").value = "THỜI GIAN";
+      sheet.getCell("C7").value = getPeriodText();
 
       if (classInfo) {
-        data.push(["Lớp", classInfo.name || ""]);
+        sheet.mergeCells("E4:F4");
+        sheet.getCell("E4").value = "LỚP";
+        sheet.getCell("G4").value = classInfo.name || "";
 
-        data.push(["Mã lớp", classInfo.code || ""]);
+        sheet.mergeCells("E5:F5");
+        sheet.getCell("E5").value = "MÃ LỚP";
+        sheet.getCell("G5").value = classInfo.code || "";
       }
 
-      // =====================================================
-      // ATTENDANCE TYPE
-      // =====================================================
+      [4, 5, 6, 7].forEach((r) => {
+        ["A", "B", "E", "F"].forEach((col) => {
+          const cell = sheet.getCell(`${col}${r}`);
+          cell.font = {
+            name: "Aptos",
+            bold: true,
+            color: { argb: C.navy },
+          };
+        });
 
-      data.push([
-        "Loại điểm danh",
-        finalAttendanceType === "mass" ? "Thánh lễ" : "Học giáo lý",
-      ]);
+        sheet.getRow(r).height = 23;
+      });
 
-      // =====================================================
-      // PERIOD
-      // =====================================================
+      const headerRow = 9;
 
-      data.push(["Thời gian", getPeriodText()]);
-
-      data.push([]);
-
-      // =====================================================
-      // HEADER
-      // =====================================================
-
-      data.push([
+      sheet.getRow(headerRow).values = [
         "STT",
         "Mã học sinh",
         "Họ và tên",
         "Giới tính",
         "Ngày sinh",
-        "Tổng",
+        "Tổng lượt",
         "Có mặt",
         "Vắng",
         "Trễ",
         "Có phép",
-        "Tỷ lệ",
-      ]);
-
-      // =====================================================
-      // DATA
-      // =====================================================
-
-      rows.forEach((item, index) => {
-        data.push([
-          index + 1,
-
-          item.student_code || "",
-
-          item.student_name || "",
-
-          formatGender(item.gender),
-
-          formatDate(item.date_of_birth),
-
-          Number(item.total || 0),
-
-          Number(item.present || 0),
-
-          Number(item.absent || 0),
-
-          Number(item.late || 0),
-
-          Number(item.excused || 0),
-
-          `${calculateRateSafe(item.present, item.total)}%`,
-        ]);
-      });
-
-      // =====================================================
-      // TOTAL
-      // =====================================================
-
-      const total = rows.reduce(
-        (sum, item) => sum + Number(item.total || 0),
-        0,
-      );
-
-      const present = rows.reduce(
-        (sum, item) => sum + Number(item.present || 0),
-        0,
-      );
-
-      const absent = rows.reduce(
-        (sum, item) => sum + Number(item.absent || 0),
-        0,
-      );
-
-      const late = rows.reduce((sum, item) => sum + Number(item.late || 0), 0);
-
-      const excused = rows.reduce(
-        (sum, item) => sum + Number(item.excused || 0),
-        0,
-      );
-
-      data.push([]);
-
-      data.push([
-        "",
-        "",
-        "TỔNG",
-        "",
-        "",
-        total,
-        present,
-        absent,
-        late,
-        excused,
-        `${calculateRateSafe(present, total)}%`,
-      ]);
-
-      // =====================================================
-      // CREATE WORKSHEET
-      // =====================================================
-
-      const worksheet = XLSX.utils.aoa_to_sheet(data);
-
-      // =====================================================
-      // COLUMN WIDTH
-      // =====================================================
-
-      worksheet["!cols"] = [
-        { wch: 6 },
-        { wch: 16 },
-        { wch: 30 },
-        { wch: 12 },
-        { wch: 15 },
-        { wch: 10 },
-        { wch: 10 },
-        { wch: 10 },
-        { wch: 10 },
-        { wch: 10 },
-        { wch: 12 },
+        "Tỷ lệ chuyên cần",
       ];
 
-      // =====================================================
-      // FREEZE HEADER
-      // =====================================================
+      styleHeader(sheet.getRow(headerRow));
 
-      worksheet["!freeze"] = {
-        xSplit: 0,
-        ySplit: 8,
+      rows.forEach((item, index) => {
+        const row = sheet.addRow([
+          index + 1,
+          item.student_code || "",
+          item.student_name || "",
+          formatGender(item.gender),
+          formatDate(item.date_of_birth),
+          item.total,
+          item.present,
+          item.absent,
+          item.late,
+          item.excused,
+          rate(item.present, item.total),
+        ]);
+
+        row.getCell(11).numFmt = "0.00%";
+      });
+
+      const lastDataRow = sheet.rowCount;
+
+      if (rows.length > 0) {
+        styleDataRows(sheet, 10, lastDataRow, 11);
+        sheet.autoFilter = {
+          from: "A9",
+          to: `K${lastDataRow}`,
+        };
+      }
+
+      // TỔNG CỘNG
+      const totals = sumRows(rows);
+      const totalRow = sheet.addRow([
+        "",
+        "",
+        "TỔNG CỘNG",
+        "",
+        "",
+        totals.total,
+        totals.present,
+        totals.absent,
+        totals.late,
+        totals.excused,
+        rate(totals.present, totals.total),
+      ]);
+
+      totalRow.height = 30;
+
+      totalRow.eachCell((cell) => {
+        cell.font = {
+          name: "Aptos",
+          bold: true,
+          color: { argb: C.white },
+        };
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: C.navy },
+        };
+        cell.alignment = {
+          vertical: "middle",
+          horizontal: "center",
+        };
+        cell.border = {
+          top: { style: "medium", color: { argb: C.gold } },
+        };
+      });
+
+      totalRow.getCell(11).numFmt = "0.00%";
+
+      // CHÚ THÍCH TRẠNG THÁI
+      const noteRow = sheet.rowCount + 2;
+      sheet.mergeCells(noteRow, 1, noteRow, 11);
+      sheet.getCell(noteRow, 1).value =
+        "Lưu ý: Tỷ lệ chuyên cần = Tổng lượt có mặt / Tổng lượt điểm danh. " +
+        "Tỷ lệ tổng cộng được tính trên toàn bộ lượt điểm danh của học sinh.";
+      sheet.getCell(noteRow, 1).font = {
+        italic: true,
+        size: 9,
+        color: { argb: C.muted },
       };
+      sheet.getCell(noteRow, 1).alignment = {
+        wrapText: true,
+        vertical: "middle",
+      };
+      sheet.getRow(noteRow).height = 32;
 
-      // =====================================================
-      // APPEND SHEET
-      // =====================================================
+      console.log(
+        "[EXPORT] Sheet:",
+        sheet.name,
+        "| Students:",
+        rows.length,
+        "| Total attendance:",
+        totals.total,
+      );
 
-      const uniqueSheetName = makeUniqueSheetName(sheetName);
-
-      XLSX.utils.book_append_sheet(workbook, worksheet, uniqueSheetName);
-
-      console.log("CREATED SHEET:", uniqueSheetName, "| ROWS:", rows.length);
+      return { rows, totals, sheet };
     };
 
     // =========================================================
-    // CATECHISM
+    // 8. LẤY DỮ LIỆU VÀ TẠO CÁC SHEET
     // =========================================================
 
-    if (finalAttendanceType === "catechism") {
-      console.log("");
-      console.log(
-        "============================================================",
-      );
-      console.log("EXPORT TYPE: CATECHISM");
-      console.log(
-        "============================================================",
-      );
+    const reports = [];
 
-      // -------------------------------------------------------
-      // Nếu có class_id:
-      // chỉ export lớp đó.
-      //
-      // Nếu không có:
-      // export toàn bộ lớp.
-      // -------------------------------------------------------
-
+    if (attendanceType === "catechism") {
       for (const classInfo of classes) {
-        console.log(
-          "------------------------------------------------------------",
-        );
+        const rows = await getAttendanceRows(classInfo.id);
 
-        console.log("EXPORT CLASS:", classInfo.id, classInfo.name);
-
-        console.log("CLASS CODE:", classInfo.code);
-
-        const [rows] = await db.query(
-          `
-              SELECT
-
-                s.id AS student_id,
-
-                s.code AS student_code,
-
-                s.name AS student_name,
-
-                s.gender,
-
-                s.date_of_birth
-                  AS date_of_birth,
-
-                COUNT(a.id)
-                  AS total,
-
-                COALESCE(
-                  SUM(
-                    CASE
-                      WHEN a.status = 'present'
-                      THEN 1
-                      ELSE 0
-                    END
-                  ),
-                  0
-                ) AS present,
-
-                COALESCE(
-                  SUM(
-                    CASE
-                      WHEN a.status = 'absent'
-                      THEN 1
-                      ELSE 0
-                    END
-                  ),
-                  0
-                ) AS absent,
-
-                COALESCE(
-                  SUM(
-                    CASE
-                      WHEN a.status = 'late'
-                      THEN 1
-                      ELSE 0
-                    END
-                  ),
-                  0
-                ) AS late,
-
-                COALESCE(
-                  SUM(
-                    CASE
-                      WHEN a.status = 'excused'
-                      THEN 1
-                      ELSE 0
-                    END
-                  ),
-                  0
-                ) AS excused
-
-              FROM attendances a
-
-              INNER JOIN students s
-                ON s.id = a.student_id
-                AND s.church_id = a.church_id
-
-              WHERE
-                a.church_id = ?
-
-                AND a.class_id = ?
-
-                AND a.attendance_type = 'catechism'
-
-                ${dateWhere}
-
-              GROUP BY
-                s.id,
-                s.code,
-                s.name,
-                s.gender,
-                s.date_of_birth
-
-              ORDER BY
-                s.name ASC
-            `,
-          [churchId, classInfo.id, ...dateParams],
-        );
-
-        console.log("STUDENT ROWS:", rows.length);
-
-        // -----------------------------------------------------
-        // SHEET NAME
-        // -----------------------------------------------------
-
-        const sheetName = `${classInfo.code || ""}-${classInfo.name || classInfo.id}`;
-
-        createAttendanceSheet({
+        const report = createAttendanceSheet({
           title: "BÁO CÁO CHUYÊN CẦN HỌC GIÁO LÝ",
-
           classInfo,
-
           rows,
-
-          sheetName: sheetName || `Lop-${classInfo.id}`,
+          sheetName: `${classInfo.code || ""}-${classInfo.name || classInfo.id}`,
         });
+
+        reports.push({
+          name: classInfo.name || `Lớp ${classInfo.id}`,
+          code: classInfo.code || "",
+          ...report,
+        });
+      }
+    } else {
+      const rows = await getAttendanceRows(
+        selectedClass ? selectedClass.id : null,
+      );
+
+      const report = createAttendanceSheet({
+        title: "BÁO CÁO CHUYÊN CẦN THÁNH LỄ",
+        rows,
+        sheetName: "Thanh-le",
+      });
+
+      reports.push({
+        name: selectedClass
+          ? `Thánh lễ - ${selectedClass.name}`
+          : "Toàn bộ Thánh lễ",
+        code: "",
+        ...report,
+      });
+    }
+
+    // =========================================================
+    // 9. SHEET TỔNG QUAN
+    // =========================================================
+
+    const overview = workbook.addWorksheet("Tong-quan", {
+      properties: { tabColor: C.gold },
+      views: [{ showGridLines: false }],
+    });
+
+    overview.columns = [
+      { width: 28 },
+      { width: 19 },
+      { width: 19 },
+      { width: 19 },
+      { width: 19 },
+      { width: 19 },
+    ];
+
+    styleTitle(overview, "FAITHEDU - TỔNG QUAN CHUYÊN CẦN", 6);
+
+    overview.mergeCells("A4:F4");
+    overview.getCell("A4").value = `Giáo xứ: ${church.name || ""}`;
+    overview.getCell("A4").font = {
+      bold: true,
+      size: 12,
+      color: { argb: C.navy },
+    };
+
+    overview.mergeCells("A5:F5");
+    overview.getCell("A5").value = `Loại điểm danh: ${
+      attendanceType === "mass" ? "Thánh lễ" : "Học giáo lý"
+    }  |  Thời gian: ${getPeriodText()}`;
+    overview.getCell("A5").font = {
+      size: 10,
+      color: { argb: C.muted },
+    };
+
+    const grand = reports.reduce(
+      (acc, report) => {
+        acc.students += report.rows.length;
+        acc.total += report.totals.total;
+        acc.present += report.totals.present;
+        acc.absent += report.totals.absent;
+        acc.late += report.totals.late;
+        acc.excused += report.totals.excused;
+        return acc;
+      },
+      {
+        students: 0,
+        total: 0,
+        present: 0,
+        absent: 0,
+        late: 0,
+        excused: 0,
+      },
+    );
+
+    const cards = [
+      {
+        label: "TỔNG LƯỢT ĐIỂM DANH",
+        value: grand.total,
+        color: C.navy,
+      },
+      {
+        label: "CÓ MẶT",
+        value: grand.present,
+        color: C.green,
+      },
+      {
+        label: "VẮNG",
+        value: grand.absent,
+        color: C.red,
+      },
+      {
+        label: "ĐI TRỄ",
+        value: grand.late,
+        color: C.amber,
+      },
+      {
+        label: "CÓ PHÉP",
+        value: grand.excused,
+        color: C.navy,
+      },
+      {
+        label: "TỶ LỆ CHUYÊN CẦN",
+        value: rate(grand.present, grand.total),
+        color: C.green,
+        percent: true,
+      },
+    ];
+
+    const cardPositions = [
+      ["A7:B7", "A8:B9"],
+      ["C7:D7", "C8:D9"],
+      ["E7:F7", "E8:F9"],
+      ["A11:B11", "A12:B13"],
+      ["C11:D11", "C12:D13"],
+      ["E11:F11", "E12:F13"],
+    ];
+
+    cards.forEach((card, index) => {
+      const [labelRange, valueRange] = cardPositions[index];
+
+      overview.mergeCells(labelRange);
+      overview.mergeCells(valueRange);
+
+      const labelCell = overview.getCell(labelRange.split(":")[0]);
+      const valueCell = overview.getCell(valueRange.split(":")[0]);
+
+      labelCell.value = card.label;
+      labelCell.font = {
+        bold: true,
+        size: 10,
+        color: { argb: C.white },
+      };
+      labelCell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+        wrapText: true,
+      };
+      labelCell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: card.color },
+      };
+
+      valueCell.value = card.value;
+      valueCell.font = {
+        bold: true,
+        size: 22,
+        color: { argb: card.color },
+      };
+      valueCell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+      };
+      valueCell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: C.cream },
+      };
+
+      if (card.percent) valueCell.numFmt = "0.00%";
+
+      for (const range of [labelRange, valueRange]) {
+        const [start, end] = range.split(":");
+        const startCell = overview.getCell(start);
+        const endCell = overview.getCell(end);
+
+        for (let r = startCell.row; r <= endCell.row; r++) {
+          for (let col = startCell.col; col <= endCell.col; col++) {
+            overview.getCell(r, col).border = {
+              top: { style: "thin", color: { argb: C.border } },
+              bottom: { style: "thin", color: { argb: C.border } },
+              left: { style: "thin", color: { argb: C.border } },
+              right: { style: "thin", color: { argb: C.border } },
+            };
+          }
+        }
+      }
+    });
+
+    // =========================================================
+    // 10. BẢNG SO SÁNH VÀ THANH TRỰC QUAN
+    // =========================================================
+
+    overview.mergeCells("A16:F16");
+    overview.getCell("A16").value = "THỐNG KÊ THEO LỚP / PHẠM VI";
+    overview.getCell("A16").font = {
+      bold: true,
+      size: 12,
+      color: { argb: C.white },
+    };
+    overview.getCell("A16").fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: C.navy },
+    };
+
+    const summaryHeader = overview.getRow(17);
+    summaryHeader.values = [
+      "Lớp / phạm vi",
+      "Tổng lượt",
+      "Có mặt",
+      "Vắng",
+      "Trễ",
+      "Tỷ lệ chuyên cần",
+    ];
+    styleHeader(summaryHeader);
+
+    reports.forEach((report) => {
+      const row = overview.addRow([
+        report.name,
+        report.totals.total,
+        report.totals.present,
+        report.totals.absent,
+        report.totals.late,
+        rate(report.totals.present, report.totals.total),
+      ]);
+
+      row.getCell(6).numFmt = "0.00%";
+    });
+
+    if (reports.length > 0) {
+      styleDataRows(overview, 18, 17 + reports.length, 6);
+
+      // Ghi đè định dạng tỷ lệ cho cột F
+      for (let r = 18; r <= 17 + reports.length; r++) {
+        overview.getCell(r, 6).numFmt = "0.00%";
       }
     }
 
-    // =========================================================
-    // MASS
-    // =========================================================
+    const legendRow = 19 + reports.length;
 
-    if (finalAttendanceType === "mass") {
-      console.log("");
-      console.log(
-        "============================================================",
-      );
-      console.log("EXPORT TYPE: MASS");
-      console.log(
-        "============================================================",
-      );
+    overview.mergeCells(legendRow, 1, legendRow, 6);
+    overview.getCell(legendRow, 1).value =
+      "BÁO CÁO ĐƯỢC TẠO TỰ ĐỘNG BỞI FAITHEDU";
+    overview.getCell(legendRow, 1).font = {
+      bold: true,
+      color: { argb: C.gold },
+    };
+    overview.getCell(legendRow, 1).alignment = {
+      horizontal: "center",
+    };
 
-      console.log("MASS DOES NOT REQUIRE CLASS.");
-
-      // -------------------------------------------------------
-      // THÁNH LỄ:
-      //
-      // Không chọn lớp -> toàn bộ attendance mass.
-      //
-      // Nếu có class_id do dữ liệu cũ / request đặc biệt:
-      // vẫn lọc theo class_id.
-      // -------------------------------------------------------
-
-      const [rows] = await db.query(
-        `
-            SELECT
-
-              s.id AS student_id,
-
-              s.code AS student_code,
-
-              s.name AS student_name,
-
-              s.gender,
-
-              s.date_of_birth
-                AS date_of_birth,
-
-              COUNT(a.id)
-                AS total,
-
-              COALESCE(
-                SUM(
-                  CASE
-                    WHEN a.status = 'present'
-                    THEN 1
-                    ELSE 0
-                  END
-                ),
-                0
-              ) AS present,
-
-              COALESCE(
-                SUM(
-                  CASE
-                    WHEN a.status = 'absent'
-                    THEN 1
-                    ELSE 0
-                  END
-                ),
-                0
-              ) AS absent,
-
-              COALESCE(
-                SUM(
-                  CASE
-                    WHEN a.status = 'late'
-                    THEN 1
-                    ELSE 0
-                  END
-                ),
-                0
-              ) AS late,
-
-              COALESCE(
-                SUM(
-                  CASE
-                    WHEN a.status = 'excused'
-                    THEN 1
-                    ELSE 0
-                  END
-                ),
-                0
-              ) AS excused
-
-            FROM attendances a
-
-            INNER JOIN students s
-              ON s.id = a.student_id
-              AND s.church_id = a.church_id
-
-            WHERE
-              a.church_id = ?
-
-              AND a.attendance_type = 'mass'
-
-              ${dateWhere}
-
-              ${classWhere}
-
-            GROUP BY
-              s.id,
-              s.code,
-              s.name,
-              s.gender,
-              s.date_of_birth
-
-            ORDER BY
-              s.name ASC
-          `,
-        [churchId, ...dateParams, ...classParams],
-      );
-
-      console.log("MASS STUDENT ROWS:", rows.length);
-
-      // -------------------------------------------------------
-      // TẠO SHEET THÁNH LỄ
-      // -------------------------------------------------------
-
-      createAttendanceSheet({
-        title: "BÁO CÁO CHUYÊN CẦN THÁNH LỄ",
-
-        classInfo: null,
-
-        rows,
-
-        sheetName: "Thanh-le",
-      });
-    }
+    overview.views = [{ state: "frozen", ySplit: 5, showGridLines: false }];
 
     // =========================================================
-    // KIỂM TRA SHEET
+    // 11. XUẤT FILE
     // =========================================================
 
-    console.log("");
-    console.log("============================================================");
+    const safePeriod = (() => {
+      if (month !== null && year !== null) {
+        return `thang-${month}-${year}`;
+      }
 
-    console.log("SHEET NAMES:", workbook.SheetNames);
+      if (date) return `ngay-${date}`;
 
-    console.log("TOTAL SHEETS:", workbook.SheetNames.length);
+      if (from || to) {
+        return `tu-${from || "dau-ky"}-den-${to || "cuoi-ky"}`;
+      }
 
-    console.log("============================================================");
+      return "tat-ca";
+    })();
 
-    if (workbook.SheetNames.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Không có dữ liệu để xuất báo cáo.",
-      });
-    }
+    const typeName = attendanceType === "mass" ? "thanh-le" : "hoc-giao-ly";
 
-    // =========================================================
-    // FILENAME
-    // =========================================================
+    const fileName = `bao-cao-chuyen-can-${typeName}-${safePeriod}.xlsx`;
 
-    let periodName = "tat-ca";
+    const buffer = await workbook.xlsx.writeBuffer();
 
-    if (month !== null && year !== null) {
-      periodName = `thang-${month}-${year}`;
-    }
-
-    if (date) {
-      periodName = `ngay-${date}`;
-    }
-
-    if (from || to) {
-      periodName = `tu-${from || "tat-ca"}-den-${to || "tat-ca"}`;
-    }
-
-    const typeName =
-      finalAttendanceType === "mass" ? "thanh-le" : "hoc-giao-ly";
-
-    const fileName = `bao-cao-chuyen-can-${typeName}-${periodName}.xlsx`;
-
-    console.log("FILE NAME:", fileName);
-
-    // =========================================================
-    // WRITE XLSX BUFFER
-    // =========================================================
-
-    const buffer = XLSX.write(workbook, {
-      type: "buffer",
-      bookType: "xlsx",
-    });
-
-    console.log("BUFFER SIZE:", buffer.length);
-
-    // =========================================================
-    // RESPONSE HEADERS
-    // =========================================================
+    console.log(
+      "[EXPORT] Sheets:",
+      workbook.worksheets.map((s) => s.name),
+    );
+    console.log("[EXPORT] Students:", grand.students);
+    console.log("[EXPORT] Total attendance:", grand.total);
+    console.log("[EXPORT] Buffer size:", buffer.length);
+    console.log("[EXPORT] SUCCESS:", fileName);
 
     res.setHeader(
       "Content-Type",
@@ -2805,51 +2845,24 @@ const exportAttendanceReport = async (req, res) => {
 
     res.setHeader("Content-Length", buffer.length);
 
-    // =========================================================
-    // SUCCESS
-    // =========================================================
-
-    console.log("");
-    console.log("============================================================");
-
-    console.log("              EXPORT SUCCESS");
-
-    console.log("============================================================");
-
-    console.log("FILE:", fileName);
-
-    console.log("SIZE:", buffer.length, "bytes");
-
-    console.log("SHEETS:", workbook.SheetNames.join(", "));
-
-    console.log("============================================================");
-
-    return res.send(buffer);
+    return res.send(Buffer.from(buffer));
   } catch (error) {
-    console.error("");
     console.error(
-      "============================================================",
+      "\n============================================================",
     );
-
-    console.error("      EXPORT ATTENDANCE REPORT ERROR");
-
-    console.error(
-      "============================================================",
-    );
-
+    console.error("EXPORT ATTENDANCE REPORT ERROR");
     console.error("MESSAGE:", error?.message);
-
     console.error("CODE:", error?.code);
-
     console.error("SQL STATE:", error?.sqlState);
-
     console.error("SQL MESSAGE:", error?.sqlMessage);
-
     console.error("STACK:", error?.stack);
-
     console.error(
       "============================================================",
     );
+
+    if (res.headersSent) {
+      return res.end();
+    }
 
     return res.status(500).json({
       success: false,

@@ -4840,12 +4840,20 @@ exports.importStudentsExcel = async (req, res) => {
 
 exports.exportStudentsExcel = async (req, res) => {
   try {
+    console.log("\n====================================================");
+    console.log("       EXPORT STUDENTS EXCEL - FAITHEDU");
+    console.log("====================================================");
+
+    // =====================================================
+    // 1. XÁC ĐỊNH GIÁO XỨ
+    // =====================================================
+
     const churchId = getChurchId(req);
 
     if (!churchId) {
       return res.status(403).json({
         success: false,
-        message: "Không xác định được giáo xứ",
+        message: "Không xác định được giáo xứ.",
       });
     }
 
@@ -4863,68 +4871,15 @@ exports.exportStudentsExcel = async (req, res) => {
 
     const fields = Array.isArray(req.body?.fields) ? req.body.fields : [];
 
-    const where = ["s.church_id = ?"];
+    console.log("[EXPORT] Church ID:", churchId);
+    console.log("[EXPORT] Class ID:", classId || "Tất cả");
+    console.log("[EXPORT] Selected students:", studentIds.length);
+    console.log("[EXPORT] Requested fields:", fields.length);
 
-    const params = [churchId];
+    // =====================================================
+    // 2. DANH SÁCH TRƯỜNG ĐƯỢC PHÉP XUẤT
+    // =====================================================
 
-    if (classId) {
-      where.push(`
-        EXISTS (
-          SELECT 1
-          FROM class_students cs_filter
-          WHERE cs_filter.student_id = s.id
-            AND cs_filter.class_id = ?
-        )
-      `);
-
-      params.push(classId);
-    }
-
-    if (studentIds.length > 0) {
-      const placeholders = studentIds.map(() => "?").join(",");
-
-      where.push(`s.id IN (${placeholders})`);
-
-      params.push(...studentIds);
-    }
-
-    const [students] = await db.execute(
-      `
-          SELECT
-            s.*,
-
-            (
-              SELECT GROUP_CONCAT(
-                DISTINCT c.name
-                ORDER BY c.name
-                SEPARATOR ', '
-              )
-              FROM class_students cs
-              INNER JOIN classes c
-                ON c.id = cs.class_id
-              WHERE cs.student_id = s.id
-                AND c.church_id = ?
-            ) AS class_names
-
-          FROM students s
-
-          WHERE ${where.join(" AND ")}
-
-          ORDER BY s.name ASC, s.id ASC
-        `,
-      [churchId, ...params],
-    );
-
-    if (students.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Không có học sinh để xuất",
-      });
-    }
-
-    /**
-     * Các field cho phép export
-     */
     const allowedFields = {
       code: "Mã học sinh",
       name: "Họ và tên",
@@ -4937,17 +4892,17 @@ exports.exportStudentsExcel = async (req, res) => {
       address: "Địa chỉ",
       parish: "Giáo xứ",
 
-      father_name: "Tên cha",
-      father_phone: "SĐT cha",
+      father_name: "Họ tên cha",
+      father_phone: "Điện thoại cha",
 
-      mother_name: "Tên mẹ",
-      mother_phone: "SĐT mẹ",
+      mother_name: "Họ tên mẹ",
+      mother_phone: "Điện thoại mẹ",
 
       guardian_name: "Người giám hộ",
-      guardian_phone: "SĐT người giám hộ",
-      guardian_relationship: "Quan hệ người giám hộ",
+      guardian_phone: "Điện thoại người giám hộ",
+      guardian_relationship: "Quan hệ giám hộ",
 
-      class_names: "Lớp",
+      class_names: "Lớp đang học",
 
       baptism_name: "Tên thánh rửa tội",
       baptism_date: "Ngày rửa tội",
@@ -4969,17 +4924,19 @@ exports.exportStudentsExcel = async (req, res) => {
       enrollment_date: "Ngày nhập học",
 
       note: "Ghi chú",
-      status: "Trạng thái",
+      status: "Trạng thái học sinh",
     };
 
-    let exportFields = fields.filter(
-      (field) => typeof field === "string" && allowedFields[field],
-    );
+    let exportFields = [
+      ...new Set(
+        fields.filter(
+          (field) =>
+            typeof field === "string" &&
+            Object.prototype.hasOwnProperty.call(allowedFields, field),
+        ),
+      ),
+    ];
 
-    /**
-     * Nếu FE không gửi fields
-     * -> export bộ mặc định
-     */
     if (exportFields.length === 0) {
       exportFields = [
         "code",
@@ -4998,49 +4955,789 @@ exports.exportStudentsExcel = async (req, res) => {
       ];
     }
 
-    const exportData = students.map((student) => {
-      const item = {};
+    // =====================================================
+    // 3. XÂY DỰNG ĐIỀU KIỆN TRUY VẤN
+    // =====================================================
 
-      for (const field of exportFields) {
-        item[allowedFields[field]] = student[field] ?? "";
+    const where = ["s.church_id = ?"];
+    const params = [churchId];
+
+    if (classId) {
+      where.push(`
+        EXISTS (
+          SELECT 1
+          FROM class_students cs_filter
+          INNER JOIN classes c_filter
+            ON c_filter.id = cs_filter.class_id
+          WHERE cs_filter.student_id = s.id
+            AND cs_filter.class_id = ?
+            AND c_filter.church_id = s.church_id
+        )
+      `);
+
+      params.push(classId);
+    }
+
+    if (studentIds.length > 0) {
+      const placeholders = studentIds.map(() => "?").join(",");
+
+      where.push(`s.id IN (${placeholders})`);
+      params.push(...studentIds);
+    }
+
+    // =====================================================
+    // 4. LẤY DỮ LIỆU HỌC SINH
+    // =====================================================
+
+    const [students] = await db.execute(
+      `
+      SELECT
+        s.*,
+
+        (
+          SELECT GROUP_CONCAT(
+            DISTINCT c.name
+            ORDER BY c.name
+            SEPARATOR ', '
+          )
+          FROM class_students cs
+          INNER JOIN classes c
+            ON c.id = cs.class_id
+            AND c.church_id = s.church_id
+          WHERE cs.student_id = s.id
+        ) AS class_names
+
+      FROM students s
+
+      WHERE ${where.join(" AND ")}
+
+      ORDER BY s.name ASC, s.id ASC
+      `,
+      params,
+    );
+
+    if (students.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Không có học sinh để xuất.",
+      });
+    }
+
+    console.log("[EXPORT] Students:", students.length);
+    console.log("[EXPORT] Fields:", exportFields);
+
+    // =====================================================
+    // 5. THEME FAITHEDU
+    // =====================================================
+
+    const COLORS = {
+      navy: "173B5E",
+      navyDark: "102A43",
+      gold: "D9A441",
+      cream: "FFF9EE",
+      white: "FFFFFF",
+      background: "F4F7FB",
+      border: "DCE5EF",
+      text: "243447",
+      muted: "6B7280",
+      green: "2E7D5B",
+      greenLight: "E8F5EE",
+      red: "C94C4C",
+      redLight: "FDECEC",
+      amber: "B7791F",
+      amberLight: "FFF7E0",
+      blueLight: "EEF3F7",
+    };
+
+    const workbook = new ExcelJS.Workbook();
+
+    workbook.creator = "FaithEdu";
+    workbook.subject = "Danh sách học sinh";
+    workbook.title = "Danh sách học sinh FaithEdu";
+    workbook.created = new Date();
+
+    // =====================================================
+    // 6. HELPER XỬ LÝ DỮ LIỆU
+    // =====================================================
+
+    const dateFields = new Set([
+      "date_of_birth",
+      "baptism_date",
+      "first_communion_date",
+      "confirmation_date",
+      "enrollment_date",
+    ]);
+
+    const formatExcelDate = (value) => {
+      if (!value) return "";
+
+      if (value instanceof Date) {
+        if (Number.isNaN(value.getTime())) return "";
+
+        return value;
       }
 
-      return item;
+      const str = String(value).trim();
+
+      const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+
+      if (match) {
+        const [, y, m, d] = match;
+
+        // Dùng UTC để tránh lệch ngày do timezone.
+        const parsed = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)));
+
+        if (!Number.isNaN(parsed.getTime())) {
+          return parsed;
+        }
+      }
+
+      return str;
+    };
+
+    const formatGender = (value) => {
+      const map = {
+        male: "Nam",
+        female: "Nữ",
+        other: "Khác",
+      };
+
+      return map[value] || value || "";
+    };
+
+    const formatStatus = (value) => {
+      const map = {
+        active: "Đang hoạt động",
+        inactive: "Ngừng hoạt động",
+        studying: "Đang học",
+        completed: "Đã hoàn thành",
+        transferred: "Đã chuyển lớp",
+        dropped: "Đã nghỉ học",
+        pending: "Chờ xử lý",
+        graduated: "Đã tốt nghiệp",
+      };
+
+      return map[value] || value || "";
+    };
+
+    const formatFieldValue = (student, field) => {
+      const value = student[field];
+
+      if (value === null || value === undefined) {
+        return "";
+      }
+
+      if (field === "gender") {
+        return formatGender(value);
+      }
+
+      if (field === "status" || field === "catechism_status") {
+        return formatStatus(value);
+      }
+
+      if (dateFields.has(field)) {
+        return formatExcelDate(value);
+      }
+
+      // Loại bỏ ký tự điều khiển không cần thiết.
+      // Không ép kiểu số điện thoại hoặc mã học sinh thành số.
+      if (typeof value === "string") {
+        return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+      }
+
+      return value;
+    };
+
+    const setCellBorder = (cell) => {
+      cell.border = {
+        top: {
+          style: "thin",
+          color: { argb: COLORS.border },
+        },
+        bottom: {
+          style: "thin",
+          color: { argb: COLORS.border },
+        },
+        left: {
+          style: "thin",
+          color: { argb: COLORS.border },
+        },
+        right: {
+          style: "thin",
+          color: { argb: COLORS.border },
+        },
+      };
+    };
+
+    const fillCell = (cell, color) => {
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: color },
+      };
+    };
+
+    const styleTitle = (sheet, title, lastCol) => {
+      sheet.mergeCells(1, 1, 2, lastCol);
+
+      for (let r = 1; r <= 2; r++) {
+        for (let c = 1; c <= lastCol; c++) {
+          fillCell(sheet.getCell(r, c), COLORS.navy);
+        }
+      }
+
+      const titleCell = sheet.getCell(1, 1);
+
+      titleCell.value = title;
+      titleCell.font = {
+        name: "Aptos Display",
+        size: 19,
+        bold: true,
+        color: { argb: COLORS.white },
+      };
+      titleCell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+        wrapText: true,
+      };
+
+      sheet.getRow(1).height = 30;
+      sheet.getRow(2).height = 20;
+
+      sheet.mergeCells(3, 1, 3, lastCol);
+
+      const brand = sheet.getCell(3, 1);
+
+      brand.value = "FAITHEDU  |  SỐ HÓA GIÁO LÝ - KẾT NỐI ĐỨC TIN";
+
+      brand.font = {
+        name: "Aptos",
+        size: 10,
+        bold: true,
+        color: { argb: COLORS.gold },
+      };
+
+      brand.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+      };
+
+      fillCell(brand, COLORS.navyDark);
+
+      sheet.getRow(3).height = 24;
+    };
+
+    const styleHeader = (row) => {
+      row.height = 34;
+
+      row.eachCell((cell) => {
+        cell.font = {
+          name: "Aptos",
+          size: 10,
+          bold: true,
+          color: { argb: COLORS.white },
+        };
+
+        fillCell(cell, COLORS.navyDark);
+
+        cell.alignment = {
+          horizontal: "center",
+          vertical: "middle",
+          wrapText: true,
+        };
+
+        setCellBorder(cell);
+      });
+    };
+
+    // =====================================================
+    // 7. SHEET DANH SÁCH HỌC SINH
+    // =====================================================
+
+    const worksheet = workbook.addWorksheet("Danh-sach", {
+      properties: {
+        tabColor: COLORS.navy,
+        defaultRowHeight: 25,
+      },
+      views: [
+        {
+          state: "frozen",
+          ySplit: 7,
+          showGridLines: false,
+        },
+      ],
     });
 
-    const workbook = XLSX.utils.book_new();
+    const totalCols = exportFields.length + 1;
 
-    const worksheet = XLSX.utils.json_to_sheet(exportData);
+    styleTitle(worksheet, "DANH SÁCH HỌC SINH", totalCols);
 
-    XLSX.utils.book_append_sheet(workbook, worksheet, "HocSinh");
+    // Thông tin báo cáo
+    worksheet.mergeCells(4, 1, 4, totalCols);
 
-    /**
-     * Auto width
-     */
-    const widths = exportFields.map((field) => {
-      const header = allowedFields[field];
+    worksheet.getCell(4, 1).value =
+      `GIÁO XỨ: ${students[0]?.parish || "Theo dữ liệu học sinh"} ` +
+      ` |  TỔNG SỐ: ${students.length} HỌC SINH`;
 
-      let maxLength = header.length;
+    worksheet.getCell(4, 1).font = {
+      name: "Aptos",
+      bold: true,
+      size: 11,
+      color: { argb: COLORS.navy },
+    };
+
+    worksheet.getCell(4, 1).alignment = {
+      vertical: "middle",
+    };
+
+    fillCell(worksheet.getCell(4, 1), COLORS.cream);
+    worksheet.getRow(4).height = 28;
+
+    worksheet.mergeCells(5, 1, 5, totalCols);
+
+    worksheet.getCell(5, 1).value =
+      "Dữ liệu được xuất từ hệ thống FaithEdu. Vui lòng bảo mật thông tin cá nhân học sinh.";
+
+    worksheet.getCell(5, 1).font = {
+      italic: true,
+      size: 9,
+      color: { argb: COLORS.muted },
+    };
+
+    worksheet.getCell(5, 1).alignment = {
+      wrapText: true,
+      vertical: "middle",
+    };
+
+    worksheet.getRow(5).height = 24;
+
+    // Hàng tiêu đề
+    const headerRowNumber = 7;
+
+    const headers = [
+      "STT",
+      ...exportFields.map((field) => allowedFields[field]),
+    ];
+
+    worksheet.getRow(headerRowNumber).values = headers;
+
+    styleHeader(worksheet.getRow(headerRowNumber));
+
+    // =====================================================
+    // 8. TẠO CÁC DÒNG DỮ LIỆU
+    // =====================================================
+
+    students.forEach((student, index) => {
+      const values = [
+        index + 1,
+        ...exportFields.map((field) => formatFieldValue(student, field)),
+      ];
+
+      const row = worksheet.addRow(values);
+
+      row.height = 27;
+
+      row.eachCell((cell, colNumber) => {
+        cell.font = {
+          name: "Aptos",
+          size: 10,
+          color: { argb: COLORS.text },
+        };
+
+        fillCell(cell, index % 2 === 0 ? COLORS.white : COLORS.background);
+
+        cell.alignment = {
+          vertical: "middle",
+          wrapText: true,
+        };
+
+        setCellBorder(cell);
+
+        // STT
+        if (colNumber === 1) {
+          cell.alignment = {
+            horizontal: "center",
+            vertical: "middle",
+          };
+
+          cell.font = {
+            name: "Aptos",
+            bold: true,
+            color: { argb: COLORS.navy },
+          };
+        }
+
+        const field = exportFields[colNumber - 2];
+
+        if (!field) return;
+
+        // Mã học sinh
+        if (field === "code") {
+          cell.font = {
+            name: "Aptos",
+            bold: true,
+            color: { argb: COLORS.navy },
+          };
+        }
+
+        // Họ tên
+        if (field === "name") {
+          cell.font = {
+            name: "Aptos",
+            bold: true,
+            color: { argb: COLORS.navyDark },
+          };
+        }
+
+        // Ngày tháng
+        if (dateFields.has(field) && cell.value instanceof Date) {
+          cell.numFmt = "dd/mm/yyyy";
+          cell.alignment = {
+            horizontal: "center",
+            vertical: "middle",
+          };
+        }
+
+        // Giới tính
+        if (field === "gender") {
+          cell.alignment = {
+            horizontal: "center",
+            vertical: "middle",
+          };
+        }
+
+        // Trạng thái
+        if (field === "status" || field === "catechism_status") {
+          const status = String(student[field] || "").toLowerCase();
+
+          let bg = COLORS.blueLight;
+          let fg = COLORS.navy;
+
+          if (
+            ["active", "studying", "completed", "graduated"].includes(status)
+          ) {
+            bg = COLORS.greenLight;
+            fg = COLORS.green;
+          } else if (["inactive", "dropped"].includes(status)) {
+            bg = COLORS.redLight;
+            fg = COLORS.red;
+          } else if (["pending", "transferred"].includes(status)) {
+            bg = COLORS.amberLight;
+            fg = COLORS.amber;
+          }
+
+          fillCell(cell, bg);
+
+          cell.font = {
+            name: "Aptos",
+            bold: true,
+            color: { argb: fg },
+          };
+
+          cell.alignment = {
+            horizontal: "center",
+            vertical: "middle",
+            wrapText: true,
+          };
+        }
+      });
+    });
+
+    // =====================================================
+    // 9. ĐỘ RỘNG CỘT
+    // =====================================================
+
+    const specialWidths = {
+      code: 17,
+      name: 28,
+      gender: 12,
+      date_of_birth: 15,
+      birth_place: 22,
+      nationality: 16,
+      phone: 17,
+      email: 28,
+      address: 35,
+      parish: 24,
+
+      father_name: 25,
+      father_phone: 18,
+
+      mother_name: 25,
+      mother_phone: 18,
+
+      guardian_name: 25,
+      guardian_phone: 20,
+      guardian_relationship: 22,
+
+      class_names: 28,
+
+      baptism_name: 23,
+      baptism_date: 16,
+      baptism_place: 24,
+      baptism_parish: 24,
+      baptism_certificate_no: 22,
+
+      saint_name: 20,
+
+      first_communion_date: 22,
+      first_communion_place: 25,
+
+      confirmation_date: 18,
+      confirmation_place: 25,
+      confirmation_saint_name: 25,
+
+      catechism_level: 18,
+      catechism_status: 21,
+      enrollment_date: 17,
+
+      note: 35,
+      status: 21,
+    };
+
+    worksheet.getColumn(1).width = 7;
+
+    exportFields.forEach((field, index) => {
+      const col = worksheet.getColumn(index + 2);
+
+      let maxLength = allowedFields[field].length;
 
       for (const student of students) {
-        const value = student[field] ?? "";
+        const value = formatFieldValue(student, field);
 
-        maxLength = Math.max(maxLength, String(value).length);
+        const text = value instanceof Date ? "31/12/2000" : String(value ?? "");
+
+        maxLength = Math.max(maxLength, text.length);
       }
 
-      return {
-        wch: Math.min(Math.max(maxLength + 2, 12), 40),
+      const calculatedWidth = Math.min(Math.max(maxLength + 3, 14), 36);
+
+      col.width = Math.min(
+        Math.max(specialWidths[field] || calculatedWidth, 12),
+        36,
+      );
+    });
+
+    // Bộ lọc
+    worksheet.autoFilter = {
+      from: {
+        row: headerRowNumber,
+        column: 1,
+      },
+      to: {
+        row: headerRowNumber,
+        column: totalCols,
+      },
+    };
+
+    // =====================================================
+    // 10. SHEET TỔNG QUAN
+    // =====================================================
+
+    const overview = workbook.addWorksheet("Tong-quan", {
+      properties: {
+        tabColor: COLORS.gold,
+      },
+      views: [{ showGridLines: false }],
+    });
+
+    overview.columns = [
+      { width: 30 },
+      { width: 23 },
+      { width: 23 },
+      { width: 23 },
+    ];
+
+    styleTitle(overview, "FAITHEDU - TỔNG QUAN HỌC SINH", 4);
+
+    overview.mergeCells("A5:D5");
+
+    overview.getCell("A5").value = "BÁO CÁO DANH SÁCH HỌC SINH";
+
+    overview.getCell("A5").font = {
+      size: 12,
+      bold: true,
+      color: { argb: COLORS.navy },
+    };
+
+    // Thẻ tổng số học sinh
+    overview.mergeCells("A7:B7");
+    overview.mergeCells("A8:B10");
+
+    overview.getCell("A7").value = "TỔNG SỐ HỌC SINH";
+    overview.getCell("A8").value = students.length;
+
+    fillCell(overview.getCell("A7"), COLORS.navy);
+    fillCell(overview.getCell("A8"), COLORS.cream);
+
+    overview.getCell("A7").font = {
+      bold: true,
+      color: { argb: COLORS.white },
+    };
+
+    overview.getCell("A7").alignment = {
+      horizontal: "center",
+      vertical: "middle",
+    };
+
+    overview.getCell("A8").font = {
+      bold: true,
+      size: 30,
+      color: { argb: COLORS.navy },
+    };
+
+    overview.getCell("A8").alignment = {
+      horizontal: "center",
+      vertical: "middle",
+    };
+
+    // Thống kê giới tính
+    const maleCount = students.filter((s) => s.gender === "male").length;
+
+    const femaleCount = students.filter((s) => s.gender === "female").length;
+
+    const otherCount = students.filter(
+      (s) => s.gender && !["male", "female"].includes(s.gender),
+    ).length;
+
+    const missingGender =
+      students.length - maleCount - femaleCount - otherCount;
+
+    overview.mergeCells("C7:D7");
+    overview.getCell("C7").value = "THỐNG KÊ GIỚI TÍNH";
+
+    fillCell(overview.getCell("C7"), COLORS.navyDark);
+
+    overview.getCell("C7").font = {
+      bold: true,
+      color: { argb: COLORS.white },
+    };
+
+    overview.getCell("C7").alignment = {
+      horizontal: "center",
+      vertical: "middle",
+    };
+
+    const genderRows = [
+      ["Nam", maleCount],
+      ["Nữ", femaleCount],
+      ["Khác", otherCount],
+      ["Chưa xác định", missingGender],
+    ];
+
+    genderRows.forEach((item, index) => {
+      const row = overview.getRow(8 + index);
+
+      row.getCell(3).value = item[0];
+      row.getCell(4).value = item[1];
+
+      fillCell(
+        row.getCell(3),
+        index % 2 === 0 ? COLORS.white : COLORS.background,
+      );
+
+      fillCell(
+        row.getCell(4),
+        index % 2 === 0 ? COLORS.white : COLORS.background,
+      );
+
+      row.getCell(3).font = {
+        color: { argb: COLORS.text },
       };
+
+      row.getCell(4).font = {
+        bold: true,
+        color: { argb: COLORS.navy },
+      };
+
+      row.getCell(4).alignment = {
+        horizontal: "center",
+      };
+
+      setCellBorder(row.getCell(3));
+      setCellBorder(row.getCell(4));
     });
 
-    worksheet["!cols"] = widths;
+    // Danh sách trường đã xuất
+    overview.mergeCells("A14:D14");
 
-    const buffer = XLSX.write(workbook, {
-      type: "buffer",
-      bookType: "xlsx",
+    overview.getCell("A14").value = "THÔNG TIN BÁO CÁO";
+
+    fillCell(overview.getCell("A14"), COLORS.navy);
+
+    overview.getCell("A14").font = {
+      bold: true,
+      color: { argb: COLORS.white },
+    };
+
+    const infoRows = [
+      ["Tổng số học sinh", students.length],
+      ["Số trường dữ liệu", exportFields.length],
+      ["Phạm vi giáo xứ", `ID ${churchId}`],
+      ["Phạm vi lớp", classId || "Tất cả lớp"],
+      ["Thời điểm xuất", new Date()],
+    ];
+
+    infoRows.forEach(([label, value], index) => {
+      const row = overview.getRow(15 + index);
+
+      row.getCell(1).value = label;
+      row.getCell(2).value = value;
+
+      row.getCell(1).font = {
+        bold: true,
+        color: { argb: COLORS.navy },
+      };
+
+      row.getCell(2).font = {
+        color: { argb: COLORS.text },
+      };
+
+      if (index % 2 === 0) {
+        fillCell(row.getCell(1), COLORS.background);
+        fillCell(row.getCell(2), COLORS.background);
+      }
+
+      setCellBorder(row.getCell(1));
+      setCellBorder(row.getCell(2));
     });
+
+    overview.getCell("B19").numFmt = "dd/mm/yyyy hh:mm";
+
+    overview.mergeCells("A22:D22");
+
+    overview.getCell("A22").value =
+      "Lưu ý: File chứa thông tin cá nhân học sinh. Vui lòng chỉ chia sẻ với người có thẩm quyền.";
+
+    overview.getCell("A22").font = {
+      italic: true,
+      size: 9,
+      color: { argb: COLORS.red },
+    };
+
+    overview.getCell("A22").alignment = {
+      wrapText: true,
+      vertical: "middle",
+    };
+
+    overview.getRow(22).height = 32;
+
+    // =====================================================
+    // 11. XUẤT FILE EXCEL
+    // =====================================================
 
     const fileName = `danh-sach-hoc-sinh-${Date.now()}.xlsx`;
+
+    const buffer = await workbook.xlsx.writeBuffer();
+
+    console.log("[EXPORT] Total students:", students.length);
+    console.log("[EXPORT] Total fields:", exportFields.length);
+    console.log(
+      "[EXPORT] Sheets:",
+      workbook.worksheets.map((s) => s.name),
+    );
+    console.log("[EXPORT] File:", fileName);
+    console.log("[EXPORT] Buffer:", buffer.length, "bytes");
+    console.log("EXPORT STUDENTS SUCCESS");
 
     res.setHeader(
       "Content-Type",
@@ -5049,13 +5746,27 @@ exports.exportStudentsExcel = async (req, res) => {
 
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
 
-    return res.send(buffer);
+    res.setHeader("Content-Length", buffer.length);
+
+    return res.send(Buffer.from(buffer));
   } catch (error) {
-    console.error("❌ EXPORT STUDENTS:", error);
+    console.error("\n====================================================");
+    console.error("EXPORT STUDENTS EXCEL ERROR");
+    console.error("MESSAGE:", error?.message);
+    console.error("CODE:", error?.code);
+    console.error("SQL MESSAGE:", error?.sqlMessage);
+    console.error("STACK:", error?.stack);
+    console.error("====================================================");
+
+    if (res.headersSent) {
+      return res.end();
+    }
 
     return res.status(500).json({
       success: false,
-      message: "Không thể xuất danh sách học sinh",
+      message: "Không thể xuất danh sách học sinh.",
+      error: error?.message || null,
+      code: error?.code || null,
     });
   }
 };

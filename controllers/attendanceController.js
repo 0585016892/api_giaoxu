@@ -611,14 +611,6 @@ const getAttendance = async (req, res) => {
 
     const academicYear = getCurrentAcademicYear();
 
-    console.log("[GET ATTENDANCE] CHURCH ID:", churchId);
-    console.log("[GET ATTENDANCE] ACADEMIC YEAR:", academicYear);
-    console.log("[GET ATTENDANCE] DATE:", date);
-    console.log("[GET ATTENDANCE] TYPE:", attendanceType);
-    console.log("[GET ATTENDANCE] CLASS ID:", requestedClassId);
-    console.log("[GET ATTENDANCE] SEARCH:", search);
-    console.log("[GET ATTENDANCE] STATUS:", status);
-
     // =====================================================
     // 1. VALIDATE
     // =====================================================
@@ -851,6 +843,7 @@ const getAttendance = async (req, res) => {
           s.name,
           s.gender,
           s.date_of_birth,
+          s.avatar,
 
           a.id AS attendance_id,
           a.attendance_type,
@@ -1137,6 +1130,7 @@ const getAttendance = async (req, res) => {
         s.name,
         s.gender,
         s.date_of_birth,
+        s.avatar,
 
         a.id AS attendance_id,
         a.attendance_type,

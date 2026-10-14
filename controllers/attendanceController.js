@@ -136,27 +136,28 @@ const getCurrentTime = () => {
   return new Date().toTimeString().slice(0, 8);
 };
 
-/**
- * =========================================================
- * STATUS
- * =========================================================
- *
- * GIÁO LÝ:
- *
- * check_in_time < start_time
- *     => present
- *
- * check_in_time >= start_time
- *     => late
- *
- * THÁNH LỄ:
- *
- * present luôn là present.
- *
- * Chưa có giờ bắt đầu Thánh lễ riêng.
- * =========================================================
- */
+const normalizeAvatarUrl = (avatar) => {
+  if (!avatar) return null;
 
+  const normalized = String(avatar).trim().replace(/\\/g, "/");
+
+  // Nếu đã là URL đầy đủ thì giữ nguyên
+  if (/^https?:\/\//i.test(normalized)) {
+    return normalized;
+  }
+
+  // Lấy phần đường dẫn bắt đầu từ /uploads/
+  const uploadsIndex = normalized.toLowerCase().lastIndexOf("/uploads/");
+
+  if (uploadsIndex !== -1) {
+    return normalized.slice(uploadsIndex);
+  }
+
+  // Trường hợp DB chỉ lưu tên file hoặc đường dẫn tương đối
+  const filename = normalized.split("/").pop();
+
+  return filename ? `/uploads/students/${filename}` : null;
+};
 const getAttendanceStatusByStartTime = (checkInTime, startTime) => {
   if (!isValidTime(checkInTime)) {
     return "late";
@@ -1045,9 +1046,9 @@ const getAttendance = async (req, res) => {
           total,
           total_pages: total > 0 ? Math.ceil(total / limit) : 0,
         },
-
         data: rows.map((row) => ({
           ...row,
+          avatar: normalizeAvatarUrl(row.avatar),
           attendance_id: row.attendance_id || null,
           status: row.status || null,
           check_in_time: row.check_in_time || null,
@@ -1299,6 +1300,7 @@ const getAttendance = async (req, res) => {
 
       data: massRows.map((row) => ({
         ...row,
+        avatar: normalizeAvatarUrl(row.avatar),
         attendance_id: row.attendance_id || null,
         class_id: row.class_id || null,
         status: row.status || null,

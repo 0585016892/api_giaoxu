@@ -59,6 +59,7 @@ const assistantRoutes = require("./routes/assistantRoutes");
 const classPromotionRoutes = require("./routes/classPromotionRoutes");
 const authFogotRoutes = require("./routes/authFogotRoutes");
 const catechismJourneyRoutes = require("./routes/catechismJourneyRoutes");
+const catechismProgramRoutes = require("./routes/catechismProgramRoutes");
 // ===============================
 // APP
 // ===============================
@@ -147,7 +148,7 @@ app.use("/api/settings_church", settingChurchRoutes);
 app.use("/api/assistant", assistantRoutes);
 app.use("/api/academic-years", classPromotionRoutes);
 app.use("/api/forgot-password", authFogotRoutes);
-
+app.use("/api/catechism-programs", catechismProgramRoutes);
 app.use("/api/catechism-journey", catechismJourneyRoutes);
 // ===============================
 // CORS MANAGEMENT

@@ -1,24 +1,22 @@
 const express = require("express");
-
 const router = express.Router();
 
 const lessonController = require("../controllers/lessonController");
 const { verifyToken } = require("../middleware/authMiddleware");
 
-// Tất cả API lesson đều yêu cầu đăng nhập
-router.use(verifyToken);
+// Danh sách bài học
+router.get("/", verifyToken, lessonController.getAll);
 
-// TYPES phải đặt trước :id
-router.get("/types", lessonController.getTypes);
+// Chi tiết bài học
+router.get("/:id", verifyToken, lessonController.getById);
 
-router.get("/", lessonController.getAll);
+// Thêm bài học
+router.post("/", verifyToken, lessonController.create);
 
-router.get("/:id", lessonController.getById);
+// Cập nhật bài học
+router.put("/:id", verifyToken, lessonController.update);
 
-router.post("/", lessonController.create);
-
-router.put("/:id", lessonController.update);
-
-router.delete("/:id", lessonController.delete);
+// Xóa bài học
+router.delete("/:id", verifyToken, lessonController.delete);
 
 module.exports = router;

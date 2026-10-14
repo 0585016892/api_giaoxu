@@ -1,90 +1,118 @@
+"use strict";
+
 const db = require("../config/db");
 
-// =========================================================
-// HELPERS
-// =========================================================
+/**
+ * ============================================================
+ * LESSON CONTROLLER
+ * ============================================================
+ * Bảng chương trình: catechism_programs
+ * Bảng bài học:      lessons
+ *
+ * Luồng mới:
+ * - Không sử dụng catechism_type để tạo/sửa/lọc bài học.
+ * - Bài học được phân loại bằng program_id.
+ * - catechism_programs là bảng chương trình dùng chung.
+ * - lessons được phân tách dữ liệu theo church_id.
+ * ============================================================
+ */
 
-const getChurchId = (req) => {
-  const rawChurchId = req.user?.church_id ?? req.user?.parish_id;
+/**
+ * ------------------------------------------------------------
+ * HELPERS
+ * ------------------------------------------------------------
+ */
+
+function logInfo(message, data = null) {
+  console.log(`[LESSON API] ${message}`, data ?? "");
+}
+
+function logError(message, error) {
+  console.error(`[LESSON API] ${message}`, {
+    message: error?.message,
+    code: error?.code,
+    errno: error?.errno,
+    sqlMessage: error?.sqlMessage,
+    sql: error?.sql,
+  });
+}
+
+function getChurchId(req) {
+  const rawChurchId =
+    req.user?.church_id ??
+    req.user?.parish_id ??
+    req.admin?.church_id ??
+    req.admin?.parish_id;
+
   const churchId = Number(rawChurchId);
 
-  if (
-    rawChurchId === undefined ||
-    rawChurchId === null ||
-    rawChurchId === "" ||
-    !Number.isSafeInteger(churchId) ||
-    churchId <= 0
-  ) {
+  return Number.isInteger(churchId) && churchId > 0 ? churchId : null;
+}
+
+function parseId(value) {
+  if (value === undefined || value === null || String(value).trim() === "") {
     return null;
   }
 
-  return churchId;
-};
+  const id = Number(value);
 
-const isValidId = (value) => {
-  if (
-    value === undefined ||
-    value === null ||
-    value === "" ||
-    typeof value === "boolean"
-  ) {
-    return false;
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function cleanText(value) {
+  if (typeof value !== "string") {
+    return "";
   }
 
-  const id = Number(value);
-  return Number.isSafeInteger(id) && id > 0;
-};
+  return value.trim().replace(/\s+/g, " ");
+}
 
-const cleanText = (value) => {
-  return typeof value === "string" ? value.trim() : "";
-};
+function parsePositiveInteger(value, defaultValue) {
+  const parsed = Number.parseInt(value, 10);
 
-const parsePagination = (query = {}) => {
-  const requestedPage = Number.parseInt(query.page, 10);
-  const requestedLimit = Number.parseInt(query.limit, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : defaultValue;
+}
 
-  const page =
-    Number.isSafeInteger(requestedPage) && requestedPage > 0
-      ? requestedPage
-      : 1;
+function escapeLike(value) {
+  return String(value)
+    .replace(/\\/g, "\\\\")
+    .replace(/%/g, "\\%")
+    .replace(/_/g, "\\_");
+}
 
-  const limit =
-    Number.isSafeInteger(requestedLimit) && requestedLimit > 0
-      ? Math.min(requestedLimit, 100)
-      : 10;
-
-  return {
-    page,
-    limit,
-    offset: (page - 1) * limit,
-  };
-};
-
-const sendServerError = (res, message, error) => {
-  console.error(`[LESSON API] ${message}:`, error);
+function sendServerError(res, message, error) {
+  logError(message, error);
 
   return res.status(500).json({
     success: false,
-    message,
-    error: error.message,
+    message: "Đã xảy ra lỗi máy chủ khi xử lý bài học",
   });
-};
+}
 
-// =========================================================
-// LESSON CONTROLLER
-// =========================================================
+/**
+ * ------------------------------------------------------------
+ * VALIDATE PROGRAM
+ * ------------------------------------------------------------
+ *
+ * Hàm độc lập, không phụ thuộc this.
+ * Tránh lỗi:
+ * Cannot read properties of undefined (reading 'validateProgram')
+ * ------------------------------------------------------------
+ */
 
-class LessonController {
-  // =======================================================
-  // HELPER: LẤY CHƯƠNG TRÌNH GIÁO LÝ
-  //
-  // catechism_programs là bảng dùng chung.
-  // Không lọc church_id ở bảng này vì bảng không có cột đó.
-  // =======================================================
+async function validateProgram(programId) {
+  const id = parseId(programId);
 
-  async findProgram(programId) {
-    const [rows] = await db.query(
-      `
+  if (!id) {
+    return {
+      valid: false,
+      status: 400,
+      message: "Vui lòng chọn chương trình giáo lý hợp lệ",
+    };
+  }
+
+  const [rows] = await db.query(
+    `
       SELECT
         id,
         code,
@@ -97,111 +125,103 @@ class LessonController {
       FROM catechism_programs
       WHERE id = ?
       LIMIT 1
-      `,
-      [programId],
-    );
+    `,
+    [id],
+  );
 
-    return rows[0] || null;
-  }
+  const program = rows[0] || null;
 
-  // =======================================================
-  // HELPER: KIỂM TRA CHƯƠNG TRÌNH CÓ THỂ SỬ DỤNG
-  // =======================================================
-
-  async validateProgram(programId) {
-    if (!isValidId(programId)) {
-      return {
-        valid: false,
-        status: 400,
-        message: "Vui lòng chọn chương trình giáo lý hợp lệ",
-      };
-    }
-
-    const program = await this.findProgram(Number(programId));
-
-    if (!program) {
-      return {
-        valid: false,
-        status: 400,
-        message: "Chương trình giáo lý không tồn tại",
-      };
-    }
-
-    if (program.status !== "active") {
-      return {
-        valid: false,
-        status: 400,
-        message: "Chương trình giáo lý đã ngừng hoạt động",
-      };
-    }
-
+  if (!program) {
     return {
-      valid: true,
-      program,
+      valid: false,
+      status: 400,
+      message: "Chương trình giáo lý không tồn tại",
     };
   }
 
-  // =======================================================
-  // GET /lessons
-  //
-  // Query:
-  // ?page=1&limit=10
-  // ?search=Khai tâm
-  // ?program_id=1
-  // =======================================================
+  if (program.status !== "active") {
+    return {
+      valid: false,
+      status: 400,
+      message: "Chương trình giáo lý đã ngừng hoạt động",
+    };
+  }
 
-  async getAll(req, res) {
-    try {
-      const churchId = getChurchId(req);
+  return {
+    valid: true,
+    program,
+  };
+}
 
-      if (!churchId) {
-        return res.status(401).json({
-          success: false,
-          message: "Không xác định được giáo xứ của tài khoản",
-        });
-      }
+/**
+ * ------------------------------------------------------------
+ * GET ALL LESSONS
+ * ------------------------------------------------------------
+ *
+ * GET /lessons?page=1&limit=20&search=&program_id=
+ *
+ * Chỉ trả bài học thuộc giáo xứ của người đăng nhập.
+ * ------------------------------------------------------------
+ */
 
-      const { page, limit, offset } = parsePagination(req.query);
-      const search = cleanText(req.query.search);
-      const programId = req.query.program_id;
+async function getAll(req, res) {
+  try {
+    const churchId = getChurchId(req);
 
-      const conditions = ["l.church_id = ?"];
-      const params = [churchId];
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ của tài khoản",
+      });
+    }
 
-      if (search) {
-        conditions.push("l.title LIKE ?");
-        params.push(`%${search}%`);
-      }
+    const page = parsePositiveInteger(req.query.page, 1);
+    const limit = Math.min(parsePositiveInteger(req.query.limit, 20), 100);
+    const offset = (page - 1) * limit;
 
-      if (programId !== undefined && programId !== "") {
-        if (!isValidId(programId)) {
-          return res.status(400).json({
-            success: false,
-            message: "ID chương trình giáo lý không hợp lệ",
-          });
-        }
+    const search = cleanText(req.query.search ?? req.query.q ?? "");
 
-        conditions.push("l.program_id = ?");
-        params.push(Number(programId));
-      }
+    const rawProgramId = req.query.program_id;
+    const programId =
+      rawProgramId !== undefined && rawProgramId !== ""
+        ? parseId(rawProgramId)
+        : null;
 
-      const whereClause = `WHERE ${conditions.join(" AND ")}`;
+    if (rawProgramId !== undefined && rawProgramId !== "" && !programId) {
+      return res.status(400).json({
+        success: false,
+        message: "Mã chương trình giáo lý không hợp lệ",
+      });
+    }
 
-      // Tổng số bài học
-      const [countRows] = await db.query(
-        `
+    const conditions = ["l.church_id = ?"];
+    const params = [churchId];
+
+    if (programId) {
+      conditions.push("l.program_id = ?");
+      params.push(programId);
+    }
+
+    if (search) {
+      conditions.push("l.title LIKE ?");
+      params.push(`%${escapeLike(search)}%`);
+    }
+
+    const whereClause = conditions.join(" AND ");
+
+    const [countRows] = await db.query(
+      `
         SELECT COUNT(*) AS total
         FROM lessons l
-        ${whereClause}
-        `,
-        params,
-      );
+        WHERE ${whereClause}
+      `,
+      params,
+    );
 
-      const total = Number(countRows[0]?.total || 0);
+    const total = Number(countRows[0]?.total || 0);
 
-      // Danh sách bài học
-      const [rows] = await db.query(
-        `
+    const [rows] = await db.query(
+      `
         SELECT
           l.id,
           l.church_id,
@@ -210,58 +230,67 @@ class LessonController {
           l.created_at,
           l.updated_at,
           p.code AS program_code,
-          p.name AS program_name
+          p.name AS program_name,
+          p.target_type AS program_target_type
         FROM lessons l
         LEFT JOIN catechism_programs p
           ON p.id = l.program_id
-        ${whereClause}
-        ORDER BY l.id DESC
-        LIMIT ?
-        OFFSET ?
-        `,
-        [...params, limit, offset],
-      );
+        WHERE ${whereClause}
+        ORDER BY
+          p.sort_order ASC,
+          l.title ASC,
+          l.id DESC
+        LIMIT ? OFFSET ?
+      `,
+      [...params, limit, offset],
+    );
 
-      return res.json({
-        success: true,
-        data: rows,
-        pagination: {
-          page,
-          limit,
-          total,
-          totalPages: Math.ceil(total / limit),
-        },
-      });
-    } catch (error) {
-      return sendServerError(res, "Lỗi lấy danh sách bài học", error);
-    }
+    return res.status(200).json({
+      success: true,
+      message: "Lấy danh sách bài học thành công",
+      data: rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    return sendServerError(res, "Lỗi lấy danh sách bài học", error);
   }
+}
 
-  // =======================================================
-  // GET /lessons/:id
-  // =======================================================
+/**
+ * ------------------------------------------------------------
+ * GET LESSON BY ID
+ * ------------------------------------------------------------
+ *
+ * GET /lessons/:id
+ * ------------------------------------------------------------
+ */
 
-  async getById(req, res) {
-    try {
-      const churchId = getChurchId(req);
-      const lessonId = req.params.id;
+async function getById(req, res) {
+  try {
+    const churchId = getChurchId(req);
+    const lessonId = parseId(req.params.id);
 
-      if (!churchId) {
-        return res.status(401).json({
-          success: false,
-          message: "Không xác định được giáo xứ của tài khoản",
-        });
-      }
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ của tài khoản",
+      });
+    }
 
-      if (!isValidId(lessonId)) {
-        return res.status(400).json({
-          success: false,
-          message: "ID bài học không hợp lệ",
-        });
-      }
+    if (!lessonId) {
+      return res.status(400).json({
+        success: false,
+        message: "ID bài học không hợp lệ",
+      });
+    }
 
-      const [rows] = await db.query(
-        `
+    const [rows] = await db.query(
+      `
         SELECT
           l.id,
           l.church_id,
@@ -270,125 +299,140 @@ class LessonController {
           l.created_at,
           l.updated_at,
           p.code AS program_code,
-          p.name AS program_name
+          p.name AS program_name,
+          p.description AS program_description,
+          p.target_type AS program_target_type,
+          p.duration_years AS program_duration_years
         FROM lessons l
         LEFT JOIN catechism_programs p
           ON p.id = l.program_id
         WHERE l.id = ?
           AND l.church_id = ?
         LIMIT 1
-        `,
-        [Number(lessonId), churchId],
-      );
+      `,
+      [lessonId, churchId],
+    );
 
-      if (!rows.length) {
-        return res.status(404).json({
-          success: false,
-          message: "Không tìm thấy bài học trong giáo xứ của bạn",
-        });
-      }
-
-      return res.json({
-        success: true,
-        data: rows[0],
+    if (!rows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy bài học trong giáo xứ của bạn",
       });
-    } catch (error) {
-      return sendServerError(res, "Lỗi lấy chi tiết bài học", error);
     }
+
+    return res.status(200).json({
+      success: true,
+      message: "Lấy thông tin bài học thành công",
+      data: rows[0],
+    });
+  } catch (error) {
+    return sendServerError(res, "Lỗi lấy thông tin bài học", error);
   }
+}
 
-  // =======================================================
-  // POST /lessons
-  //
-  // Body:
-  // {
-  //   "title": "Bài học 1",
-  //   "program_id": 1
-  // }
-  // =======================================================
+/**
+ * ------------------------------------------------------------
+ * CREATE LESSON
+ * ------------------------------------------------------------
+ *
+ * POST /lessons
+ *
+ * Body:
+ * {
+ *   "title": "Bài học 1",
+ *   "program_id": 1
+ * }
+ * ------------------------------------------------------------
+ */
 
-  async create(req, res) {
-    try {
-      const churchId = getChurchId(req);
+async function create(req, res) {
+  try {
+    const churchId = getChurchId(req);
+    const title = cleanText(req.body?.title);
+    const programId = parseId(req.body?.program_id);
 
-      if (!churchId) {
-        return res.status(401).json({
-          success: false,
-          message: "Không xác định được giáo xứ của tài khoản",
-        });
-      }
+    logInfo("Bắt đầu thêm bài học", {
+      churchId,
+      title,
+      programId,
+      userId: req.user?.id ?? req.admin?.id ?? null,
+    });
 
-      const title = cleanText(req.body?.title);
-      const programId = req.body?.program_id;
-
-      if (!title) {
-        return res.status(400).json({
-          success: false,
-          message: "Tên bài học không được bỏ trống",
-        });
-      }
-
-      if (title.length > 255) {
-        return res.status(400).json({
-          success: false,
-          message: "Tên bài học không được vượt quá 255 ký tự",
-        });
-      }
-
-      const validation = await this.validateProgram(programId);
-
-      if (!validation.valid) {
-        return res.status(validation.status).json({
-          success: false,
-          message: validation.message,
-        });
-      }
-
-      const normalizedProgramId = Number(programId);
-
-      console.log("[CREATE LESSON]", {
-        churchId,
-        programId: normalizedProgramId,
-        title,
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ của tài khoản",
       });
+    }
 
-      // Kiểm tra trùng trong cùng giáo xứ và chương trình.
-      const [existingRows] = await db.query(
-        `
-        SELECT id, title
+    if (!title) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng nhập tên bài học",
+      });
+    }
+
+    if (title.length > 255) {
+      return res.status(400).json({
+        success: false,
+        message: "Tên bài học không được vượt quá 255 ký tự",
+      });
+    }
+
+    if (!programId) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng chọn chương trình giáo lý",
+      });
+    }
+
+    // Không dùng this.validateProgram.
+    const validation = await validateProgram(programId);
+
+    if (!validation.valid) {
+      return res.status(validation.status).json({
+        success: false,
+        message: validation.message,
+      });
+    }
+
+    // Không cho tạo bài trùng tên trong cùng giáo xứ và chương trình.
+    const [duplicates] = await db.query(
+      `
+        SELECT id
         FROM lessons
         WHERE church_id = ?
           AND program_id = ?
           AND LOWER(TRIM(title)) = LOWER(TRIM(?))
         LIMIT 1
-        `,
-        [churchId, normalizedProgramId, title],
-      );
+      `,
+      [churchId, programId, title],
+    );
 
-      if (existingRows.length) {
-        return res.status(409).json({
-          success: false,
-          message: "Bài học này đã tồn tại trong chương trình đã chọn",
-          existingId: existingRows[0].id,
-        });
-      }
+    if (duplicates.length) {
+      return res.status(409).json({
+        success: false,
+        message: "Bài học này đã tồn tại trong chương trình giáo lý đã chọn",
+        duplicate_id: duplicates[0].id,
+      });
+    }
 
-      // Không ghi catechism_type vào luồng tạo mới.
-      // Cột cũ được giữ nguyên để bảo toàn dữ liệu hiện tại.
-      const [result] = await db.query(
-        `
+    const [result] = await db.query(
+      `
         INSERT INTO lessons (
           church_id,
           program_id,
           title
         )
         VALUES (?, ?, ?)
-        `,
-        [churchId, normalizedProgramId, title],
-      );
+      `,
+      [churchId, programId, title],
+    );
 
-      const [rows] = await db.query(
-        `
+    const lessonId = result.insertId;
+
+    const [rows] = await db.query(
+      `
         SELECT
           l.id,
           l.church_id,
@@ -397,112 +441,152 @@ class LessonController {
           l.created_at,
           l.updated_at,
           p.code AS program_code,
-          p.name AS program_name
+          p.name AS program_name,
+          p.target_type AS program_target_type
         FROM lessons l
         LEFT JOIN catechism_programs p
           ON p.id = l.program_id
         WHERE l.id = ?
           AND l.church_id = ?
         LIMIT 1
-        `,
-        [result.insertId, churchId],
-      );
+      `,
+      [lessonId, churchId],
+    );
 
-      console.log("[CREATE LESSON SUCCESS]", {
-        lessonId: result.insertId,
-        churchId,
-        programId: normalizedProgramId,
-      });
+    logInfo("Thêm bài học thành công", {
+      lessonId,
+      churchId,
+      programId,
+    });
 
-      return res.status(201).json({
-        success: true,
-        message: "Thêm bài học thành công",
-        data: rows[0],
+    return res.status(201).json({
+      success: true,
+      message: "Thêm bài học thành công",
+      data: rows[0] || {
+        id: lessonId,
+        church_id: churchId,
+        program_id: programId,
+        title,
+      },
+    });
+  } catch (error) {
+    // Trường hợp có unique index trong DB và hai request đồng thời.
+    if (error?.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        success: false,
+        message: "Bài học đã tồn tại hoặc bị trùng dữ liệu",
       });
-    } catch (error) {
-      return sendServerError(res, "Lỗi thêm bài học", error);
     }
+
+    return sendServerError(res, "Lỗi thêm bài học", error);
   }
+}
 
-  // =======================================================
-  // PUT /lessons/:id
-  //
-  // Body:
-  // {
-  //   "title": "Tên bài học mới",
-  //   "program_id": 1
-  // }
-  // =======================================================
+/**
+ * ------------------------------------------------------------
+ * UPDATE LESSON
+ * ------------------------------------------------------------
+ *
+ * PUT /lessons/:id
+ *
+ * Body:
+ * {
+ *   "title": "Tên bài học mới",
+ *   "program_id": 1
+ * }
+ *
+ * Hỗ trợ cập nhật một phần: nếu không gửi program_id,
+ * chương trình hiện tại sẽ được giữ nguyên.
+ * ------------------------------------------------------------
+ */
 
-  async update(req, res) {
-    try {
-      const churchId = getChurchId(req);
-      const lessonId = req.params.id;
+async function update(req, res) {
+  try {
+    const churchId = getChurchId(req);
+    const lessonId = parseId(req.params.id);
 
-      if (!churchId) {
-        return res.status(401).json({
-          success: false,
-          message: "Không xác định được giáo xứ của tài khoản",
-        });
-      }
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ của tài khoản",
+      });
+    }
 
-      if (!isValidId(lessonId)) {
-        return res.status(400).json({
-          success: false,
-          message: "ID bài học không hợp lệ",
-        });
-      }
+    if (!lessonId) {
+      return res.status(400).json({
+        success: false,
+        message: "ID bài học không hợp lệ",
+      });
+    }
 
-      const title = cleanText(req.body?.title);
-      const programId = req.body?.program_id;
-
-      if (!title) {
-        return res.status(400).json({
-          success: false,
-          message: "Tên bài học không được bỏ trống",
-        });
-      }
-
-      if (title.length > 255) {
-        return res.status(400).json({
-          success: false,
-          message: "Tên bài học không được vượt quá 255 ký tự",
-        });
-      }
-
-      // Xác nhận bài học thuộc giáo xứ hiện tại.
-      const [lessonRows] = await db.query(
-        `
-        SELECT id
+    const [currentRows] = await db.query(
+      `
+        SELECT id, church_id, program_id, title
         FROM lessons
         WHERE id = ?
           AND church_id = ?
         LIMIT 1
-        `,
-        [Number(lessonId), churchId],
-      );
+      `,
+      [lessonId, churchId],
+    );
 
-      if (!lessonRows.length) {
-        return res.status(404).json({
-          success: false,
-          message: "Không tìm thấy bài học trong giáo xứ của bạn",
-        });
-      }
+    if (!currentRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy bài học trong giáo xứ của bạn",
+      });
+    }
 
-      const validation = await this.validateProgram(programId);
+    const current = currentRows[0];
 
-      if (!validation.valid) {
-        return res.status(validation.status).json({
-          success: false,
-          message: validation.message,
-        });
-      }
+    const titleProvided = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      "title",
+    );
 
-      const normalizedProgramId = Number(programId);
+    const programProvided = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      "program_id",
+    );
 
-      // Không cho trùng tên trong cùng chương trình.
-      const [duplicateRows] = await db.query(
-        `
+    const title = titleProvided ? cleanText(req.body.title) : current.title;
+
+    const programId = programProvided
+      ? parseId(req.body.program_id)
+      : parseId(current.program_id);
+
+    if (!title) {
+      return res.status(400).json({
+        success: false,
+        message: "Tên bài học không được để trống",
+      });
+    }
+
+    if (title.length > 255) {
+      return res.status(400).json({
+        success: false,
+        message: "Tên bài học không được vượt quá 255 ký tự",
+      });
+    }
+
+    if (!programId) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng chọn chương trình giáo lý hợp lệ",
+      });
+    }
+
+    const validation = await validateProgram(programId);
+
+    if (!validation.valid) {
+      return res.status(validation.status).json({
+        success: false,
+        message: validation.message,
+      });
+    }
+
+    const [duplicates] = await db.query(
+      `
         SELECT id
         FROM lessons
         WHERE church_id = ?
@@ -510,32 +594,32 @@ class LessonController {
           AND LOWER(TRIM(title)) = LOWER(TRIM(?))
           AND id <> ?
         LIMIT 1
-        `,
-        [churchId, normalizedProgramId, title, Number(lessonId)],
-      );
+      `,
+      [churchId, programId, title, lessonId],
+    );
 
-      if (duplicateRows.length) {
-        return res.status(409).json({
-          success: false,
-          message: "Tên bài học đã tồn tại trong chương trình này",
-          existingId: duplicateRows[0].id,
-        });
-      }
+    if (duplicates.length) {
+      return res.status(409).json({
+        success: false,
+        message: "Tên bài học đã được sử dụng trong chương trình này",
+        duplicate_id: duplicates[0].id,
+      });
+    }
 
-      await db.query(
-        `
+    await db.query(
+      `
         UPDATE lessons
         SET
-          program_id = ?,
-          title = ?
+          title = ?,
+          program_id = ?
         WHERE id = ?
           AND church_id = ?
-        `,
-        [normalizedProgramId, title, Number(lessonId), churchId],
-      );
+      `,
+      [title, programId, lessonId, churchId],
+    );
 
-      const [updatedRows] = await db.query(
-        `
+    const [updatedRows] = await db.query(
+      `
         SELECT
           l.id,
           l.church_id,
@@ -544,141 +628,143 @@ class LessonController {
           l.created_at,
           l.updated_at,
           p.code AS program_code,
-          p.name AS program_name
+          p.name AS program_name,
+          p.target_type AS program_target_type
         FROM lessons l
         LEFT JOIN catechism_programs p
           ON p.id = l.program_id
         WHERE l.id = ?
           AND l.church_id = ?
         LIMIT 1
-        `,
-        [Number(lessonId), churchId],
-      );
+      `,
+      [lessonId, churchId],
+    );
 
-      console.log("[UPDATE LESSON SUCCESS]", {
-        lessonId: Number(lessonId),
-        churchId,
-        programId: normalizedProgramId,
-      });
+    logInfo("Cập nhật bài học thành công", {
+      lessonId,
+      churchId,
+      programId,
+    });
 
-      return res.json({
-        success: true,
-        message: "Cập nhật bài học thành công",
-        data: updatedRows[0],
+    return res.status(200).json({
+      success: true,
+      message: "Cập nhật bài học thành công",
+      data: updatedRows[0],
+    });
+  } catch (error) {
+    if (error?.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        success: false,
+        message: "Bài học đã tồn tại hoặc bị trùng dữ liệu",
       });
-    } catch (error) {
-      return sendServerError(res, "Lỗi cập nhật bài học", error);
     }
+
+    return sendServerError(res, "Lỗi cập nhật bài học", error);
   }
+}
 
-  // =======================================================
-  // DELETE /lessons/:id
-  // =======================================================
+/**
+ * ------------------------------------------------------------
+ * DELETE LESSON
+ * ------------------------------------------------------------
+ *
+ * DELETE /lessons/:id
+ *
+ * Chỉ xóa bài học của đúng giáo xứ.
+ * ------------------------------------------------------------
+ */
 
-  async delete(req, res) {
-    try {
-      const churchId = getChurchId(req);
-      const lessonId = req.params.id;
+async function deleteLesson(req, res) {
+  try {
+    const churchId = getChurchId(req);
+    const lessonId = parseId(req.params.id);
 
-      if (!churchId) {
-        return res.status(401).json({
-          success: false,
-          message: "Không xác định được giáo xứ của tài khoản",
-        });
-      }
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        message: "Không xác định được giáo xứ của tài khoản",
+      });
+    }
 
-      if (!isValidId(lessonId)) {
-        return res.status(400).json({
-          success: false,
-          message: "ID bài học không hợp lệ",
-        });
-      }
+    if (!lessonId) {
+      return res.status(400).json({
+        success: false,
+        message: "ID bài học không hợp lệ",
+      });
+    }
 
-      const [lessonRows] = await db.query(
-        `
+    const [rows] = await db.query(
+      `
         SELECT id, title
         FROM lessons
         WHERE id = ?
           AND church_id = ?
         LIMIT 1
-        `,
-        [Number(lessonId), churchId],
-      );
+      `,
+      [lessonId, churchId],
+    );
 
-      if (!lessonRows.length) {
-        return res.status(404).json({
-          success: false,
-          message: "Không tìm thấy bài học trong giáo xứ của bạn",
-        });
-      }
+    if (!rows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy bài học trong giáo xứ của bạn",
+      });
+    }
 
-      // Nếu có khóa ngoại từ questions, MySQL sẽ từ chối xóa.
-      const [result] = await db.query(
-        `
+    await db.query(
+      `
         DELETE FROM lessons
         WHERE id = ?
           AND church_id = ?
-        `,
-        [Number(lessonId), churchId],
-      );
+      `,
+      [lessonId, churchId],
+    );
 
-      if (!result.affectedRows) {
-        return res.status(404).json({
-          success: false,
-          message: "Bài học không còn tồn tại hoặc không thể xóa",
-        });
-      }
+    logInfo("Xóa bài học thành công", {
+      lessonId,
+      churchId,
+      title: rows[0].title,
+    });
 
-      console.log("[DELETE LESSON SUCCESS]", {
-        lessonId: Number(lessonId),
-        churchId,
-      });
-
-      return res.json({
-        success: true,
-        message: "Xóa bài học thành công",
-        id: Number(lessonId),
-      });
-    } catch (error) {
-      console.error("[DELETE LESSON ERROR]", error);
-
-      if (
-        error.code === "ER_ROW_IS_REFERENCED_2" ||
-        error.code === "ER_ROW_IS_REFERENCED"
-      ) {
-        return res.status(409).json({
-          success: false,
-          message:
-            "Không thể xóa bài học vì vẫn còn câu hỏi hoặc dữ liệu khác đang tham chiếu bài học này",
-        });
-      }
-
-      return res.status(500).json({
+    return res.status(200).json({
+      success: true,
+      message: "Xóa bài học thành công",
+      data: {
+        id: lessonId,
+      },
+    });
+  } catch (error) {
+    if (
+      error?.code === "ER_ROW_IS_REFERENCED_2" ||
+      error?.code === "ER_ROW_IS_REFERENCED"
+    ) {
+      return res.status(409).json({
         success: false,
-        message: "Lỗi xóa bài học",
-        error: error.message,
+        message:
+          "Không thể xóa bài học vì đang được dữ liệu khác tham chiếu. Hãy kiểm tra các bảng liên quan trước khi xóa.",
       });
     }
+
+    return sendServerError(res, "Lỗi xóa bài học", error);
   }
+}
 
-  // =======================================================
-  // GET /lessons/programs
-  // Danh sách chương trình dùng cho Select ở frontend.
-  // =======================================================
+/**
+ * ------------------------------------------------------------
+ * GET PROGRAMS
+ * ------------------------------------------------------------
+ *
+ * GET /lessons/programs
+ *
+ * Lấy chương trình giáo lý đang hoạt động.
+ * Bảng catechism_programs không có church_id.
+ * ------------------------------------------------------------
+ */
 
-  async getPrograms(req, res) {
-    try {
-      const churchId = getChurchId(req);
-
-      if (!churchId) {
-        return res.status(401).json({
-          success: false,
-          message: "Không xác định được giáo xứ của tài khoản",
-        });
-      }
-
-      const [rows] = await db.query(
-        `
+async function getPrograms(req, res) {
+  try {
+    const [rows] = await db.query(
+      `
         SELECT
           id,
           code,
@@ -687,72 +773,60 @@ class LessonController {
           target_type,
           duration_years,
           sort_order,
-          status
+          status,
+          created_at,
+          updated_at
         FROM catechism_programs
         WHERE status = 'active'
         ORDER BY sort_order ASC, id ASC
-        `,
-      );
+      `,
+    );
 
-      return res.json({
-        success: true,
-        data: rows,
-      });
-    } catch (error) {
-      return sendServerError(
-        res,
-        "Lỗi lấy danh sách chương trình giáo lý",
-        error,
-      );
-    }
-  }
-
-  // =======================================================
-  // COMPATIBILITY
-  //
-  // Giữ handler này nếu routes cũ vẫn gọi getTypes.
-  // Trả về danh sách chương trình thay cho các loại cũ.
-  // Nên chuyển frontend sang getPrograms rồi bỏ route /types.
-  // =======================================================
-
-  async getTypes(req, res) {
-    try {
-      const churchId = getChurchId(req);
-
-      if (!churchId) {
-        return res.status(401).json({
-          success: false,
-          message: "Không xác định được giáo xứ của tài khoản",
-        });
-      }
-
-      const [rows] = await db.query(
-        `
-        SELECT id, code, name
-        FROM catechism_programs
-        WHERE status = 'active'
-        ORDER BY sort_order ASC, id ASC
-        `,
-      );
-
-      return res.json({
-        success: true,
-        data: rows.map((program) => ({
-          id: program.id,
-          code: program.code,
-          name: program.name,
-          value: program.id,
-          label: program.name,
-        })),
-      });
-    } catch (error) {
-      return sendServerError(
-        res,
-        "Lỗi lấy danh sách chương trình giáo lý",
-        error,
-      );
-    }
+    return res.status(200).json({
+      success: true,
+      message: "Lấy danh sách chương trình giáo lý thành công",
+      data: rows,
+    });
+  } catch (error) {
+    return sendServerError(
+      res,
+      "Lỗi lấy danh sách chương trình giáo lý",
+      error,
+    );
   }
 }
 
-module.exports = new LessonController();
+/**
+ * ------------------------------------------------------------
+ * BACKWARD COMPATIBILITY
+ * ------------------------------------------------------------
+ *
+ * Giữ tên getTypes để route cũ không bị lỗi nếu vẫn tham chiếu.
+ * Dữ liệu trả về là chương trình giáo lý, không phải catechism_type.
+ * ------------------------------------------------------------
+ */
+
+async function getTypes(req, res) {
+  return getPrograms(req, res);
+}
+
+/**
+ * ------------------------------------------------------------
+ * EXPORT
+ * ------------------------------------------------------------
+ *
+ * Các hàm độc lập không phụ thuộc this nên có thể truyền trực tiếp
+ * cho Express mà không bị lỗi mất ngữ cảnh.
+ * ------------------------------------------------------------
+ */
+
+module.exports = {
+  getAll,
+  getById,
+  create,
+  update,
+  delete: deleteLesson,
+  deleteLesson,
+  getPrograms,
+  getTypes,
+};

@@ -33,11 +33,12 @@ exports.getAllCatechists = async (req, res) => {
     console.log("⛪ CHURCH ID:", churchId);
 
     if (!churchId) {
-      console.log("❌ CHURCH ID NOT FOUND");
+      console.error("❌ CHURCH ID NOT FOUND");
 
       return res.status(403).json({
         success: false,
         message: "Tài khoản chưa được gán giáo xứ",
+        errorCode: "CHURCH_NOT_ASSIGNED",
       });
     }
 
@@ -50,7 +51,7 @@ exports.getAllCatechists = async (req, res) => {
         a.id AS admin_id,
         a.username AS admin_username,
         a.avatar AS avatar,
-        a.role AS role,
+        a.role AS account_role,
 
         -- Danh sách lớp được phân công
         COALESCE(
@@ -58,8 +59,8 @@ exports.getAllCatechists = async (req, res) => {
             SELECT JSON_ARRAYAGG(
               JSON_OBJECT(
                 'id', cl.id,
-                'class_name', cl.class_name,
-                'class_code', cl.class_code,
+                'class_name', cl.name,
+                'class_code', cl.code,
                 'academic_year', cl.academic_year
               )
             )
@@ -85,14 +86,18 @@ exports.getAllCatechists = async (req, res) => {
       [churchId],
     );
 
-    // Chuẩn hóa assigned_classes thành mảng JSON
+    // Chuẩn hóa danh sách lớp thành mảng
     const data = rows.map((item) => {
       let assignedClasses = item.assigned_classes;
 
       if (typeof assignedClasses === "string") {
         try {
           assignedClasses = JSON.parse(assignedClasses);
-        } catch {
+        } catch (error) {
+          console.error(
+            `❌ Không thể parse assigned_classes của GLV ${item.id}:`,
+            error.message,
+          );
           assignedClasses = [];
         }
       }
@@ -106,19 +111,24 @@ exports.getAllCatechists = async (req, res) => {
     console.log("");
     console.log("📊 SỐ LƯỢNG GLV:", data.length);
 
-    console.log(
-      "👥 DATA:",
+    console.table(
       data.map((item) => ({
         catechist_id: item.id,
-        admin_id: item.admin_id,
         catechist_code: item.catechist_code,
         full_name: item.full_name,
-        role: item.role,
         church_id: item.church_id,
-        assigned_classes: item.assigned_classes,
         assigned_class_count: item.assigned_classes.length,
       })),
     );
+
+    console.log("📚 CHI TIẾT LỚP ĐƯỢC PHÂN:");
+
+    data.forEach((item) => {
+      console.log(
+        `👤 ${item.full_name} (ID: ${item.id})`,
+        item.assigned_classes,
+      );
+    });
 
     console.log("");
     console.log("============================================================");
@@ -138,11 +148,14 @@ exports.getAllCatechists = async (req, res) => {
     console.error(
       "============================================================",
     );
-    console.error(error);
+    console.error("Mã lỗi:", error.code);
+    console.error("Thông báo:", error.message);
+    console.error("SQL:", error.sql);
 
     return res.status(500).json({
       success: false,
-      message: error.message,
+      message: "Không thể lấy danh sách giáo lý viên",
+      errorCode: error.code || "GET_CATECHISTS_FAILED",
     });
   }
 };

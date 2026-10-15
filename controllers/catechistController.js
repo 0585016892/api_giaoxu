@@ -27,9 +27,8 @@ exports.getAllCatechists = async (req, res) => {
 
     console.log("");
     console.log("============================================================");
-    console.log("                    GET ALL CATECHISTS");
+    console.log("                 GET ALL CATECHISTS");
     console.log("============================================================");
-
     console.log("👤 USER:", req.user);
     console.log("⛪ CHURCH ID:", churchId);
 
@@ -47,20 +46,37 @@ exports.getAllCatechists = async (req, res) => {
       SELECT
         c.*,
 
-        -- =====================================================
-        -- THÔNG TIN TÀI KHOẢN ADMINS
-        -- =====================================================
-
+        -- Thông tin tài khoản
         a.id AS admin_id,
         a.username AS admin_username,
         a.avatar AS avatar,
-        a.role AS role
+        a.role AS role,
+
+        -- Danh sách lớp được phân công
+        COALESCE(
+          (
+            SELECT JSON_ARRAYAGG(
+              JSON_OBJECT(
+                'id', cl.id,
+                'class_name', cl.class_name,
+                'class_code', cl.class_code,
+                'academic_year', cl.academic_year
+              )
+            )
+            FROM catechist_classes cc
+            INNER JOIN classes cl
+              ON cl.id = cc.class_id
+             AND cl.church_id = c.church_id
+            WHERE cc.catechist_id = c.id
+          ),
+          JSON_ARRAY()
+        ) AS assigned_classes
 
       FROM catechists c
 
       LEFT JOIN admins a
         ON a.username = c.catechist_code
-        AND a.church_id = c.church_id
+       AND a.church_id = c.church_id
 
       WHERE c.church_id = ?
 
@@ -69,45 +85,59 @@ exports.getAllCatechists = async (req, res) => {
       [churchId],
     );
 
-    console.log("");
-    console.log("📊 SỐ LƯỢNG GLV:", rows.length);
+    // Chuẩn hóa assigned_classes thành mảng JSON
+    const data = rows.map((item) => {
+      let assignedClasses = item.assigned_classes;
+
+      if (typeof assignedClasses === "string") {
+        try {
+          assignedClasses = JSON.parse(assignedClasses);
+        } catch {
+          assignedClasses = [];
+        }
+      }
+
+      return {
+        ...item,
+        assigned_classes: Array.isArray(assignedClasses) ? assignedClasses : [],
+      };
+    });
 
     console.log("");
-    console.log("--------------- CATECHISTS ----------------");
+    console.log("📊 SỐ LƯỢNG GLV:", data.length);
 
     console.log(
       "👥 DATA:",
-      rows.map((item) => ({
+      data.map((item) => ({
         catechist_id: item.id,
         admin_id: item.admin_id,
         catechist_code: item.catechist_code,
-        admin_username: item.admin_username,
         full_name: item.full_name,
         role: item.role,
         church_id: item.church_id,
+        assigned_classes: item.assigned_classes,
+        assigned_class_count: item.assigned_classes.length,
       })),
     );
 
     console.log("");
     console.log("============================================================");
-    console.log("              ✅ GET ALL CATECHISTS SUCCESS");
+    console.log("          ✅ GET ALL CATECHISTS SUCCESS");
     console.log("============================================================");
-    console.log("");
 
     return res.status(200).json({
       success: true,
-      data: rows,
+      data,
     });
   } catch (error) {
     console.error("");
     console.error(
       "============================================================",
     );
-    console.error("              ❌ GET ALL CATECHISTS ERROR");
+    console.error("             ❌ GET ALL CATECHISTS ERROR");
     console.error(
       "============================================================",
     );
-
     console.error(error);
 
     return res.status(500).json({
@@ -1698,38 +1728,36 @@ exports.assignClass = async (req, res) => {
     console.log("📥 BODY:", req.body);
 
     // =====================================================
-    // 1. CHECK CHURCH
+    // 1. KIỂM TRA GIÁO XỨ
     // =====================================================
 
     if (!churchId) {
       return res.status(403).json({
         success: false,
         message: "Tài khoản chưa được gán giáo xứ",
+        errorCode: "CHURCH_NOT_ASSIGNED",
       });
     }
 
     // =====================================================
-    // 2. VALIDATE
+    // 2. VALIDATE DỮ LIỆU
     // =====================================================
 
     if (!catechist_id || !class_id) {
       return res.status(400).json({
         success: false,
-        message: "Thiếu catechist_id hoặc class_id",
+        message: "Vui lòng chọn giáo lý viên và lớp học",
+        errorCode: "MISSING_REQUIRED_FIELDS",
       });
     }
 
     // =====================================================
-    // 3. KIỂM TRA GIÁO LÝ VIÊN
+    // 3. KIỂM TRA GIÁO LÝ VIÊN THUỘC GIÁO XỨ
     // =====================================================
 
     const [catechists] = await db.query(
       `
-      SELECT
-        id,
-        church_id,
-        catechist_code,
-        full_name
+      SELECT id, church_id, catechist_code, full_name
       FROM catechists
       WHERE id = ?
         AND church_id = ?
@@ -1742,6 +1770,7 @@ exports.assignClass = async (req, res) => {
       return res.status(403).json({
         success: false,
         message: "Giáo lý viên không thuộc giáo xứ hiện tại",
+        errorCode: "CATECHIST_NOT_IN_CHURCH",
       });
     }
 
@@ -1754,16 +1783,12 @@ exports.assignClass = async (req, res) => {
     });
 
     // =====================================================
-    // 4. KIỂM TRA LỚP
+    // 4. KIỂM TRA LỚP THUỘC GIÁO XỨ
     // =====================================================
 
     const [classes] = await db.query(
       `
-      SELECT
-        id,
-        church_id,
-        code,
-        name
+      SELECT id, church_id, code, name
       FROM classes
       WHERE id = ?
         AND church_id = ?
@@ -1776,6 +1801,7 @@ exports.assignClass = async (req, res) => {
       return res.status(403).json({
         success: false,
         message: "Lớp học không thuộc giáo xứ hiện tại",
+        errorCode: "CLASS_NOT_IN_CHURCH",
       });
     }
 
@@ -1788,15 +1814,46 @@ exports.assignClass = async (req, res) => {
     });
 
     // =====================================================
-    // 5. PHÂN LỚP
-    //
-    // appointment_read = 0
-    //
-    // => Giáo viên sẽ thấy thư bổ nhiệm khi mở hệ thống.
-    //
-    // Nếu record đã tồn tại:
-    // => cập nhật lại và RESET appointment_read = 0
-    //
+    // 5. KIỂM TRA ĐÃ PHÂN GIÁO VIÊN VÀO LỚP NÀY CHƯA
+    // =====================================================
+
+    const [existingAssignments] = await db.query(
+      `
+      SELECT catechist_id, class_id, role, status
+      FROM catechist_classes
+      WHERE catechist_id = ?
+        AND class_id = ?
+      LIMIT 1
+      `,
+      [catechist_id, class_id],
+    );
+
+    if (existingAssignments.length > 0) {
+      const existing = existingAssignments[0];
+
+      console.warn("⚠️ GIÁO VIÊN ĐÃ ĐƯỢC PHÂN VÀO LỚP NÀY:", {
+        catechist_id,
+        class_id,
+        existing,
+      });
+
+      return res.status(409).json({
+        success: false,
+        message: `Giáo lý viên ${catechist.full_name} đã được phân vào lớp ${classInfo.name} trước đó`,
+        errorCode: "CLASS_ALREADY_ASSIGNED",
+        data: {
+          catechist_id: Number(catechist_id),
+          catechist_name: catechist.full_name,
+          class_id: Number(class_id),
+          class_name: classInfo.name,
+          role: existing.role,
+          status: existing.status,
+        },
+      });
+    }
+
+    // =====================================================
+    // 6. THỰC HIỆN PHÂN LỚP
     // =====================================================
 
     const sql = `
@@ -1810,13 +1867,6 @@ exports.assignClass = async (req, res) => {
         notes
       )
       VALUES (?, ?, ?, 0, ?, ?, ?)
-
-      ON DUPLICATE KEY UPDATE
-        role = VALUES(role),
-        appointment_read = 0,
-        status = VALUES(status),
-        assigned_date = VALUES(assigned_date),
-        notes = VALUES(notes)
     `;
 
     const [result] = await db.query(sql, [
@@ -1829,39 +1879,44 @@ exports.assignClass = async (req, res) => {
     ]);
 
     console.log("📊 ASSIGN RESULT:", result);
-
     console.log("✅ PHÂN LỚP THÀNH CÔNG");
     console.log("📨 appointment_read = 0");
 
     // =====================================================
-    // 6. RESPONSE
+    // 7. TRẢ KẾT QUẢ
     // =====================================================
 
-    return res.status(200).json({
+    return res.status(201).json({
       success: true,
-      message: "Phân lớp thành công",
-
+      message: `Đã phân giáo lý viên ${catechist.full_name} vào lớp ${classInfo.name} thành công`,
       data: {
+        id: result.insertId,
         catechist_id: Number(catechist_id),
         catechist_name: catechist.full_name,
-
         class_id: Number(class_id),
         class_code: classInfo.code,
         class_name: classInfo.name,
-
         role: role || "Giáo lý viên",
-
-        // 0 = chưa đọc thư bổ nhiệm
+        status: status || "teaching",
         appointment_read: 0,
       },
     });
   } catch (error) {
     console.error("❌ ASSIGN CLASS ERROR:", error);
 
+    // Trường hợp hai yêu cầu đồng thời cùng phân một giáo viên vào một lớp
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        success: false,
+        message: "Giáo lý viên đã được phân vào lớp này rồi",
+        errorCode: "CLASS_ALREADY_ASSIGNED",
+      });
+    }
+
     return res.status(500).json({
       success: false,
-      message: error.message || "Không thể phân lớp",
-      errorCode: error.code,
+      message: "Không thể phân lớp. Vui lòng thử lại.",
+      errorCode: error.code || "ASSIGN_CLASS_FAILED",
     });
   }
 };

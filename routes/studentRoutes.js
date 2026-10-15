@@ -109,7 +109,6 @@ router.put(
 router.delete(
   "/bulk",
   verifyToken,
-  destructiveLimiter,
   globalApiLimiter,
   studentController.deleteStudentsBulk,
 );
@@ -117,7 +116,6 @@ router.delete(
 router.delete(
   "/:id",
   verifyToken,
-  destructiveLimiter,
   globalApiLimiter,
   studentController.deleteStudent,
 );

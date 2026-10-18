@@ -1996,41 +1996,25 @@ const scanQRCode = async (req, res) => {
   let transactionStarted = false;
 
   let maskedToken = "***";
+  let churchId = null;
+  let attendanceType = null;
+  let attendanceDate = null;
 
   const logPrefix = "[QR][ATTENDANCE]";
 
   try {
     connection = await db.getConnection();
 
-    const churchId = getChurchId(req);
-    const teacherId = getTeacherId(req);
+    churchId = getChurchId(req);
 
-    if (!churchId) {
-      console.warn(`${logPrefix} REJECTED: missing church_id`);
-
-      return res.status(403).json({
-        success: false,
-        message: "Tài khoản chưa được gán giáo xứ",
-      });
-    }
-
-    if (isTeacher(req) && !teacherId) {
-      console.warn(`${logPrefix} REJECTED: missing teacher_id`, {
-        churchId,
-        role: getUserRole(req),
-      });
-
-      return res.status(403).json({
-        success: false,
-        message: "Tài khoản giáo viên chưa có teacher_id",
-      });
-    }
+    // Thánh lễ không bắt buộc teacher_id.
+    // Chỉ lấy teacherId nếu tài khoản hiện có thông tin này.
+    const teacherId = getTeacherId(req) || null;
 
     const body = req?.body || {};
-
     let classId = toPositiveInt(body.class_id);
 
-    const attendanceType = normalizeAttendanceType(body.attendance_type);
+    attendanceType = normalizeAttendanceType(body.attendance_type);
     const qrToken = normalizeQrToken(body.qr_token);
 
     maskedToken = maskQrToken(qrToken);
@@ -2038,16 +2022,29 @@ const scanQRCode = async (req, res) => {
     console.log(`${logPrefix} START`, {
       churchId,
       role: getUserRole(req),
-      teacherId: teacherId || null,
+      teacherId,
       attendanceTypeInput: body.attendance_type,
       attendanceType,
       requestedClassId: classId || null,
       qrToken: maskedToken,
     });
 
+    // =====================================================
+    // 1. VALIDATE INPUT
+    // =====================================================
+
+    if (!churchId) {
+      return res.status(403).json({
+        success: false,
+        code: "CHURCH_REQUIRED",
+        message: "Tài khoản chưa được gán giáo xứ",
+      });
+    }
+
     if (!attendanceType) {
       return res.status(400).json({
         success: false,
+        code: "INVALID_ATTENDANCE_TYPE",
         message: "attendance_type không hợp lệ",
       });
     }
@@ -2055,17 +2052,30 @@ const scanQRCode = async (req, res) => {
     if (!qrToken) {
       return res.status(400).json({
         success: false,
+        code: "INVALID_QR_TOKEN",
         message: "Mã QR không hợp lệ",
       });
     }
 
-    const attendanceDate = getCurrentDate();
+    // Chỉ điểm danh giáo lý mới bắt buộc teacherId.
+    if (attendanceType === "catechism" && !teacherId) {
+      console.warn(`${logPrefix} CATECHISM TEACHER REQUIRED`, {
+        churchId,
+        role: getUserRole(req),
+      });
 
-    /*
-     * =====================================================
-     * 1. RESOLVE CLASS FOR CATECHISM
-     * =====================================================
-     */
+      return res.status(403).json({
+        success: false,
+        code: "TEACHER_REQUIRED",
+        message: "Tài khoản chưa được gán mã giáo lý viên",
+      });
+    }
+
+    attendanceDate = getCurrentDate();
+
+    // =====================================================
+    // 2. RESOLVE CLASS FOR CATECHISM
+    // =====================================================
 
     if (attendanceType === "catechism") {
       const classResult = await resolveCatechismClass(
@@ -2093,11 +2103,9 @@ const scanQRCode = async (req, res) => {
       classId = Number(classResult.class.id);
     }
 
-    /*
-     * =====================================================
-     * 2. BEGIN TRANSACTION
-     * =====================================================
-     */
+    // =====================================================
+    // 3. BEGIN TRANSACTION
+    // =====================================================
 
     await connection.beginTransaction();
     transactionStarted = true;
@@ -2108,11 +2116,9 @@ const scanQRCode = async (req, res) => {
       attendanceType,
     });
 
-    /*
-     * =====================================================
-     * 3. FIND AND LOCK STUDENT
-     * =====================================================
-     */
+    // =====================================================
+    // 4. FIND STUDENT
+    // =====================================================
 
     let studentRows;
 
@@ -2170,7 +2176,7 @@ const scanQRCode = async (req, res) => {
         attendanceType,
         attendanceDate,
         qrToken: maskedToken,
-        classId: classId || null,
+        classId,
       });
 
       return res.status(404).json({
@@ -2194,24 +2200,80 @@ const scanQRCode = async (req, res) => {
       attendanceDate,
     });
 
-    /*
-     * =====================================================
-     * 4. MASS: RESOLVE STUDENT CLASS
-     *
-     * Giữ class_id để tương thích schema hiện tại.
-     * =====================================================
-     */
+    // =====================================================
+    // 5. MASS: FIND EXISTING RECORD BEFORE RESOLVING CLASS
+    //
+    // Quan trọng:
+    // Không dùng class_id để xác định học sinh đã được
+    // điểm danh Thánh lễ hay chưa.
+    //
+    // Một học sinh chỉ có một bản ghi Thánh lễ cho cùng
+    // giáo xứ, ngày và loại điểm danh.
+    // =====================================================
+
+    let existingMass = null;
+
+    if (attendanceType === "mass") {
+      const [massRows] = await connection.execute(
+        `
+          SELECT
+            id,
+            church_id,
+            class_id,
+            student_id,
+            teacher_id,
+            attendance_date,
+            attendance_type,
+            status,
+            check_in_time,
+            note
+          FROM attendances
+          WHERE
+            church_id = ?
+            AND student_id = ?
+            AND attendance_date = ?
+            AND attendance_type = 'mass'
+          ORDER BY id DESC
+          LIMIT 1
+          FOR UPDATE
+        `,
+        [churchId, student.id, attendanceDate],
+      );
+
+      existingMass = massRows[0] || null;
+
+      if (existingMass) {
+        classId = Number(existingMass.class_id);
+
+        console.log(`${logPrefix} EXISTING MASS RECORD FOUND`, {
+          churchId,
+          studentId: student.id,
+          attendanceId: existingMass.id,
+          classId,
+          status: existingMass.status,
+          checkInTime: existingMass.check_in_time,
+          attendanceDate,
+        });
+      }
+    }
+
+    // =====================================================
+    // 6. RESOLVE CLASS FOR MASS ONLY WHEN INSERTING
+    //
+    // Schema hiện tại yêu cầu attendances.class_id NOT NULL.
+    // Nếu bản ghi đã tồn tại, giữ class_id cũ của bản ghi.
+    // =====================================================
 
     let classInfo = null;
 
-    if (attendanceType === "mass") {
+    if (attendanceType === "mass" && !existingMass) {
       classInfo = await getStudentClass(connection, churchId, student.id);
 
       if (!classInfo) {
         await safeRollback(connection, transactionStarted);
         transactionStarted = false;
 
-        console.warn(`${logPrefix} MASS STUDENT HAS NO CLASS`, {
+        console.warn(`${logPrefix} MASS STUDENT HAS NO ACTIVE CLASS`, {
           churchId,
           studentId: student.id,
           attendanceDate,
@@ -2220,7 +2282,8 @@ const scanQRCode = async (req, res) => {
         return res.status(400).json({
           success: false,
           code: "STUDENT_NO_CLASS",
-          message: "Học sinh chưa được xếp vào lớp",
+          message:
+            "Học sinh chưa được xếp vào lớp hiện tại nên chưa thể tạo bản ghi Thánh lễ",
           student: {
             id: student.id,
             code: student.code,
@@ -2231,7 +2294,7 @@ const scanQRCode = async (req, res) => {
 
       classId = Number(classInfo.id);
 
-      console.log(`${logPrefix} MASS CLASS RESOLVED`, {
+      console.log(`${logPrefix} MASS CLASS RESOLVED FOR INSERT`, {
         churchId,
         studentId: student.id,
         classId,
@@ -2240,11 +2303,12 @@ const scanQRCode = async (req, res) => {
       });
     }
 
-    /*
-     * =====================================================
-     * 5. LOCK CLASS
-     * =====================================================
-     */
+    // =====================================================
+    // 7. LOCK CLASS
+    //
+    // Không truy vấn classes.teacher_id vì cột này
+    // không tồn tại trong schema hiện tại.
+    // =====================================================
 
     const [lockedClassRows] = await connection.execute(
       `
@@ -2253,8 +2317,7 @@ const scanQRCode = async (req, res) => {
           name,
           code,
           church_id,
-          catechist_id,
-          teacher_id
+          catechist_id
         FROM classes
         WHERE
           id = ?
@@ -2278,121 +2341,96 @@ const scanQRCode = async (req, res) => {
 
       return res.status(404).json({
         success: false,
+        code: "CLASS_NOT_FOUND",
         message: "Lớp học không tồn tại hoặc không thuộc giáo xứ",
       });
     }
 
     const lockedClass = lockedClassRows[0];
 
-    if (
-      isTeacher(req) &&
-      attendanceType === "catechism" &&
-      Number(lockedClass.teacher_id) !== Number(teacherId)
-    ) {
-      await safeRollback(connection, transactionStarted);
-      transactionStarted = false;
+    // =====================================================
+    // 8. CATECHISM: CHECK CATECHIST ASSIGNMENT
+    //
+    // Chỉ điểm danh giáo lý mới kiểm tra phân công.
+    // Thánh lễ: giáo lý viên trong giáo xứ đều có thể quét.
+    // =====================================================
 
-      console.warn(`${logPrefix} TEACHER CLASS FORBIDDEN`, {
+    if (attendanceType === "catechism") {
+      console.log(`${logPrefix} CHECK CATECHIST ASSIGNMENT`, {
         churchId,
-        teacherId,
+        catechistId: teacherId,
         classId,
-        studentId: student.id,
       });
 
-      return res.status(403).json({
-        success: false,
-        message: "Bạn không được phân công lớp này",
+      const [assignmentRows] = await connection.execute(
+        `
+          SELECT
+            cc.id,
+            cc.catechist_id,
+            cc.class_id,
+            cc.role,
+            cc.status
+          FROM catechist_classes cc
+          INNER JOIN classes c
+            ON c.id = cc.class_id
+          WHERE
+            cc.catechist_id = ?
+            AND cc.class_id = ?
+            AND cc.status = 'teaching'
+            AND c.church_id = ?
+          LIMIT 1
+        `,
+        [teacherId, classId, churchId],
+      );
+
+      if (!assignmentRows.length) {
+        await safeRollback(connection, transactionStarted);
+        transactionStarted = false;
+
+        console.warn(`${logPrefix} CATECHIST CLASS FORBIDDEN`, {
+          churchId,
+          catechistId: teacherId,
+          classId,
+          studentId: student.id,
+        });
+
+        return res.status(403).json({
+          success: false,
+          code: "CLASS_NOT_ASSIGNED",
+          message: "Bạn không được phân công phụ trách lớp này",
+        });
+      }
+
+      console.log(`${logPrefix} CATECHIST ASSIGNMENT VERIFIED`, {
+        churchId,
+        catechistId: teacherId,
+        classId,
+        assignmentId: assignmentRows[0].id,
+        assignmentRole: assignmentRows[0].role,
+        assignmentStatus: assignmentRows[0].status,
       });
     }
 
-    /*
-     * =====================================================
-     * 6. GET SCHEDULE
-     * =====================================================
-     */
+    // =====================================================
+    // 9. EXISTING MASS: PRESERVE OR RESTORE PRESENT
+    // =====================================================
 
-    const classSchedule =
-      attendanceType === "catechism"
-        ? await getClassSchedule(connection, classId, attendanceDate)
-        : null;
-
-    /*
-     * =====================================================
-     * 7. FIND EXISTING ATTENDANCE
-     *
-     * MASS:
-     * Không tự động INSERT bản ghi mới khi đã có bản ghi
-     * present/absent cho cùng học sinh, ngày và lớp.
-     *
-     * =====================================================
-     */
-
-    const [existingRows] = await connection.execute(
-      `
-        SELECT
-          id,
-          status,
-          check_in_time,
-          note,
-          teacher_id,
-          class_id,
-          attendance_date,
-          attendance_type
-        FROM attendances
-        WHERE
-          church_id = ?
-          AND class_id = ?
-          AND student_id = ?
-          AND attendance_date = ?
-          AND attendance_type = ?
-        ORDER BY id DESC
-        LIMIT 1
-        FOR UPDATE
-      `,
-      [churchId, classId, student.id, attendanceDate, attendanceType],
-    );
-
-    if (existingRows.length) {
-      const existing = existingRows[0];
-
-      const existingStatus = String(existing.status || "")
+    if (attendanceType === "mass" && existingMass) {
+      const existingStatus = String(existingMass.status || "")
         .trim()
         .toLowerCase();
 
-      console.log(`${logPrefix} EXISTING ATTENDANCE FOUND`, {
-        churchId,
-        studentId: student.id,
-        classId,
-        attendanceDate,
-        attendanceType,
-        attendanceId: existing.id,
-        existingStatus,
-        checkInTime: existing.check_in_time,
-      });
-
-      /*
-       * ===================================================
-       * 7A. MASS: ALREADY PRESENT
-       *
-       * Không đổi thành absent ở đây.
-       * Giữ nguyên bản ghi present và trả thành công.
-       *
-       * Điều này chỉ bảo đảm QR không làm mất trạng thái
-       * có mặt. API kết thúc Thánh lễ cũng phải được sửa
-       * để không ghi đè present thành absent.
-       * ===================================================
-       */
-
-      if (attendanceType === "mass" && existingStatus === "present") {
+      // Đã có mặt: tuyệt đối không ghi đè.
+      if (existingStatus === "present") {
         await connection.commit();
         transactionStarted = false;
 
         console.log(`${logPrefix} MASS ALREADY PRESENT - PRESERVED`, {
           churchId,
           studentId: student.id,
+          attendanceId: existingMass.id,
           classId,
           attendanceDate,
-          attendanceId: existing.id,
           status: existingStatus,
         });
 
@@ -2413,27 +2451,22 @@ const scanQRCode = async (req, res) => {
             start_time: null,
           },
           attendance: {
-            id: existing.id,
+            id: existingMass.id,
             church_id: churchId,
             class_id: classId,
             student_id: student.id,
-            teacher_id: existing.teacher_id || teacherId || null,
+            teacher_id: existingMass.teacher_id || null,
             attendance_type: "mass",
             attendance_date: attendanceDate,
             status: "present",
-            check_in_time: existing.check_in_time,
-            note: existing.note,
+            check_in_time: existingMass.check_in_time,
+            note: existingMass.note,
           },
         });
       }
 
-      /*
-       * ===================================================
-       * 7B. MASS: ABSENT -> PRESENT
-       * ===================================================
-       */
-
-      if (attendanceType === "mass" && existingStatus === "absent") {
+      // Đã có bản ghi vắng: quét QR thì cập nhật thành có mặt.
+      if (existingStatus === "absent") {
         const checkInTime = getCurrentTime();
 
         const [updateResult] = await connection.execute(
@@ -2442,12 +2475,11 @@ const scanQRCode = async (req, res) => {
             SET
               status = 'present',
               check_in_time = ?,
-              teacher_id = ?,
+              teacher_id = COALESCE(?, teacher_id),
               updated_at = CURRENT_TIMESTAMP
             WHERE
               id = ?
               AND church_id = ?
-              AND class_id = ?
               AND student_id = ?
               AND attendance_date = ?
               AND attendance_type = 'mass'
@@ -2455,10 +2487,9 @@ const scanQRCode = async (req, res) => {
           `,
           [
             checkInTime,
-            teacherId || null,
-            existing.id,
+            teacherId,
+            existingMass.id,
             churchId,
-            classId,
             student.id,
             attendanceDate,
           ],
@@ -2466,7 +2497,7 @@ const scanQRCode = async (req, res) => {
 
         if (updateResult.affectedRows !== 1) {
           throw new Error(
-            `Không cập nhật được bản ghi vắng thành có mặt: attendance_id=${existing.id}`,
+            `Không cập nhật được bản ghi Thánh lễ thành có mặt. attendanceId=${existingMass.id}`,
           );
         }
 
@@ -2476,19 +2507,16 @@ const scanQRCode = async (req, res) => {
         console.log(`${logPrefix} MASS ABSENT -> PRESENT`, {
           churchId,
           studentId: student.id,
+          attendanceId: existingMass.id,
           classId,
           attendanceDate,
-          attendanceId: existing.id,
-          oldStatus: "absent",
-          newStatus: "present",
           checkInTime,
-          affectedRows: updateResult.affectedRows,
         });
 
         return res.status(200).json({
           success: true,
           code: "ATTENDANCE_UPDATED",
-          message: "Đã cập nhật điểm danh Thánh lễ từ vắng thành có mặt",
+          message: "Đã cập nhật điểm danh Thánh lễ thành có mặt",
           attendance_type: "mass",
           attendance_type_label: getAttendanceTypeLabel("mass"),
           student: {
@@ -2502,73 +2530,110 @@ const scanQRCode = async (req, res) => {
             start_time: null,
           },
           attendance: {
-            id: existing.id,
+            id: existingMass.id,
             church_id: churchId,
             class_id: classId,
             student_id: student.id,
-            teacher_id: teacherId || null,
+            teacher_id: teacherId || existingMass.teacher_id || null,
             attendance_type: "mass",
             attendance_date: attendanceDate,
             status: "present",
             check_in_time: checkInTime,
-            note: existing.note,
+            note: existingMass.note,
           },
         });
       }
 
-      /*
-       * ===================================================
-       * 7C. CATECHISM OR OTHER EXISTING STATUS
-       *
-       * Không thay đổi nghiệp vụ giáo lý.
-       * ===================================================
-       */
-
+      // Không tự ý đổi các trạng thái khác.
       await safeRollback(connection, transactionStarted);
       transactionStarted = false;
 
-      console.warn(`${logPrefix} DUPLICATE ATTENDANCE`, {
+      console.warn(`${logPrefix} MASS HAS UNEXPECTED STATUS`, {
         churchId,
         studentId: student.id,
-        classId,
-        attendanceDate,
-        attendanceType,
-        attendanceId: existing.id,
-        existingStatus,
+        attendanceId: existingMass.id,
+        status: existingStatus,
       });
 
       return res.status(409).json({
         success: false,
-        code: "ALREADY_ATTENDED",
-        message:
-          attendanceType === "mass"
-            ? `Học sinh đã có bản ghi Thánh lễ với trạng thái "${existingStatus}"`
-            : `Học sinh này đã được điểm danh ${getAttendanceTypeLabel(
-                attendanceType,
-              )}`,
-        attendance: {
-          id: existing.id,
-          status: existing.status,
-          check_in_time: existing.check_in_time,
-          note: existing.note,
-        },
-        student: {
-          id: student.id,
-          code: student.code,
-          name: student.name,
-        },
-        class: {
-          id: classId,
-          name: lockedClass.name,
-        },
+        code: "MASS_ATTENDANCE_CONFLICT",
+        message: `Bản ghi Thánh lễ đang có trạng thái "${existingStatus}"`,
       });
     }
 
-    /*
-     * =====================================================
-     * 8. NO EXISTING ATTENDANCE -> INSERT PRESENT
-     * =====================================================
-     */
+    // =====================================================
+    // 10. CATECHISM: CHECK EXISTING ATTENDANCE
+    // =====================================================
+
+    if (attendanceType === "catechism") {
+      const [existingRows] = await connection.execute(
+        `
+          SELECT
+            id,
+            status,
+            check_in_time,
+            note,
+            teacher_id
+          FROM attendances
+          WHERE
+            church_id = ?
+            AND class_id = ?
+            AND student_id = ?
+            AND attendance_date = ?
+            AND attendance_type = 'catechism'
+          ORDER BY id DESC
+          LIMIT 1
+          FOR UPDATE
+        `,
+        [churchId, classId, student.id, attendanceDate],
+      );
+
+      if (existingRows.length) {
+        const existing = existingRows[0];
+
+        await safeRollback(connection, transactionStarted);
+        transactionStarted = false;
+
+        console.warn(`${logPrefix} CATECHISM DUPLICATE`, {
+          churchId,
+          studentId: student.id,
+          classId,
+          attendanceId: existing.id,
+          status: existing.status,
+          attendanceDate,
+        });
+
+        return res.status(409).json({
+          success: false,
+          code: "ALREADY_ATTENDED",
+          message: "Học sinh này đã được điểm danh giáo lý",
+          attendance: existing,
+          student: {
+            id: student.id,
+            code: student.code,
+            name: student.name,
+          },
+          class: {
+            id: classId,
+            name: lockedClass.name,
+          },
+        });
+      }
+    }
+
+    // =====================================================
+    // 11. GET SCHEDULE FOR CATECHISM
+    // =====================================================
+
+    const classSchedule =
+      attendanceType === "catechism"
+        ? await getClassSchedule(connection, classId, attendanceDate)
+        : null;
+
+    // =====================================================
+    // 12. INSERT NEW PRESENT RECORD
+    // =====================================================
 
     const checkInTime = getCurrentTime();
 
@@ -2579,12 +2644,15 @@ const scanQRCode = async (req, res) => {
       classStartTime: classSchedule?.start_time || null,
     });
 
+    // Mass không bắt buộc teacherId.
+    // Nếu null, INSERT NULL vào attendances.teacher_id.
     console.log(`${logPrefix} INSERT ATTENDANCE`, {
       churchId,
       studentId: student.id,
       classId,
       attendanceDate,
       attendanceType,
+      teacherId: teacherId || null,
       finalStatus,
       checkInTime,
     });
@@ -2659,6 +2727,7 @@ const scanQRCode = async (req, res) => {
       attendanceDate,
       attendanceType,
       attendanceId: insertResult.insertId,
+      teacherId: teacherId || null,
       status: finalStatus,
       checkInTime,
     });
@@ -2693,11 +2762,16 @@ const scanQRCode = async (req, res) => {
       },
     });
   } catch (error) {
-    await safeRollback(connection, transactionStarted);
+    if (connection && transactionStarted) {
+      await safeRollback(connection, transactionStarted);
+      transactionStarted = false;
+    }
 
     console.error(`${logPrefix} ERROR`, {
-      churchId: getChurchId(req) || null,
+      churchId: churchId || getChurchId(req) || null,
       token: maskedToken,
+      attendanceType,
+      attendanceDate,
       message: error?.message,
       code: error?.code,
       sqlMessage: error?.sqlMessage,
@@ -2706,6 +2780,7 @@ const scanQRCode = async (req, res) => {
 
     return res.status(500).json({
       success: false,
+      code: "QR_ATTENDANCE_ERROR",
       message: "Không thể điểm danh bằng QR",
       ...(getErrorMessage(error) ? { error: getErrorMessage(error) } : {}),
     });

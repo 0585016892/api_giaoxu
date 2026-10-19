@@ -1763,7 +1763,6 @@ const getStudentAttendanceStatistics = async (req, res) => {
  * EXPORT
  * =========================================================
  */
-
 const exportAttendanceReport = async (req, res) => {
   try {
     console.log(
@@ -1775,10 +1774,11 @@ const exportAttendanceReport = async (req, res) => {
     // =========================================================
     // 1. CHUẨN BỊ DỮ LIỆU VÀ VALIDATE
     // =========================================================
-
     const churchId = getChurchId(req);
 
     if (!churchId) {
+      console.error("[EXPORT] Không xác định được giáo xứ.");
+
       return res.status(401).json({
         success: false,
         message: "Không xác định được giáo xứ.",
@@ -1796,9 +1796,7 @@ const exportAttendanceReport = async (req, res) => {
     } = req.query;
 
     const month = monthQuery !== undefined ? toInt(monthQuery) : null;
-
     const year = yearQuery !== undefined ? toInt(yearQuery) : null;
-
     const classId = classIdQuery !== undefined ? toInt(classIdQuery) : null;
 
     const attendanceType = attendanceTypeQuery || "catechism";
@@ -1807,6 +1805,7 @@ const exportAttendanceReport = async (req, res) => {
     console.log("[EXPORT] Type:", attendanceType);
     console.log("[EXPORT] Period:", { month, year, from, to, date });
     console.log("[EXPORT] Class:", classId);
+    console.log("[EXPORT] Query params:", JSON.stringify(req.query));
 
     if (!["catechism", "mass"].includes(attendanceType)) {
       return res.status(400).json({
@@ -1875,7 +1874,6 @@ const exportAttendanceReport = async (req, res) => {
     // =========================================================
     // 2. XÁC NHẬN GIÁO XỨ VÀ LỚP
     // =========================================================
-
     const [[church]] = await db.query(
       `SELECT id, name, code
        FROM churches
@@ -1938,10 +1936,18 @@ const exportAttendanceReport = async (req, res) => {
       }
     }
 
+    console.log("[EXPORT] Classes to export:", {
+      count: classes.length,
+      classes: classes.map((item) => ({
+        id: item.id,
+        name: item.name,
+        code: item.code,
+      })),
+    });
+
     // =========================================================
     // 3. ĐIỀU KIỆN LỌC NGÀY
     // =========================================================
-
     let dateWhere = "";
     const dateParams = [];
 
@@ -1975,17 +1981,86 @@ const exportAttendanceReport = async (req, res) => {
     }
 
     // =========================================================
+    // 3B. TẠO DANH SÁCH NGÀY HIỂN THỊ TRÊN EXCEL
+    //
+    // Theo tháng: từ ngày 01 đến ngày cuối tháng.
+    // Theo khoảng ngày: từ from đến to, bao gồm cả hai đầu.
+    // Theo ngày cụ thể: chỉ có một cột ngày.
+    // Không truyền lọc ngày: giữ báo cáo tổng hợp, không sinh cột ngày.
+    // =========================================================
+    const reportDates = (() => {
+      let startDate = null;
+      let endDate = null;
+
+      if (month !== null && year !== null) {
+        startDate = new Date(Date.UTC(year, month - 1, 1));
+        endDate = new Date(Date.UTC(year, month, 0));
+      } else if (date) {
+        startDate = new Date(`${date}T00:00:00Z`);
+        endDate = new Date(`${date}T00:00:00Z`);
+      } else if (from || to) {
+        const startValue = from || to;
+        const endValue = to || from;
+
+        startDate = new Date(`${startValue}T00:00:00Z`);
+        endDate = new Date(`${endValue}T00:00:00Z`);
+      }
+
+      if (!startDate || !endDate) {
+        return [];
+      }
+
+      const dates = [];
+
+      for (
+        let cursor = new Date(startDate);
+        cursor <= endDate;
+        cursor.setUTCDate(cursor.getUTCDate() + 1)
+      ) {
+        dates.push(
+          `${cursor.getUTCFullYear()}-${String(
+            cursor.getUTCMonth() + 1,
+          ).padStart(2, "0")}-${String(cursor.getUTCDate()).padStart(2, "0")}`,
+        );
+      }
+
+      console.log("[EXPORT] Report dates generated:", {
+        count: dates.length,
+        firstDate: dates[0] || null,
+        lastDate: dates[dates.length - 1] || null,
+        dates,
+      });
+
+      return dates;
+    })();
+
+    const statusShortCodes = {
+      present: "C",
+      late: "M",
+      excused: "P",
+      absent: "V",
+    };
+
+    // =========================================================
     // 4. HÀM LẤY THỐNG KÊ ĐIỂM DANH
     // =========================================================
-
     const getAttendanceRows = async (filterClassId = null) => {
       let classWhere = "";
+
       const params = [churchId, attendanceType, ...dateParams];
 
       if (filterClassId !== null) {
         classWhere = ` AND a.class_id = ?`;
         params.push(filterClassId);
       }
+
+      console.log("[EXPORT] Aggregate query:", {
+        churchId,
+        attendanceType,
+        classId: filterClassId,
+        dateFilter: { month, year, from, to, date },
+        params,
+      });
 
       const [rows] = await db.query(
         `
@@ -2037,6 +2112,61 @@ const exportAttendanceReport = async (req, res) => {
         params,
       );
 
+      console.log("[EXPORT] Aggregate attendance query success:", {
+        churchId,
+        attendanceType,
+        classId: filterClassId,
+        aggregateRows: rows.length,
+        dateFilter: { month, year, from, to, date },
+      });
+
+      // Lấy trạng thái điểm danh theo từng ngày.
+      // Ngày không có bản ghi sẽ để trống, KHÔNG tự điền Vắng.
+      const [dailyRows] = await db.query(
+        `
+        SELECT
+          a.student_id,
+          DATE_FORMAT(a.attendance_date, '%Y-%m-%d') AS attendance_day,
+          a.status
+
+        FROM attendances a
+
+        INNER JOIN students s
+          ON s.id = a.student_id
+          AND s.church_id = a.church_id
+
+        WHERE a.church_id = ?
+          AND a.attendance_type = ?
+          ${dateWhere}
+          ${classWhere}
+
+        ORDER BY
+          a.attendance_date ASC,
+          a.student_id ASC
+        `,
+        params,
+      );
+
+      const dailyMap = new Map();
+
+      for (const dailyRow of dailyRows) {
+        const studentKey = String(dailyRow.student_id);
+        const dayKey = String(dailyRow.attendance_day || "").slice(0, 10);
+
+        if (!dailyMap.has(studentKey)) {
+          dailyMap.set(studentKey, {});
+        }
+
+        dailyMap.get(studentKey)[dayKey] =
+          statusShortCodes[dailyRow.status] || "";
+      }
+
+      console.log("[EXPORT] Daily attendance query:", {
+        classId: filterClassId,
+        rows: dailyRows.length,
+        studentsWithDailyStatus: dailyMap.size,
+      });
+
       return rows.map((row) => ({
         ...row,
         total: Number(row.total || 0),
@@ -2044,13 +2174,13 @@ const exportAttendanceReport = async (req, res) => {
         absent: Number(row.absent || 0),
         late: Number(row.late || 0),
         excused: Number(row.excused || 0),
+        dailyStatuses: dailyMap.get(String(row.student_id)) || {},
       }));
     };
 
     // =========================================================
     // 5. THEME EXCEL FAITHEDU
     // =========================================================
-
     const C = {
       navy: "173B5E",
       navyDark: "102A43",
@@ -2091,7 +2221,6 @@ const exportAttendanceReport = async (req, res) => {
     // =========================================================
     // 6. HELPER
     // =========================================================
-
     const formatDate = (value) => {
       if (!value) return "";
 
@@ -2157,6 +2286,7 @@ const exportAttendanceReport = async (req, res) => {
           sum.absent += row.absent;
           sum.late += row.late;
           sum.excused += row.excused;
+
           return sum;
         },
         {
@@ -2170,7 +2300,7 @@ const exportAttendanceReport = async (req, res) => {
 
     const safeSheetName = (name) => {
       let result = String(name || "Bao-cao")
-        .replace(/[\\/*?:[\]]/g, "")
+        .replace(/[\\/*?:\[\]]/g, "")
         .trim()
         .substring(0, 31);
 
@@ -2191,6 +2321,7 @@ const exportAttendanceReport = async (req, res) => {
       sheet.mergeCells(1, 1, 2, lastCol);
 
       const cell = sheet.getCell(1, 1);
+
       cell.value = title;
       cell.font = {
         name: "Aptos Display",
@@ -2198,11 +2329,13 @@ const exportAttendanceReport = async (req, res) => {
         bold: true,
         color: { argb: C.white },
       };
+
       cell.fill = {
         type: "pattern",
         pattern: "solid",
         fgColor: { argb: C.navy },
       };
+
       cell.alignment = {
         horizontal: "center",
         vertical: "middle",
@@ -2222,17 +2355,21 @@ const exportAttendanceReport = async (req, res) => {
       }
 
       sheet.mergeCells(3, 1, 3, lastCol);
+
       sheet.getCell(3, 1).value =
         "FAITHEDU  |  SỐ HÓA GIÁO LÝ - KẾT NỐI ĐỨC TIN";
+
       sheet.getCell(3, 1).font = {
         name: "Aptos",
         size: 10,
         bold: true,
         color: { argb: C.gold },
       };
+
       sheet.getCell(3, 1).alignment = {
         horizontal: "center",
       };
+
       sheet.getRow(3).height = 22;
     };
 
@@ -2271,6 +2408,7 @@ const exportAttendanceReport = async (req, res) => {
     const styleDataRows = (sheet, startRow, endRow, lastCol) => {
       for (let r = startRow; r <= endRow; r++) {
         const row = sheet.getRow(r);
+
         row.height = 24;
 
         for (let col = 1; col <= lastCol; col++) {
@@ -2291,7 +2429,10 @@ const exportAttendanceReport = async (req, res) => {
           };
 
           cell.border = {
-            bottom: { style: "hair", color: { argb: C.border } },
+            bottom: {
+              style: "hair",
+              color: { argb: C.border },
+            },
           };
 
           cell.alignment = {
@@ -2307,7 +2448,9 @@ const exportAttendanceReport = async (req, res) => {
         });
 
         const rateCell = row.getCell(11);
+
         rateCell.numFmt = "0.00%";
+
         rateCell.font = {
           name: "Aptos",
           bold: true,
@@ -2334,6 +2477,7 @@ const exportAttendanceReport = async (req, res) => {
             pattern: "solid",
             fgColor: { argb: bg },
           };
+
           row.getCell(col).font = {
             name: "Aptos",
             bold: true,
@@ -2346,7 +2490,6 @@ const exportAttendanceReport = async (req, res) => {
     // =========================================================
     // 7. TẠO SHEET CHI TIẾT
     // =========================================================
-
     const createAttendanceSheet = ({
       title,
       classInfo = null,
@@ -2355,7 +2498,13 @@ const exportAttendanceReport = async (req, res) => {
     }) => {
       const sheet = workbook.addWorksheet(safeSheetName(sheetName));
 
-      sheet.views = [{ state: "frozen", ySplit: 9, showGridLines: false }];
+      sheet.views = [
+        {
+          state: "frozen",
+          ySplit: 9,
+          showGridLines: false,
+        },
+      ];
 
       sheet.properties.defaultRowHeight = 22;
 
@@ -2371,9 +2520,16 @@ const exportAttendanceReport = async (req, res) => {
         { key: "late", width: 12 },
         { key: "excused", width: 13 },
         { key: "rate", width: 16 },
+        ...reportDates.map((day) => ({
+          key: `day_${day}`,
+          width: 7,
+        })),
       ];
 
-      styleTitle(sheet, title, 11);
+      const lastCol = 11 + reportDates.length;
+      const lastColLetter = sheet.getColumn(lastCol).letter;
+
+      styleTitle(sheet, title, lastCol);
 
       sheet.mergeCells("A4:B4");
       sheet.getCell("A4").value = "GIÁO XỨ";
@@ -2405,6 +2561,7 @@ const exportAttendanceReport = async (req, res) => {
       [4, 5, 6, 7].forEach((r) => {
         ["A", "B", "E", "F"].forEach((col) => {
           const cell = sheet.getCell(`${col}${r}`);
+
           cell.font = {
             name: "Aptos",
             bold: true,
@@ -2429,10 +2586,52 @@ const exportAttendanceReport = async (req, res) => {
         "Trễ",
         "Có phép",
         "Tỷ lệ chuyên cần",
+        ...reportDates.map((day) => formatDate(day)),
       ];
 
       styleHeader(sheet.getRow(headerRow));
 
+      // Chú thích trạng thái nằm phía trên tiêu đề cột ngày.
+      if (reportDates.length > 0) {
+        sheet.mergeCells(8, 1, 8, lastCol);
+
+        const legendCell = sheet.getCell(8, 1);
+
+        legendCell.value =
+          "QUY ƯỚC: Có - C  |  Muộn - M  |  Phép - P  |  Vắng - V  |  Ô trống: chưa có bản ghi điểm danh";
+
+        legendCell.font = {
+          name: "Aptos",
+          size: 10,
+          bold: true,
+          color: { argb: C.navy },
+        };
+
+        legendCell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: C.cream },
+        };
+
+        legendCell.alignment = {
+          vertical: "middle",
+          horizontal: "left",
+          wrapText: true,
+        };
+
+        legendCell.border = {
+          top: { style: "thin", color: { argb: C.border } },
+          bottom: { style: "thin", color: { argb: C.border } },
+          left: { style: "thin", color: { argb: C.border } },
+          right: { style: "thin", color: { argb: C.border } },
+        };
+
+        sheet.getRow(8).height = 25;
+      }
+
+      // =======================================================
+      // THÊM DỮ LIỆU HỌC SINH VÀ TRẠNG THÁI THEO TỪNG NGÀY
+      // =======================================================
       rows.forEach((item, index) => {
         const row = sheet.addRow([
           index + 1,
@@ -2446,23 +2645,60 @@ const exportAttendanceReport = async (req, res) => {
           item.late,
           item.excused,
           rate(item.present, item.total),
+          ...reportDates.map((day) => item.dailyStatuses?.[day] || ""),
         ]);
 
         row.getCell(11).numFmt = "0.00%";
+
+        reportDates.forEach((day, dayIndex) => {
+          const cell = row.getCell(12 + dayIndex);
+          const code = item.dailyStatuses?.[day] || "";
+
+          cell.alignment = {
+            horizontal: "center",
+            vertical: "middle",
+          };
+
+          cell.font = {
+            name: "Aptos",
+            size: 10,
+            bold: Boolean(code),
+            color: { argb: C.text },
+          };
+
+          const dayColors = {
+            C: C.greenLight,
+            M: C.amberLight,
+            P: C.blueLight,
+            V: C.redLight,
+          };
+
+          if (code && dayColors[code]) {
+            cell.fill = {
+              type: "pattern",
+              pattern: "solid",
+              fgColor: { argb: dayColors[code] },
+            };
+          }
+        });
       });
 
       const lastDataRow = sheet.rowCount;
 
       if (rows.length > 0) {
-        styleDataRows(sheet, 10, lastDataRow, 11);
+        styleDataRows(sheet, 10, lastDataRow, lastCol);
+
         sheet.autoFilter = {
           from: "A9",
-          to: `K${lastDataRow}`,
+          to: `${lastColLetter}${lastDataRow}`,
         };
       }
 
+      // =======================================================
       // TỔNG CỘNG
+      // =======================================================
       const totals = sumRows(rows);
+
       const totalRow = sheet.addRow([
         "",
         "",
@@ -2475,6 +2711,7 @@ const exportAttendanceReport = async (req, res) => {
         totals.late,
         totals.excused,
         rate(totals.present, totals.total),
+        ...reportDates.map(() => ""),
       ]);
 
       totalRow.height = 30;
@@ -2485,15 +2722,18 @@ const exportAttendanceReport = async (req, res) => {
           bold: true,
           color: { argb: C.white },
         };
+
         cell.fill = {
           type: "pattern",
           pattern: "solid",
           fgColor: { argb: C.navy },
         };
+
         cell.alignment = {
           vertical: "middle",
           horizontal: "center",
         };
+
         cell.border = {
           top: { style: "medium", color: { argb: C.gold } },
         };
@@ -2501,21 +2741,31 @@ const exportAttendanceReport = async (req, res) => {
 
       totalRow.getCell(11).numFmt = "0.00%";
 
-      // CHÚ THÍCH TRẠNG THÁI
+      // =======================================================
+      // GHI CHÚ CUỐI BẢNG
+      // =======================================================
       const noteRow = sheet.rowCount + 2;
-      sheet.mergeCells(noteRow, 1, noteRow, 11);
+
+      sheet.mergeCells(noteRow, 1, noteRow, lastCol);
+
       sheet.getCell(noteRow, 1).value =
         "Lưu ý: Tỷ lệ chuyên cần = Tổng lượt có mặt / Tổng lượt điểm danh. " +
-        "Tỷ lệ tổng cộng được tính trên toàn bộ lượt điểm danh của học sinh.";
+        "Tỷ lệ tổng cộng được tính trên toàn bộ lượt điểm danh của học sinh. " +
+        (reportDates.length > 0
+          ? "C = Có mặt; M = Muộn; P = Có phép; V = Vắng; ô trống = không có bản ghi điểm danh trong ngày đó."
+          : "");
+
       sheet.getCell(noteRow, 1).font = {
         italic: true,
         size: 9,
         color: { argb: C.muted },
       };
+
       sheet.getCell(noteRow, 1).alignment = {
         wrapText: true,
         vertical: "middle",
       };
+
       sheet.getRow(noteRow).height = 32;
 
       console.log(
@@ -2533,11 +2783,16 @@ const exportAttendanceReport = async (req, res) => {
     // =========================================================
     // 8. LẤY DỮ LIỆU VÀ TẠO CÁC SHEET
     // =========================================================
-
     const reports = [];
 
     if (attendanceType === "catechism") {
       for (const classInfo of classes) {
+        console.log("[EXPORT] Processing class:", {
+          id: classInfo.id,
+          name: classInfo.name,
+          code: classInfo.code,
+        });
+
         const rows = await getAttendanceRows(classInfo.id);
 
         const report = createAttendanceSheet({
@@ -2576,7 +2831,6 @@ const exportAttendanceReport = async (req, res) => {
     // =========================================================
     // 9. SHEET TỔNG QUAN
     // =========================================================
-
     const overview = workbook.addWorksheet("Tong-quan", {
       properties: { tabColor: C.gold },
       views: [{ showGridLines: false }],
@@ -2595,6 +2849,7 @@ const exportAttendanceReport = async (req, res) => {
 
     overview.mergeCells("A4:F4");
     overview.getCell("A4").value = `Giáo xứ: ${church.name || ""}`;
+
     overview.getCell("A4").font = {
       bold: true,
       size: 12,
@@ -2602,9 +2857,11 @@ const exportAttendanceReport = async (req, res) => {
     };
 
     overview.mergeCells("A5:F5");
+
     overview.getCell("A5").value = `Loại điểm danh: ${
       attendanceType === "mass" ? "Thánh lễ" : "Học giáo lý"
     }  |  Thời gian: ${getPeriodText()}`;
+
     overview.getCell("A5").font = {
       size: 10,
       color: { argb: C.muted },
@@ -2618,6 +2875,7 @@ const exportAttendanceReport = async (req, res) => {
         acc.absent += report.totals.absent;
         acc.late += report.totals.late;
         acc.excused += report.totals.excused;
+
         return acc;
       },
       {
@@ -2680,19 +2938,23 @@ const exportAttendanceReport = async (req, res) => {
       overview.mergeCells(valueRange);
 
       const labelCell = overview.getCell(labelRange.split(":")[0]);
+
       const valueCell = overview.getCell(valueRange.split(":")[0]);
 
       labelCell.value = card.label;
+
       labelCell.font = {
         bold: true,
         size: 10,
         color: { argb: C.white },
       };
+
       labelCell.alignment = {
         horizontal: "center",
         vertical: "middle",
         wrapText: true,
       };
+
       labelCell.fill = {
         type: "pattern",
         pattern: "solid",
@@ -2700,35 +2962,53 @@ const exportAttendanceReport = async (req, res) => {
       };
 
       valueCell.value = card.value;
+
       valueCell.font = {
         bold: true,
         size: 22,
         color: { argb: card.color },
       };
+
       valueCell.alignment = {
         horizontal: "center",
         vertical: "middle",
       };
+
       valueCell.fill = {
         type: "pattern",
         pattern: "solid",
         fgColor: { argb: C.cream },
       };
 
-      if (card.percent) valueCell.numFmt = "0.00%";
+      if (card.percent) {
+        valueCell.numFmt = "0.00%";
+      }
 
       for (const range of [labelRange, valueRange]) {
         const [start, end] = range.split(":");
+
         const startCell = overview.getCell(start);
         const endCell = overview.getCell(end);
 
         for (let r = startCell.row; r <= endCell.row; r++) {
           for (let col = startCell.col; col <= endCell.col; col++) {
             overview.getCell(r, col).border = {
-              top: { style: "thin", color: { argb: C.border } },
-              bottom: { style: "thin", color: { argb: C.border } },
-              left: { style: "thin", color: { argb: C.border } },
-              right: { style: "thin", color: { argb: C.border } },
+              top: {
+                style: "thin",
+                color: { argb: C.border },
+              },
+              bottom: {
+                style: "thin",
+                color: { argb: C.border },
+              },
+              left: {
+                style: "thin",
+                color: { argb: C.border },
+              },
+              right: {
+                style: "thin",
+                color: { argb: C.border },
+              },
             };
           }
         }
@@ -2738,14 +3018,16 @@ const exportAttendanceReport = async (req, res) => {
     // =========================================================
     // 10. BẢNG SO SÁNH VÀ THANH TRỰC QUAN
     // =========================================================
-
     overview.mergeCells("A16:F16");
+
     overview.getCell("A16").value = "THỐNG KÊ THEO LỚP / PHẠM VI";
+
     overview.getCell("A16").font = {
       bold: true,
       size: 12,
       color: { argb: C.white },
     };
+
     overview.getCell("A16").fill = {
       type: "pattern",
       pattern: "solid",
@@ -2753,6 +3035,7 @@ const exportAttendanceReport = async (req, res) => {
     };
 
     const summaryHeader = overview.getRow(17);
+
     summaryHeader.values = [
       "Lớp / phạm vi",
       "Tổng lượt",
@@ -2761,6 +3044,7 @@ const exportAttendanceReport = async (req, res) => {
       "Trễ",
       "Tỷ lệ chuyên cần",
     ];
+
     styleHeader(summaryHeader);
 
     reports.forEach((report) => {
@@ -2779,7 +3063,6 @@ const exportAttendanceReport = async (req, res) => {
     if (reports.length > 0) {
       styleDataRows(overview, 18, 17 + reports.length, 6);
 
-      // Ghi đè định dạng tỷ lệ cho cột F
       for (let r = 18; r <= 17 + reports.length; r++) {
         overview.getCell(r, 6).numFmt = "0.00%";
       }
@@ -2788,28 +3071,38 @@ const exportAttendanceReport = async (req, res) => {
     const legendRow = 19 + reports.length;
 
     overview.mergeCells(legendRow, 1, legendRow, 6);
+
     overview.getCell(legendRow, 1).value =
       "BÁO CÁO ĐƯỢC TẠO TỰ ĐỘNG BỞI FAITHEDU";
+
     overview.getCell(legendRow, 1).font = {
       bold: true,
       color: { argb: C.gold },
     };
+
     overview.getCell(legendRow, 1).alignment = {
       horizontal: "center",
     };
 
-    overview.views = [{ state: "frozen", ySplit: 5, showGridLines: false }];
+    overview.views = [
+      {
+        state: "frozen",
+        ySplit: 5,
+        showGridLines: false,
+      },
+    ];
 
     // =========================================================
-    // 11. XUẤT FILE
+    // 11. XUẤT FILE EXCEL
     // =========================================================
-
     const safePeriod = (() => {
       if (month !== null && year !== null) {
         return `thang-${month}-${year}`;
       }
 
-      if (date) return `ngay-${date}`;
+      if (date) {
+        return `ngay-${date}`;
+      }
 
       if (from || to) {
         return `tu-${from || "dau-ky"}-den-${to || "cuoi-ky"}`;
@@ -2822,15 +3115,40 @@ const exportAttendanceReport = async (req, res) => {
 
     const fileName = `bao-cao-chuyen-can-${typeName}-${safePeriod}.xlsx`;
 
+    console.log("[EXPORT] Preparing workbook buffer...");
+
     const buffer = await workbook.xlsx.writeBuffer();
 
     console.log(
       "[EXPORT] Sheets:",
-      workbook.worksheets.map((s) => s.name),
+      workbook.worksheets.map((sheet) => sheet.name),
     );
+
     console.log("[EXPORT] Students:", grand.students);
     console.log("[EXPORT] Total attendance:", grand.total);
     console.log("[EXPORT] Buffer size:", buffer.length);
+    console.log("[EXPORT] Report dates count:", reportDates.length);
+
+    console.log(
+      "[EXPORT] Workbook detail:",
+      JSON.stringify({
+        sheetCount: workbook.worksheets.length,
+        sheets: workbook.worksheets.map((sheet) => ({
+          name: sheet.name,
+          rows: sheet.rowCount,
+          columns: sheet.columnCount,
+        })),
+        summary: {
+          students: grand.students,
+          total: grand.total,
+          present: grand.present,
+          absent: grand.absent,
+          late: grand.late,
+          excused: grand.excused,
+        },
+      }),
+    );
+
     console.log("[EXPORT] SUCCESS:", fileName);
 
     res.setHeader(
@@ -2850,12 +3168,14 @@ const exportAttendanceReport = async (req, res) => {
     console.error(
       "\n============================================================",
     );
+
     console.error("EXPORT ATTENDANCE REPORT ERROR");
     console.error("MESSAGE:", error?.message);
     console.error("CODE:", error?.code);
     console.error("SQL STATE:", error?.sqlState);
     console.error("SQL MESSAGE:", error?.sqlMessage);
     console.error("STACK:", error?.stack);
+
     console.error(
       "============================================================",
     );
@@ -2873,6 +3193,7 @@ const exportAttendanceReport = async (req, res) => {
     });
   }
 };
+
 module.exports = {
   getOverview,
   getStudentStatistics,

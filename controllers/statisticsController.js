@@ -1763,6 +1763,7 @@ const getStudentAttendanceStatistics = async (req, res) => {
  * EXPORT
  * =========================================================
  */
+
 const exportAttendanceReport = async (req, res) => {
   try {
     console.log(
@@ -1772,7 +1773,7 @@ const exportAttendanceReport = async (req, res) => {
     console.log("============================================================");
 
     // =========================================================
-    // 1. CHUẨN BỊ DỮ LIỆU VÀ VALIDATE
+    // 1. VALIDATE REQUEST
     // =========================================================
     const churchId = getChurchId(req);
 
@@ -1796,14 +1797,22 @@ const exportAttendanceReport = async (req, res) => {
     } = req.query;
 
     const month = monthQuery !== undefined ? toInt(monthQuery) : null;
+
     const year = yearQuery !== undefined ? toInt(yearQuery) : null;
+
     const classId = classIdQuery !== undefined ? toInt(classIdQuery) : null;
 
     const attendanceType = attendanceTypeQuery || "catechism";
 
     console.log("[EXPORT] Church:", churchId);
     console.log("[EXPORT] Type:", attendanceType);
-    console.log("[EXPORT] Period:", { month, year, from, to, date });
+    console.log("[EXPORT] Period:", {
+      month,
+      year,
+      from,
+      to,
+      date,
+    });
     console.log("[EXPORT] Class:", classId);
     console.log("[EXPORT] Query params:", JSON.stringify(req.query));
 
@@ -1814,14 +1823,20 @@ const exportAttendanceReport = async (req, res) => {
       });
     }
 
-    if (monthQuery !== undefined && !isValidMonth(month)) {
+    if (
+      monthQuery !== undefined &&
+      (!Number.isInteger(month) || !isValidMonth(month))
+    ) {
       return res.status(400).json({
         success: false,
         message: "Tháng phải từ 1 đến 12.",
       });
     }
 
-    if (yearQuery !== undefined && !isValidYear(year)) {
+    if (
+      yearQuery !== undefined &&
+      (!Number.isInteger(year) || !isValidYear(year))
+    ) {
       return res.status(400).json({
         success: false,
         message: "Năm không hợp lệ.",
@@ -1871,14 +1886,26 @@ const exportAttendanceReport = async (req, res) => {
       });
     }
 
+    if (
+      classIdQuery !== undefined &&
+      (!Number.isInteger(classId) || classId <= 0)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "class_id không hợp lệ.",
+      });
+    }
+
     // =========================================================
-    // 2. XÁC NHẬN GIÁO XỨ VÀ LỚP
+    // 2. XÁC NHẬN GIÁO XỨ
     // =========================================================
     const [[church]] = await db.query(
-      `SELECT id, name, code
-       FROM churches
-       WHERE id = ?
-       LIMIT 1`,
+      `
+      SELECT id, name, code
+      FROM churches
+      WHERE id = ?
+      LIMIT 1
+      `,
       [churchId],
     );
 
@@ -1889,21 +1916,21 @@ const exportAttendanceReport = async (req, res) => {
       });
     }
 
+    // =========================================================
+    // 3. XÁC NHẬN LỚP VÀ LẤY DANH SÁCH LỚP
+    // =========================================================
     let selectedClass = null;
+    let classes = [];
 
     if (classIdQuery !== undefined) {
-      if (!Number.isInteger(classId) || classId <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "class_id không hợp lệ.",
-        });
-      }
-
       const [[foundClass]] = await db.query(
-        `SELECT id, name, code
-         FROM classes
-         WHERE id = ? AND church_id = ?
-         LIMIT 1`,
+        `
+        SELECT id, name, code, church_id, academic_year
+        FROM classes
+        WHERE id = ?
+          AND church_id = ?
+        LIMIT 1
+        `,
         [classId, churchId],
       );
 
@@ -1917,18 +1944,18 @@ const exportAttendanceReport = async (req, res) => {
       selectedClass = foundClass;
     }
 
-    let classes = [];
-
     if (attendanceType === "catechism") {
       if (selectedClass) {
         classes = [selectedClass];
       } else {
         const [classRows] = await db.query(
-          `SELECT id, name, code
-           FROM classes
-           WHERE church_id = ?
-             AND (status IS NULL OR status != 'cancelled')
-           ORDER BY name ASC`,
+          `
+          SELECT id, name, code, church_id, academic_year
+          FROM classes
+          WHERE church_id = ?
+            AND (status IS NULL OR status != 'cancelled')
+          ORDER BY name ASC, id ASC
+          `,
           [churchId],
         );
 
@@ -1942,11 +1969,12 @@ const exportAttendanceReport = async (req, res) => {
         id: item.id,
         name: item.name,
         code: item.code,
+        academic_year: item.academic_year,
       })),
     });
 
     // =========================================================
-    // 3. ĐIỀU KIỆN LỌC NGÀY
+    // 4. ĐIỀU KIỆN LỌC NGÀY
     // =========================================================
     let dateWhere = "";
     const dateParams = [];
@@ -1966,8 +1994,10 @@ const exportAttendanceReport = async (req, res) => {
     }
 
     if (date) {
-      dateWhere += ` AND a.attendance_date = ?`;
-      dateParams.push(date);
+      dateWhere += ` AND a.attendance_date >= ?
+                     AND a.attendance_date < DATE_ADD(?, INTERVAL 1 DAY)`;
+
+      dateParams.push(date, date);
     }
 
     if (from) {
@@ -1976,17 +2006,14 @@ const exportAttendanceReport = async (req, res) => {
     }
 
     if (to) {
-      dateWhere += ` AND a.attendance_date < DATE_ADD(?, INTERVAL 1 DAY)`;
+      dateWhere += `
+        AND a.attendance_date < DATE_ADD(?, INTERVAL 1 DAY)
+      `;
       dateParams.push(to);
     }
 
     // =========================================================
-    // 3B. TẠO DANH SÁCH NGÀY HIỂN THỊ TRÊN EXCEL
-    //
-    // Theo tháng: từ ngày 01 đến ngày cuối tháng.
-    // Theo khoảng ngày: từ from đến to, bao gồm cả hai đầu.
-    // Theo ngày cụ thể: chỉ có một cột ngày.
-    // Không truyền lọc ngày: giữ báo cáo tổng hợp, không sinh cột ngày.
+    // 5. TẠO DANH SÁCH NGÀY TRÊN EXCEL
     // =========================================================
     const reportDates = (() => {
       let startDate = null;
@@ -2028,7 +2055,6 @@ const exportAttendanceReport = async (req, res) => {
         count: dates.length,
         firstDate: dates[0] || null,
         lastDate: dates[dates.length - 1] || null,
-        dates,
       });
 
       return dates;
@@ -2042,87 +2068,96 @@ const exportAttendanceReport = async (req, res) => {
     };
 
     // =========================================================
-    // 4. HÀM LẤY THỐNG KÊ ĐIỂM DANH
+    // 6. HÀM LẤY DANH SÁCH VÀ THỐNG KÊ ĐIỂM DANH
+    //
+    // QUAN TRỌNG:
+    // Danh sách học sinh lấy từ students + class_students.
+    // Không lấy danh sách học sinh từ attendances.
+    //
+    // Vì vậy, học sinh chưa điểm danh vẫn xuất hiện.
     // =========================================================
-
     const getAttendanceRows = async (filterClassId = null) => {
-      let classWhere = "";
-      let studentSourceQuery = "";
-      let studentSourceParams = [];
+      console.log("[EXPORT] Loading student roster:", {
+        churchId,
+        attendanceType,
+        classId: filterClassId,
+      });
 
-      // =========================================================
-      // 1. CHUẨN BỊ ĐIỀU KIỆN LỚP
-      // =========================================================
+      // -------------------------------------------------------
+      // 6.1. LẤY ĐẦY ĐỦ HỌC SINH
+      // -------------------------------------------------------
+      let students = [];
+
       if (attendanceType === "catechism") {
         if (filterClassId === null) {
           console.warn(
-            "[EXPORT] Học giáo lý chưa xác định lớp. Bỏ qua truy vấn dữ liệu học sinh.",
+            "[EXPORT] Không có class_id khi lấy danh sách học giáo lý.",
           );
 
           return [];
         }
 
-        classWhere = `
-      AND EXISTS (
-        SELECT 1
-        FROM class_students cs
-        WHERE cs.student_id = s.id
-          AND cs.class_id = ?
-          AND cs.status = 'studying'
-      )
-    `;
+        const [studentRows] = await db.query(
+          `
+          SELECT DISTINCT
+            s.id AS student_id,
+            s.code AS student_code,
+            s.name AS student_name,
+            s.gender,
+            s.date_of_birth
 
-        studentSourceParams.push(filterClassId);
+          FROM students s
 
-        studentSourceQuery = `
-      INNER JOIN classes cl
-        ON cl.id = ?
-       AND cl.church_id = s.church_id
-    `;
+          INNER JOIN class_students cs
+            ON cs.student_id = s.id
 
-        // Tham số của JOIN phải đứng trước tham số WHERE.
-        studentSourceParams = [filterClassId, filterClassId];
+          INNER JOIN classes cl
+            ON cl.id = cs.class_id
+           AND cl.church_id = s.church_id
+
+          WHERE s.church_id = ?
+            AND cl.id = ?
+            AND cs.status = 'studying'
+
+          ORDER BY s.name ASC, s.id ASC
+          `,
+          [churchId, filterClassId],
+        );
+
+        students = studentRows;
+      } else {
+        // Thánh lễ: lấy đầy đủ học sinh của giáo xứ,
+        // không phụ thuộc việc đã từng điểm danh hay chưa.
+        const [studentRows] = await db.query(
+          `
+          SELECT
+            s.id AS student_id,
+            s.code AS student_code,
+            s.name AS student_name,
+            s.gender,
+            s.date_of_birth
+
+          FROM students s
+
+          WHERE s.church_id = ?
+
+          ORDER BY s.name ASC, s.id ASC
+          `,
+          [churchId],
+        );
+
+        students = studentRows;
       }
 
-      // =========================================================
-      // 2. LẤY ĐẦY ĐỦ DANH SÁCH HỌC SINH
-      //
-      // Không lấy học sinh từ attendances.
-      // Học sinh chưa điểm danh vẫn phải xuất hiện.
-      // =========================================================
-      const studentParams = [churchId];
-
-      if (attendanceType === "catechism") {
-        studentParams.push(...studentSourceParams);
-      }
-
-      const [students] = await db.query(
-        `
-    SELECT
-      s.id AS student_id,
-      s.code AS student_code,
-      s.name AS student_name,
-      s.gender,
-      s.date_of_birth
-    FROM students s
-    ${studentSourceQuery}
-    WHERE s.church_id = ?
-      ${attendanceType === "catechism" ? classWhere : ""}
-    ORDER BY s.name ASC, s.id ASC
-    `,
-        studentParams,
-      );
-
-      console.log("[EXPORT] Student roster query:", {
+      console.log("[EXPORT] Student roster loaded:", {
         churchId,
         attendanceType,
         classId: filterClassId,
         studentCount: students.length,
       });
 
-      // Không có học sinh thì vẫn trả mảng rỗng hợp lệ.
       if (students.length === 0) {
-        console.warn("[EXPORT] Không có học sinh trong danh sách.", {
+        console.warn("[EXPORT] Danh sách học sinh rỗng:", {
           churchId,
           attendanceType,
           classId: filterClassId,
@@ -2131,17 +2166,15 @@ const exportAttendanceReport = async (req, res) => {
         return [];
       }
 
-      // =========================================================
-      // 3. LẤY THỐNG KÊ ĐIỂM DANH
-      //
-      // Chỉ tổng hợp những bản ghi điểm danh thực tế.
-      // =========================================================
+      // -------------------------------------------------------
+      // 6.2. LẤY THỐNG KÊ ĐIỂM DANH THỰC TẾ
+      // -------------------------------------------------------
+      let classWhere = "";
+
       const aggregateParams = [churchId, attendanceType, ...dateParams];
 
-      let attendanceClassWhere = "";
-
       if (filterClassId !== null) {
-        attendanceClassWhere = " AND a.class_id = ?";
+        classWhere = ` AND a.class_id = ?`;
         aggregateParams.push(filterClassId);
       }
 
@@ -2149,52 +2182,46 @@ const exportAttendanceReport = async (req, res) => {
         churchId,
         attendanceType,
         classId: filterClassId,
-        dateFilter: {
-          month,
-          year,
-          from,
-          to,
-          date,
-        },
+        dateFilter: { month, year, from, to, date },
         params: aggregateParams,
       });
 
       const [aggregateRows] = await db.query(
         `
-    SELECT
-      a.student_id,
+        SELECT
+          a.student_id,
 
-      COUNT(a.id) AS total,
+          COUNT(a.id) AS total,
 
-      COALESCE(SUM(
-        CASE WHEN a.status = 'present' THEN 1 ELSE 0 END
-      ), 0) AS present,
+          COALESCE(SUM(
+            CASE WHEN a.status = 'present' THEN 1 ELSE 0 END
+          ), 0) AS present,
 
-      COALESCE(SUM(
-        CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END
-      ), 0) AS absent,
+          COALESCE(SUM(
+            CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END
+          ), 0) AS absent,
 
-      COALESCE(SUM(
-        CASE WHEN a.status = 'late' THEN 1 ELSE 0 END
-      ), 0) AS late,
+          COALESCE(SUM(
+            CASE WHEN a.status = 'late' THEN 1 ELSE 0 END
+          ), 0) AS late,
 
-      COALESCE(SUM(
-        CASE WHEN a.status = 'excused' THEN 1 ELSE 0 END
-      ), 0) AS excused
+          COALESCE(SUM(
+            CASE WHEN a.status = 'excused' THEN 1 ELSE 0 END
+          ), 0) AS excused
 
-    FROM attendances a
+        FROM attendances a
 
-    INNER JOIN students s
-      ON s.id = a.student_id
-     AND s.church_id = a.church_id
+        INNER JOIN students s
+          ON s.id = a.student_id
+         AND s.church_id = a.church_id
 
-    WHERE a.church_id = ?
-      AND a.attendance_type = ?
-      ${dateWhere}
-      ${attendanceClassWhere}
+        WHERE a.church_id = ?
+          AND a.attendance_type = ?
+          ${dateWhere}
+          ${classWhere}
 
-    GROUP BY a.student_id
-    `,
+        GROUP BY a.student_id
+        `,
         aggregateParams,
       );
 
@@ -2210,14 +2237,14 @@ const exportAttendanceReport = async (req, res) => {
         });
       }
 
-      console.log("[EXPORT] Aggregate attendance query success:", {
+      console.log("[EXPORT] Aggregate query success:", {
         classId: filterClassId,
         studentsWithAttendance: aggregateMap.size,
       });
 
-      // =========================================================
-      // 4. LẤY TRẠNG THÁI THEO TỪNG NGÀY
-      // =========================================================
+      // -------------------------------------------------------
+      // 6.3. LẤY TRẠNG THÁI ĐIỂM DANH TỪNG NGÀY
+      // -------------------------------------------------------
       const dailyParams = [churchId, attendanceType, ...dateParams];
 
       if (filterClassId !== null) {
@@ -2226,30 +2253,33 @@ const exportAttendanceReport = async (req, res) => {
 
       const [dailyRows] = await db.query(
         `
-    SELECT
-      a.student_id,
-      DATE_FORMAT(
-        a.attendance_date,
-        '%Y-%m-%d'
-      ) AS attendance_day,
-      a.status
+        SELECT
+          a.id AS attendance_id,
+          a.student_id,
 
-    FROM attendances a
+          DATE_FORMAT(
+            a.attendance_date,
+            '%Y-%m-%d'
+          ) AS attendance_day,
 
-    INNER JOIN students s
-      ON s.id = a.student_id
-     AND s.church_id = a.church_id
+          a.status
 
-    WHERE a.church_id = ?
-      AND a.attendance_type = ?
-      ${dateWhere}
-      ${attendanceClassWhere}
+        FROM attendances a
 
-    ORDER BY
-      a.attendance_date ASC,
-      a.student_id ASC,
-      a.id ASC
-    `,
+        INNER JOIN students s
+          ON s.id = a.student_id
+         AND s.church_id = a.church_id
+
+        WHERE a.church_id = ?
+          AND a.attendance_type = ?
+          ${dateWhere}
+          ${classWhere}
+
+        ORDER BY
+          a.attendance_date ASC,
+          a.student_id ASC,
+          a.id ASC
+        `,
         dailyParams,
       );
 
@@ -2257,26 +2287,28 @@ const exportAttendanceReport = async (req, res) => {
 
       for (const dailyRow of dailyRows) {
         const studentKey = String(dailyRow.student_id);
+
         const dayKey = String(dailyRow.attendance_day || "").slice(0, 10);
+
+        if (!dayKey) continue;
 
         if (!dailyMap.has(studentKey)) {
           dailyMap.set(studentKey, {});
         }
 
-        // Nếu một học sinh có nhiều bản ghi cùng ngày,
-        // bản ghi sau theo thứ tự truy vấn sẽ được sử dụng.
         dailyMap.get(studentKey)[dayKey] =
           statusShortCodes[dailyRow.status] || "";
       }
 
-      // =========================================================
-      // 5. GHÉP DANH SÁCH HỌC SINH VỚI THỐNG KÊ
-      //
-      // Không có bản ghi điểm danh:
-      // - Vẫn có tên học sinh.
-      // - Số liệu bằng 0.
-      // - Trạng thái ngày để trống.
-      // =========================================================
+      console.log("[EXPORT] Daily attendance query:", {
+        classId: filterClassId,
+        dailyRecords: dailyRows.length,
+        studentsWithDailyStatus: dailyMap.size,
+      });
+
+      // -------------------------------------------------------
+      // 6.4. GHÉP TOÀN BỘ HỌC SINH VỚI DỮ LIỆU ĐIỂM DANH
+      // -------------------------------------------------------
       const result = students.map((student) => {
         const statistics = aggregateMap.get(String(student.student_id)) || {
           total: 0,
@@ -2289,6 +2321,9 @@ const exportAttendanceReport = async (req, res) => {
         return {
           ...student,
           ...statistics,
+
+          // Không có bản ghi ngày nào thì trả về {}.
+          // Excel sẽ để các ô ngày tương ứng trống.
           dailyStatuses: dailyMap.get(String(student.student_id)) || {},
         };
       });
@@ -2311,7 +2346,7 @@ const exportAttendanceReport = async (req, res) => {
     };
 
     // =========================================================
-    // 5. THEME EXCEL FAITHEDU
+    // 7. THEME EXCEL FAITHEDU
     // =========================================================
     const C = {
       navy: "173B5E",
@@ -2351,7 +2386,7 @@ const exportAttendanceReport = async (req, res) => {
     ];
 
     // =========================================================
-    // 6. HELPER
+    // 8. HELPER
     // =========================================================
     const formatDate = (value) => {
       if (!value) return "";
@@ -2572,7 +2607,7 @@ const exportAttendanceReport = async (req, res) => {
           };
         }
 
-        [1, 6, 7, 8, 9, 10, 11].forEach((col) => {
+        [1, 4, 5, 6, 7, 8, 9, 10, 11].forEach((col) => {
           row.getCell(col).alignment = {
             horizontal: "center",
             vertical: "middle",
@@ -2620,7 +2655,7 @@ const exportAttendanceReport = async (req, res) => {
     };
 
     // =========================================================
-    // 7. TẠO SHEET CHI TIẾT
+    // 9. TẠO SHEET CHI TIẾT
     // =========================================================
     const createAttendanceSheet = ({
       title,
@@ -2688,13 +2723,15 @@ const exportAttendanceReport = async (req, res) => {
         sheet.mergeCells("E5:F5");
         sheet.getCell("E5").value = "MÃ LỚP";
         sheet.getCell("G5").value = classInfo.code || "";
+
+        sheet.mergeCells("E6:F6");
+        sheet.getCell("E6").value = "NĂM HỌC";
+        sheet.getCell("G6").value = classInfo.academic_year || "";
       }
 
       [4, 5, 6, 7].forEach((r) => {
         ["A", "B", "E", "F"].forEach((col) => {
-          const cell = sheet.getCell(`${col}${r}`);
-
-          cell.font = {
+          sheet.getCell(`${col}${r}`).font = {
             name: "Aptos",
             bold: true,
             color: { argb: C.navy },
@@ -2723,7 +2760,9 @@ const exportAttendanceReport = async (req, res) => {
 
       styleHeader(sheet.getRow(headerRow));
 
-      // Chú thích trạng thái nằm phía trên tiêu đề cột ngày.
+      // -------------------------------------------------------
+      // CHÚ THÍCH TRẠNG THÁI
+      // -------------------------------------------------------
       if (reportDates.length > 0) {
         sheet.mergeCells(8, 1, 8, lastCol);
 
@@ -2761,9 +2800,9 @@ const exportAttendanceReport = async (req, res) => {
         sheet.getRow(8).height = 25;
       }
 
-      // =======================================================
-      // THÊM DỮ LIỆU HỌC SINH VÀ TRẠNG THÁI THEO TỪNG NGÀY
-      // =======================================================
+      // -------------------------------------------------------
+      // THÊM TOÀN BỘ HỌC SINH
+      // -------------------------------------------------------
       rows.forEach((item, index) => {
         const row = sheet.addRow([
           index + 1,
@@ -2791,18 +2830,18 @@ const exportAttendanceReport = async (req, res) => {
             vertical: "middle",
           };
 
-          cell.font = {
-            name: "Aptos",
-            size: 10,
-            bold: Boolean(code),
-            color: { argb: C.text },
-          };
-
           const dayColors = {
             C: C.greenLight,
             M: C.amberLight,
             P: C.blueLight,
             V: C.redLight,
+          };
+
+          cell.font = {
+            name: "Aptos",
+            size: 10,
+            bold: Boolean(code),
+            color: { argb: C.text },
           };
 
           if (code && dayColors[code]) {
@@ -2820,15 +2859,51 @@ const exportAttendanceReport = async (req, res) => {
       if (rows.length > 0) {
         styleDataRows(sheet, 10, lastDataRow, lastCol);
 
+        // Khôi phục định dạng ngày sau khi styleDataRows chạy.
+        rows.forEach((item, index) => {
+          reportDates.forEach((day, dayIndex) => {
+            const cell = sheet.getCell(10 + index, 12 + dayIndex);
+
+            const code = item.dailyStatuses?.[day] || "";
+
+            const dayColors = {
+              C: [C.greenLight, C.green],
+              M: [C.amberLight, C.amber],
+              P: [C.blueLight, C.navy],
+              V: [C.redLight, C.red],
+            };
+
+            if (code && dayColors[code]) {
+              cell.fill = {
+                type: "pattern",
+                pattern: "solid",
+                fgColor: { argb: dayColors[code][0] },
+              };
+
+              cell.font = {
+                name: "Aptos",
+                size: 10,
+                bold: true,
+                color: { argb: dayColors[code][1] },
+              };
+            }
+
+            cell.alignment = {
+              horizontal: "center",
+              vertical: "middle",
+            };
+          });
+        });
+
         sheet.autoFilter = {
           from: "A9",
           to: `${lastColLetter}${lastDataRow}`,
         };
       }
 
-      // =======================================================
+      // -------------------------------------------------------
       // TỔNG CỘNG
-      // =======================================================
+      // -------------------------------------------------------
       const totals = sumRows(rows);
 
       const totalRow = sheet.addRow([
@@ -2873,9 +2948,9 @@ const exportAttendanceReport = async (req, res) => {
 
       totalRow.getCell(11).numFmt = "0.00%";
 
-      // =======================================================
+      // -------------------------------------------------------
       // GHI CHÚ CUỐI BẢNG
-      // =======================================================
+      // -------------------------------------------------------
       const noteRow = sheet.rowCount + 2;
 
       sheet.mergeCells(noteRow, 1, noteRow, lastCol);
@@ -2900,20 +2975,23 @@ const exportAttendanceReport = async (req, res) => {
 
       sheet.getRow(noteRow).height = 32;
 
-      console.log(
-        "[EXPORT] Sheet:",
-        sheet.name,
-        "| Students:",
-        rows.length,
-        "| Total attendance:",
-        totals.total,
-      );
+      console.log("[EXPORT] Sheet created:", {
+        sheet: sheet.name,
+        students: rows.length,
+        totalAttendance: totals.total,
+        studentsWithoutAttendance: rows.filter((item) => item.total === 0)
+          .length,
+      });
 
-      return { rows, totals, sheet };
+      return {
+        rows,
+        totals,
+        sheet,
+      };
     };
 
     // =========================================================
-    // 8. LẤY DỮ LIỆU VÀ TẠO CÁC SHEET
+    // 10. LẤY DỮ LIỆU VÀ TẠO SHEET CHI TIẾT
     // =========================================================
     const reports = [];
 
@@ -2923,6 +3001,7 @@ const exportAttendanceReport = async (req, res) => {
           id: classInfo.id,
           name: classInfo.name,
           code: classInfo.code,
+          academic_year: classInfo.academic_year,
         });
 
         const rows = await getAttendanceRows(classInfo.id);
@@ -2961,11 +3040,17 @@ const exportAttendanceReport = async (req, res) => {
     }
 
     // =========================================================
-    // 9. SHEET TỔNG QUAN
+    // 11. SHEET TỔNG QUAN
     // =========================================================
     const overview = workbook.addWorksheet("Tong-quan", {
-      properties: { tabColor: C.gold },
-      views: [{ showGridLines: false }],
+      properties: {
+        tabColor: C.gold,
+      },
+      views: [
+        {
+          showGridLines: false,
+        },
+      ],
     });
 
     overview.columns = [
@@ -3148,7 +3233,7 @@ const exportAttendanceReport = async (req, res) => {
     });
 
     // =========================================================
-    // 10. BẢNG SO SÁNH VÀ THANH TRỰC QUAN
+    // 12. BẢNG SO SÁNH THEO LỚP / PHẠM VI
     // =========================================================
     overview.mergeCells("A16:F16");
 
@@ -3225,7 +3310,7 @@ const exportAttendanceReport = async (req, res) => {
     ];
 
     // =========================================================
-    // 11. XUẤT FILE EXCEL
+    // 13. XUẤT FILE EXCEL
     // =========================================================
     const safePeriod = (() => {
       if (month !== null && year !== null) {
@@ -3265,11 +3350,13 @@ const exportAttendanceReport = async (req, res) => {
       "[EXPORT] Workbook detail:",
       JSON.stringify({
         sheetCount: workbook.worksheets.length,
+
         sheets: workbook.worksheets.map((sheet) => ({
           name: sheet.name,
           rows: sheet.rowCount,
           columns: sheet.columnCount,
         })),
+
         summary: {
           students: grand.students,
           total: grand.total,
@@ -3278,10 +3365,21 @@ const exportAttendanceReport = async (req, res) => {
           late: grand.late,
           excused: grand.excused,
         },
+
+        classCount: classes.length,
+
+        classDetails: reports.map((report) => ({
+          name: report.name,
+          studentCount: report.rows.length,
+          studentsWithoutAttendance: report.rows.filter(
+            (item) => item.total === 0,
+          ).length,
+        })),
       }),
     );
 
     console.log("[EXPORT] SUCCESS:", fileName);
+    console.log("============================================================");
 
     res.setHeader(
       "Content-Type",
@@ -3300,14 +3398,12 @@ const exportAttendanceReport = async (req, res) => {
     console.error(
       "\n============================================================",
     );
-
     console.error("EXPORT ATTENDANCE REPORT ERROR");
     console.error("MESSAGE:", error?.message);
     console.error("CODE:", error?.code);
     console.error("SQL STATE:", error?.sqlState);
     console.error("SQL MESSAGE:", error?.sqlMessage);
     console.error("STACK:", error?.stack);
-
     console.error(
       "============================================================",
     );

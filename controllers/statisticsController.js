@@ -2044,107 +2044,213 @@ const exportAttendanceReport = async (req, res) => {
     // =========================================================
     // 4. HÀM LẤY THỐNG KÊ ĐIỂM DANH
     // =========================================================
+
     const getAttendanceRows = async (filterClassId = null) => {
       let classWhere = "";
+      let studentSourceQuery = "";
+      let studentSourceParams = [];
 
-      const params = [churchId, attendanceType, ...dateParams];
+      // =========================================================
+      // 1. CHUẨN BỊ ĐIỀU KIỆN LỚP
+      // =========================================================
+      if (attendanceType === "catechism") {
+        if (filterClassId === null) {
+          console.warn(
+            "[EXPORT] Học giáo lý chưa xác định lớp. Bỏ qua truy vấn dữ liệu học sinh.",
+          );
+
+          return [];
+        }
+
+        classWhere = `
+      AND EXISTS (
+        SELECT 1
+        FROM class_students cs
+        WHERE cs.student_id = s.id
+          AND cs.class_id = ?
+          AND cs.status = 'studying'
+      )
+    `;
+
+        studentSourceParams.push(filterClassId);
+
+        studentSourceQuery = `
+      INNER JOIN classes cl
+        ON cl.id = ?
+       AND cl.church_id = s.church_id
+    `;
+
+        // Tham số của JOIN phải đứng trước tham số WHERE.
+        studentSourceParams = [filterClassId, filterClassId];
+      }
+
+      // =========================================================
+      // 2. LẤY ĐẦY ĐỦ DANH SÁCH HỌC SINH
+      //
+      // Không lấy học sinh từ attendances.
+      // Học sinh chưa điểm danh vẫn phải xuất hiện.
+      // =========================================================
+      const studentParams = [churchId];
+
+      if (attendanceType === "catechism") {
+        studentParams.push(...studentSourceParams);
+      }
+
+      const [students] = await db.query(
+        `
+    SELECT
+      s.id AS student_id,
+      s.code AS student_code,
+      s.name AS student_name,
+      s.gender,
+      s.date_of_birth
+    FROM students s
+    ${studentSourceQuery}
+    WHERE s.church_id = ?
+      ${attendanceType === "catechism" ? classWhere : ""}
+    ORDER BY s.name ASC, s.id ASC
+    `,
+        studentParams,
+      );
+
+      console.log("[EXPORT] Student roster query:", {
+        churchId,
+        attendanceType,
+        classId: filterClassId,
+        studentCount: students.length,
+      });
+
+      // Không có học sinh thì vẫn trả mảng rỗng hợp lệ.
+      if (students.length === 0) {
+        console.warn("[EXPORT] Không có học sinh trong danh sách.", {
+          churchId,
+          attendanceType,
+          classId: filterClassId,
+        });
+
+        return [];
+      }
+
+      // =========================================================
+      // 3. LẤY THỐNG KÊ ĐIỂM DANH
+      //
+      // Chỉ tổng hợp những bản ghi điểm danh thực tế.
+      // =========================================================
+      const aggregateParams = [churchId, attendanceType, ...dateParams];
+
+      let attendanceClassWhere = "";
 
       if (filterClassId !== null) {
-        classWhere = ` AND a.class_id = ?`;
-        params.push(filterClassId);
+        attendanceClassWhere = " AND a.class_id = ?";
+        aggregateParams.push(filterClassId);
       }
 
       console.log("[EXPORT] Aggregate query:", {
         churchId,
         attendanceType,
         classId: filterClassId,
-        dateFilter: { month, year, from, to, date },
-        params,
+        dateFilter: {
+          month,
+          year,
+          from,
+          to,
+          date,
+        },
+        params: aggregateParams,
       });
 
-      const [rows] = await db.query(
+      const [aggregateRows] = await db.query(
         `
-        SELECT
-          s.id AS student_id,
-          s.code AS student_code,
-          s.name AS student_name,
-          s.gender,
-          s.date_of_birth,
+    SELECT
+      a.student_id,
 
-          COUNT(a.id) AS total,
+      COUNT(a.id) AS total,
 
-          COALESCE(SUM(
-            CASE WHEN a.status = 'present' THEN 1 ELSE 0 END
-          ), 0) AS present,
+      COALESCE(SUM(
+        CASE WHEN a.status = 'present' THEN 1 ELSE 0 END
+      ), 0) AS present,
 
-          COALESCE(SUM(
-            CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END
-          ), 0) AS absent,
+      COALESCE(SUM(
+        CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END
+      ), 0) AS absent,
 
-          COALESCE(SUM(
-            CASE WHEN a.status = 'late' THEN 1 ELSE 0 END
-          ), 0) AS late,
+      COALESCE(SUM(
+        CASE WHEN a.status = 'late' THEN 1 ELSE 0 END
+      ), 0) AS late,
 
-          COALESCE(SUM(
-            CASE WHEN a.status = 'excused' THEN 1 ELSE 0 END
-          ), 0) AS excused
+      COALESCE(SUM(
+        CASE WHEN a.status = 'excused' THEN 1 ELSE 0 END
+      ), 0) AS excused
 
-        FROM attendances a
+    FROM attendances a
 
-        INNER JOIN students s
-          ON s.id = a.student_id
-          AND s.church_id = a.church_id
+    INNER JOIN students s
+      ON s.id = a.student_id
+     AND s.church_id = a.church_id
 
-        WHERE a.church_id = ?
-          AND a.attendance_type = ?
-          ${dateWhere}
-          ${classWhere}
+    WHERE a.church_id = ?
+      AND a.attendance_type = ?
+      ${dateWhere}
+      ${attendanceClassWhere}
 
-        GROUP BY
-          s.id,
-          s.code,
-          s.name,
-          s.gender,
-          s.date_of_birth
-
-        ORDER BY s.name ASC
-        `,
-        params,
+    GROUP BY a.student_id
+    `,
+        aggregateParams,
       );
 
+      const aggregateMap = new Map();
+
+      for (const row of aggregateRows) {
+        aggregateMap.set(String(row.student_id), {
+          total: Number(row.total || 0),
+          present: Number(row.present || 0),
+          absent: Number(row.absent || 0),
+          late: Number(row.late || 0),
+          excused: Number(row.excused || 0),
+        });
+      }
+
       console.log("[EXPORT] Aggregate attendance query success:", {
-        churchId,
-        attendanceType,
         classId: filterClassId,
-        aggregateRows: rows.length,
-        dateFilter: { month, year, from, to, date },
+        studentsWithAttendance: aggregateMap.size,
       });
 
-      // Lấy trạng thái điểm danh theo từng ngày.
-      // Ngày không có bản ghi sẽ để trống, KHÔNG tự điền Vắng.
+      // =========================================================
+      // 4. LẤY TRẠNG THÁI THEO TỪNG NGÀY
+      // =========================================================
+      const dailyParams = [churchId, attendanceType, ...dateParams];
+
+      if (filterClassId !== null) {
+        dailyParams.push(filterClassId);
+      }
+
       const [dailyRows] = await db.query(
         `
-        SELECT
-          a.student_id,
-          DATE_FORMAT(a.attendance_date, '%Y-%m-%d') AS attendance_day,
-          a.status
+    SELECT
+      a.student_id,
+      DATE_FORMAT(
+        a.attendance_date,
+        '%Y-%m-%d'
+      ) AS attendance_day,
+      a.status
 
-        FROM attendances a
+    FROM attendances a
 
-        INNER JOIN students s
-          ON s.id = a.student_id
-          AND s.church_id = a.church_id
+    INNER JOIN students s
+      ON s.id = a.student_id
+     AND s.church_id = a.church_id
 
-        WHERE a.church_id = ?
-          AND a.attendance_type = ?
-          ${dateWhere}
-          ${classWhere}
+    WHERE a.church_id = ?
+      AND a.attendance_type = ?
+      ${dateWhere}
+      ${attendanceClassWhere}
 
-        ORDER BY
-          a.attendance_date ASC,
-          a.student_id ASC
-        `,
-        params,
+    ORDER BY
+      a.attendance_date ASC,
+      a.student_id ASC,
+      a.id ASC
+    `,
+        dailyParams,
       );
 
       const dailyMap = new Map();
@@ -2157,25 +2263,51 @@ const exportAttendanceReport = async (req, res) => {
           dailyMap.set(studentKey, {});
         }
 
+        // Nếu một học sinh có nhiều bản ghi cùng ngày,
+        // bản ghi sau theo thứ tự truy vấn sẽ được sử dụng.
         dailyMap.get(studentKey)[dayKey] =
           statusShortCodes[dailyRow.status] || "";
       }
 
-      console.log("[EXPORT] Daily attendance query:", {
-        classId: filterClassId,
-        rows: dailyRows.length,
-        studentsWithDailyStatus: dailyMap.size,
+      // =========================================================
+      // 5. GHÉP DANH SÁCH HỌC SINH VỚI THỐNG KÊ
+      //
+      // Không có bản ghi điểm danh:
+      // - Vẫn có tên học sinh.
+      // - Số liệu bằng 0.
+      // - Trạng thái ngày để trống.
+      // =========================================================
+      const result = students.map((student) => {
+        const statistics = aggregateMap.get(String(student.student_id)) || {
+          total: 0,
+          present: 0,
+          absent: 0,
+          late: 0,
+          excused: 0,
+        };
+
+        return {
+          ...student,
+          ...statistics,
+          dailyStatuses: dailyMap.get(String(student.student_id)) || {},
+        };
       });
 
-      return rows.map((row) => ({
-        ...row,
-        total: Number(row.total || 0),
-        present: Number(row.present || 0),
-        absent: Number(row.absent || 0),
-        late: Number(row.late || 0),
-        excused: Number(row.excused || 0),
-        dailyStatuses: dailyMap.get(String(row.student_id)) || {},
-      }));
+      const studentsWithoutAttendance = result.filter(
+        (student) => student.total === 0,
+      ).length;
+
+      console.log("[EXPORT] Final roster:", {
+        churchId,
+        attendanceType,
+        classId: filterClassId,
+        totalStudents: result.length,
+        studentsWithAttendance: result.length - studentsWithoutAttendance,
+        studentsWithoutAttendance,
+        dailyRecords: dailyRows.length,
+      });
+
+      return result;
     };
 
     // =========================================================

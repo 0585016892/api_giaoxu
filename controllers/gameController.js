@@ -41,20 +41,23 @@ const GAMES_UPLOAD_DIR = path.join(process.cwd(), "uploads", "games");
  */
 
 const getAuthUser = (req) => {
-  if (!req.user) {
-    throw new Error("Không xác định được người dùng đăng nhập");
-  }
+  if (!req.user) throw new Error("Không xác định được người dùng đăng nhập");
 
   const id = Number(req.user.id);
-
   if (!Number.isInteger(id) || id <= 0) {
     throw new Error("ID người dùng không hợp lệ");
   }
 
-  return {
-    id,
-    role: req.user.role || null,
-  };
+  // Chỉ lấy church_id từ thông tin xác thực đã được middleware kiểm tra.
+  // Hỗ trợ parish_id để tương thích một số JWT cũ của FaithEdu.
+  const churchId = Number(req.user.church_id ?? req.user.parish_id);
+  if (!Number.isInteger(churchId) || churchId <= 0) {
+    throw new Error(
+      "Tài khoản chưa có church_id hợp lệ trong JWT. Vui lòng kiểm tra middleware/JWT và đăng nhập lại.",
+    );
+  }
+
+  return { id, church_id: churchId, role: req.user.role || null };
 };
 
 /**
@@ -880,49 +883,37 @@ const processGameFiles = ({ files = {}, gameId, oldData = {} }) => {
 
 const createGame = async (req, res) => {
   const startTime = Date.now();
-
   let gameId = null;
-
   let user = null;
-
   const requestInfo = getRequestInfo(req);
 
   try {
     user = getAuthUser(req);
-
-    const teacherId = user.id;
-
+    const churchId = user.church_id;
     const requestData = parseRequestGameData(req.body || {});
 
     if (typeof requestData.name !== "string" || !requestData.name.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: "Tên game là bắt buộc",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "Tên game là bắt buộc" });
     }
 
     const gameType = normalizeGameType(requestData.type);
-
     logInfo("CREATE_START", {
-      teacher_id: teacherId,
+      user_id: user.id,
+      church_id: churchId,
+      role: user.role,
       type: gameType,
       name: requestData.name,
       files: Object.keys(req.files || {}),
       ...requestInfo,
     });
 
-    /**
-     * Tạo data ban đầu
-     */
-
     const initialGameData = buildGameData({
       ...requestData,
       type: gameType,
       thumbnail: null,
-      background: {
-        ...requestData.background,
-        image: null,
-      },
+      background: { ...requestData.background, image: null },
       media: {
         ...requestData.media,
         backgroundMusic: null,
@@ -931,26 +922,11 @@ const createGame = async (req, res) => {
       },
     });
 
-    /**
-     * INSERT DB
-     */
-
     const [result] = await pool.execute(
-      `
-        INSERT INTO games (
-          teacher_id,
-          data
-        )
-        VALUES (?, ?)
-        `,
-      [teacherId, JSON.stringify(initialGameData)],
+      `INSERT INTO games (church_id, data) VALUES (?, ?)`,
+      [churchId, JSON.stringify(initialGameData)],
     );
-
     gameId = result.insertId;
-
-    /**
-     * FILES
-     */
 
     const {
       thumbnailPath,
@@ -958,57 +934,35 @@ const createGame = async (req, res) => {
       backgroundMusicPath,
       correctSoundPath,
       wrongSoundPath,
-    } = processGameFiles({
-      files: req.files || {},
-      gameId,
-      oldData: {},
-    });
-
-    /**
-     * FINAL DATA
-     */
+    } = processGameFiles({ files: req.files || {}, gameId, oldData: {} });
 
     const finalGameData = buildGameData({
       ...requestData,
-
       type: gameType,
-
       thumbnail: thumbnailPath,
-
       background: {
         ...requestData.background,
         image: backgroundPath || requestData.background?.image || null,
       },
-
       media: {
         ...requestData.media,
-
         backgroundMusic:
           backgroundMusicPath || requestData.media?.backgroundMusic || null,
-
         correctSound:
           correctSoundPath || requestData.media?.correctSound || null,
-
         wrongSound: wrongSoundPath || requestData.media?.wrongSound || null,
       },
     });
 
-    /**
-     * UPDATE DATA
-     */
-
     await pool.execute(
-      `
-      UPDATE games
-      SET data = ?
-      WHERE id = ?
-      `,
-      [JSON.stringify(finalGameData), gameId],
+      `UPDATE games SET data = ? WHERE id = ? AND church_id = ?`,
+      [JSON.stringify(finalGameData), gameId, churchId],
     );
 
     logInfo("CREATE_SUCCESS", {
       game_id: gameId,
-      teacher_id: teacherId,
+      church_id: churchId,
+      user_id: user.id,
       type: gameType,
       durationMs: Date.now() - startTime,
       ...requestInfo,
@@ -1016,46 +970,38 @@ const createGame = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-
       message: "Tạo game thành công",
-
-      data: {
-        id: gameId,
-
-        teacher_id: teacherId,
-
-        ...finalGameData,
-      },
+      data: { id: gameId, church_id: churchId, ...finalGameData },
     });
   } catch (error) {
     logError("CREATE_ERROR", error, {
       game_id: gameId,
       user_id: user?.id,
+      church_id: user?.church_id,
       durationMs: Date.now() - startTime,
       ...requestInfo,
     });
 
     if (gameId) {
       try {
-        await pool.execute(
-          `
-          DELETE FROM games
-          WHERE id = ?
-          `,
-          [gameId],
-        );
+        await pool.execute(`DELETE FROM games WHERE id = ? AND church_id = ?`, [
+          gameId,
+          user?.church_id,
+        ]);
       } catch (rollbackError) {
         logError("CREATE_ROLLBACK_ERROR", rollbackError, {
           game_id: gameId,
+          church_id: user?.church_id,
         });
       }
-
       deleteGameDirectory(gameId);
     }
 
-    return res.status(400).json({
+    const authError = /church_id|người dùng đăng nhập|ID người dùng/.test(
+      error.message || "",
+    );
+    return res.status(authError ? 401 : 400).json({
       success: false,
-
       message: error.message || "Không thể tạo game",
     });
   }
@@ -1069,40 +1015,47 @@ const createGame = async (req, res) => {
 
 const getAllGames = async (req, res) => {
   try {
-    const [rows] = await pool.execute(`
-        SELECT
-          id,
-          teacher_id,
-          data,
-          created_at,
-          updated_at
-        FROM games
-        ORDER BY id DESC
-      `);
+    const user = getAuthUser(req);
+    const churchId = user.church_id;
+
+    logInfo("GET_ALL_START", {
+      user_id: user.id,
+      church_id: churchId,
+      role: user.role,
+      ...getRequestInfo(req),
+    });
+
+    const [rows] = await pool.execute(
+      `SELECT id, church_id, data, created_at, updated_at
+       FROM games WHERE church_id = ? ORDER BY id DESC`,
+      [churchId],
+    );
 
     const games = rows.map((game) => ({
       id: game.id,
-
-      teacher_id: game.teacher_id,
-
+      church_id: game.church_id,
       ...parseGameData(game.data),
-
       created_at: game.created_at,
-
       updated_at: game.updated_at,
     }));
 
-    return res.json({
-      success: true,
-      data: games,
+    logInfo("GET_ALL_SUCCESS", {
+      user_id: user.id,
+      church_id: churchId,
+      count: games.length,
     });
+    return res.json({ success: true, data: games });
   } catch (error) {
-    logError("GET_ALL_ERROR", error);
-
-    return res.status(500).json({
+    logError("GET_ALL_ERROR", error, {
+      user_id: req.user?.id,
+      church_id: req.user?.church_id ?? req.user?.parish_id,
+    });
+    const authError = /church_id|người dùng đăng nhập|ID người dùng/.test(
+      error.message || "",
+    );
+    return res.status(authError ? 401 : 500).json({
       success: false,
-
-      message: "Không thể lấy danh sách game",
+      message: authError ? error.message : "Không thể lấy danh sách game",
     });
   }
 };
@@ -1116,59 +1069,42 @@ const getAllGames = async (req, res) => {
 const getGamesByTeacher = async (req, res) => {
   try {
     const user = getAuthUser(req);
+    const churchId = user.church_id;
 
-    const requestedTeacherId = Number(req.params.teacherId);
-
-    const isAdmin = user.role === "admin";
-
-    const teacherId = isAdmin ? requestedTeacherId : user.id;
-
-    if (!Number.isInteger(teacherId) || teacherId <= 0) {
-      return res.status(400).json({
-        success: false,
-
-        message: "teacherId không hợp lệ",
-      });
-    }
+    // Giữ tên hàm để không làm hỏng routes cũ; dữ liệu lọc theo church_id.
+    logInfo("GET_BY_CHURCH_START", {
+      user_id: user.id,
+      church_id: churchId,
+      role: user.role,
+      ...getRequestInfo(req),
+    });
 
     const [rows] = await pool.execute(
-      `
-          SELECT
-            id,
-            teacher_id,
-            data,
-            created_at,
-            updated_at
-          FROM games
-          WHERE teacher_id = ?
-          ORDER BY id DESC
-          `,
-      [teacherId],
+      `SELECT id, church_id, data, created_at, updated_at
+       FROM games WHERE church_id = ? ORDER BY id DESC`,
+      [churchId],
     );
 
     const games = rows.map((game) => ({
       id: game.id,
-
-      teacher_id: game.teacher_id,
-
+      church_id: game.church_id,
       ...parseGameData(game.data),
-
       created_at: game.created_at,
-
       updated_at: game.updated_at,
     }));
 
-    return res.json({
-      success: true,
-      data: games,
-    });
+    return res.json({ success: true, data: games });
   } catch (error) {
-    logError("GET_BY_TEACHER_ERROR", error);
-
-    return res.status(500).json({
+    logError("GET_BY_CHURCH_ERROR", error, {
+      user_id: req.user?.id,
+      church_id: req.user?.church_id ?? req.user?.parish_id,
+    });
+    const authError = /church_id|người dùng đăng nhập|ID người dùng/.test(
+      error.message || "",
+    );
+    return res.status(authError ? 401 : 500).json({
       success: false,
-
-      message: "Không thể lấy danh sách game",
+      message: authError ? error.message : "Không thể lấy danh sách game",
     });
   }
 };
@@ -1181,67 +1117,52 @@ const getGamesByTeacher = async (req, res) => {
 
 const getGameById = async (req, res) => {
   const id = Number(req.params.id);
-
   try {
     const user = getAuthUser(req);
+    const churchId = user.church_id;
 
     if (!Number.isInteger(id) || id <= 0) {
-      return res.status(400).json({
-        success: false,
-
-        message: "ID game không hợp lệ",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "ID game không hợp lệ" });
     }
 
     const [rows] = await pool.execute(
-      `
-        SELECT
-          id,
-          teacher_id,
-          data,
-          created_at,
-          updated_at
-        FROM games
-        WHERE id = ?
-        LIMIT 1
-        `,
-      [id],
+      `SELECT id, church_id, data, created_at, updated_at
+       FROM games WHERE id = ? AND church_id = ? LIMIT 1`,
+      [id, churchId],
     );
 
     if (!rows.length) {
       return res.status(404).json({
         success: false,
-
-        message: "Không tìm thấy game",
+        message: "Không tìm thấy game trong giáo xứ của bạn",
       });
     }
 
     const game = rows[0];
-
     return res.json({
       success: true,
-
       data: {
         id: game.id,
-
-        teacher_id: game.teacher_id,
-
+        church_id: game.church_id,
         ...parseGameData(game.data),
-
         created_at: game.created_at,
-
         updated_at: game.updated_at,
       },
     });
   } catch (error) {
     logError("GET_BY_ID_ERROR", error, {
       game_id: id,
+      user_id: req.user?.id,
+      church_id: req.user?.church_id ?? req.user?.parish_id,
     });
-
-    return res.status(500).json({
+    const authError = /church_id|người dùng đăng nhập|ID người dùng/.test(
+      error.message || "",
+    );
+    return res.status(authError ? 401 : 500).json({
       success: false,
-
-      message: "Không thể lấy game",
+      message: authError ? error.message : "Không thể lấy game",
     });
   }
 };
@@ -1254,157 +1175,109 @@ const getGameById = async (req, res) => {
 
 const updateGame = async (req, res) => {
   const id = Number(req.params.id);
-
   const requestInfo = getRequestInfo(req);
 
   try {
     const user = getAuthUser(req);
+    const churchId = user.church_id;
 
     if (!Number.isInteger(id) || id <= 0) {
-      return res.status(400).json({
-        success: false,
-
-        message: "ID game không hợp lệ",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "ID game không hợp lệ" });
     }
 
-    /**
-     * GET OLD GAME
-     */
+    logInfo("UPDATE_START", {
+      game_id: id,
+      user_id: user.id,
+      church_id: churchId,
+      ...requestInfo,
+    });
 
     const [rows] = await pool.execute(
-      `
-        SELECT
-          id,
-          teacher_id,
-          data
-        FROM games
-        WHERE id = ?
-        LIMIT 1
-        `,
-      [id],
+      `SELECT id, church_id, data FROM games
+       WHERE id = ? AND church_id = ? LIMIT 1`,
+      [id, churchId],
     );
 
     if (!rows.length) {
       return res.status(404).json({
         success: false,
-
-        message: "Không tìm thấy game",
+        message: "Không tìm thấy game trong giáo xứ của bạn",
       });
     }
 
     const oldGame = rows[0];
-
     const oldData = parseGameData(oldGame.data);
-
-    /**
-     * PARSE REQUEST
-     */
-
     const requestData = parseRequestGameData(req.body || {}, oldData);
 
     if (typeof requestData.name !== "string" || !requestData.name.trim()) {
-      return res.status(400).json({
-        success: false,
-
-        message: "Tên game không hợp lệ",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "Tên game không hợp lệ" });
     }
 
     const gameType = normalizeGameType(requestData.type);
-
-    /**
-     * PROCESS FILES
-     */
-
     const {
       thumbnailPath,
       backgroundPath,
       backgroundMusicPath,
       correctSoundPath,
       wrongSoundPath,
-    } = processGameFiles({
-      files: req.files || {},
-      gameId: id,
-      oldData,
-    });
-
-    /**
-     * BUILD FINAL DATA
-     */
+    } = processGameFiles({ files: req.files || {}, gameId: id, oldData });
 
     const finalGameData = buildGameData({
       ...requestData,
-
       type: gameType,
-
       thumbnail: thumbnailPath,
-
-      background: {
-        ...requestData.background,
-
-        image: backgroundPath,
-      },
-
+      background: { ...requestData.background, image: backgroundPath },
       media: {
         ...requestData.media,
-
         backgroundMusic: backgroundMusicPath,
-
         correctSound: correctSoundPath,
-
         wrongSound: wrongSoundPath,
       },
     });
 
-    /**
-     * UPDATE DB
-     */
-
-    await pool.execute(
-      `
-      UPDATE games
-      SET
-        data = ?,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-      `,
-      [JSON.stringify(finalGameData), id],
+    const [result] = await pool.execute(
+      `UPDATE games
+       SET data = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND church_id = ?`,
+      [JSON.stringify(finalGameData), id, churchId],
     );
+
+    if (!result.affectedRows) {
+      return res.status(404).json({
+        success: false,
+        message: "Game không tồn tại hoặc không thuộc giáo xứ của bạn",
+      });
+    }
 
     logInfo("UPDATE_SUCCESS", {
       game_id: id,
-
       user_id: user.id,
-
+      church_id: churchId,
       type: gameType,
-
       ...requestInfo,
     });
 
     return res.json({
       success: true,
-
       message: "Cập nhật game thành công",
-
-      data: {
-        id,
-
-        teacher_id: oldGame.teacher_id,
-
-        ...finalGameData,
-      },
+      data: { id, church_id: churchId, ...finalGameData },
     });
   } catch (error) {
     logError("UPDATE_ERROR", error, {
       game_id: id,
       user_id: req.user?.id,
+      church_id: req.user?.church_id ?? req.user?.parish_id,
       ...requestInfo,
     });
-
-    return res.status(400).json({
+    const authError = /church_id|người dùng đăng nhập|ID người dùng/.test(
+      error.message || "",
+    );
+    return res.status(authError ? 401 : 400).json({
       success: false,
-
       message: error.message || "Không thể cập nhật game",
     });
   }
@@ -1418,89 +1291,72 @@ const updateGame = async (req, res) => {
 
 const deleteGame = async (req, res) => {
   const id = Number(req.params.id);
+  const requestInfo = getRequestInfo(req);
 
   try {
     const user = getAuthUser(req);
+    const churchId = user.church_id;
 
-    // =========================================================
-    // VALIDATE ID
-    // =========================================================
     if (!Number.isInteger(id) || id <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "ID game không hợp lệ",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "ID game không hợp lệ" });
     }
 
-    // =========================================================
-    // CHỈ TEACHER_ID = 12 ĐƯỢC XÓA
-    // =========================================================
-    if (Number(user.id) !== 12) {
-      return res.status(403).json({
-        success: false,
-        message: "Bạn không có quyền xóa game",
-      });
-    }
+    logInfo("DELETE_START", {
+      game_id: id,
+      user_id: user.id,
+      church_id: churchId,
+      role: user.role,
+      ...requestInfo,
+    });
 
-    // =========================================================
-    // KIỂM TRA GAME
-    // =========================================================
     const [rows] = await pool.execute(
-      `
-        SELECT
-          id,
-          teacher_id
-        FROM games
-        WHERE id = ?
-        LIMIT 1
-      `,
-      [id],
+      `SELECT id, church_id FROM games
+       WHERE id = ? AND church_id = ? LIMIT 1`,
+      [id, churchId],
     );
 
     if (!rows.length) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy game",
+        message: "Không tìm thấy game trong giáo xứ của bạn",
       });
     }
 
-    const game = rows[0];
-
-    // =========================================================
-    // XÓA GAME
-    // =========================================================
-    await pool.execute(
-      `
-        DELETE FROM games
-        WHERE id = ?
-      `,
-      [id],
+    const [result] = await pool.execute(
+      `DELETE FROM games WHERE id = ? AND church_id = ?`,
+      [id, churchId],
     );
 
-    // Xóa thư mục/file liên quan đến game
-    deleteGameDirectory(id);
+    if (!result.affectedRows) {
+      return res.status(404).json({
+        success: false,
+        message: "Game không tồn tại hoặc không thuộc giáo xứ của bạn",
+      });
+    }
 
-    // =========================================================
-    // LOG
-    // =========================================================
+    deleteGameDirectory(id);
     logInfo("DELETE_SUCCESS", {
       game_id: id,
       user_id: user.id,
-      teacher_id: game.teacher_id,
+      church_id: churchId,
+      ...requestInfo,
     });
 
-    return res.json({
-      success: true,
-      message: "Xóa game thành công",
-    });
+    return res.json({ success: true, message: "Xóa game thành công" });
   } catch (error) {
     logError("DELETE_ERROR", error, {
       game_id: id,
+      user_id: req.user?.id,
+      church_id: req.user?.church_id ?? req.user?.parish_id,
     });
-
-    return res.status(500).json({
+    const authError = /church_id|người dùng đăng nhập|ID người dùng/.test(
+      error.message || "",
+    );
+    return res.status(authError ? 401 : 500).json({
       success: false,
-      message: "Không thể xóa game",
+      message: authError ? error.message : "Không thể xóa game",
     });
   }
 };
@@ -1516,6 +1372,7 @@ module.exports = {
   getAllGames,
 
   getGamesByTeacher,
+  getGamesByChurch: getGamesByTeacher,
 
   getGameById,
 

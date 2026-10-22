@@ -81,23 +81,39 @@ exports.createContactMessage = async (req, res) => {
         title: `Góp ý mới từ ${name.trim()}`,
 
         content: `
-Có một góp ý mới được gửi từ hệ thống FaithEdu.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📩 THÔNG BÁO GÓP Ý MỚI — FAITHEDU
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Họ tên: ${name.trim()}
+Xin chào quản trị viên,
 
-Email: ${email.trim()}
+Hệ thống FaithEdu vừa nhận được một góp ý mới từ người dùng.
 
-Chủ đề:
-${subject?.trim() || "Góp ý FaithEdu"}
+👤 THÔNG TIN NGƯỜI GỬI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Họ và tên: ${name.trim()}
+• Email: ${email.trim()}
 
-Đánh giá:
-${rating || "Không đánh giá"}/5 sao
+📝 CHI TIẾT GÓP Ý
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Chủ đề: ${subject?.trim() || "Góp ý FaithEdu"}
+• Đánh giá: ${rating ? `${rating}/5 ⭐` : "Chưa đánh giá"}
 
-Nội dung:
+💬 NỘI DUNG GÓP Ý
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ${message.trim()}
 
-ID góp ý: ${contactId}
-        `.trim(),
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔖 MÃ GÓP Ý: ${contactId}
+🕒 Trạng thái: Chờ tiếp nhận và xử lý
+
+Vui lòng kiểm tra nội dung góp ý và phản hồi người dùng
+khi cần thiết.
+
+Trân trọng,
+Hệ thống FaithEdu
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+`.trim(),
 
         priority: "normal",
       });

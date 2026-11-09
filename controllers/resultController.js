@@ -1950,7 +1950,6 @@ exports.exportResultsExcel = async (req, res) => {
 
     // =====================================================
     // 4. LẤY QUY TẮC TÍNH ĐIỂM
-    // Bảng grading_rules của bạn không có cột name.
     // =====================================================
     const [ruleRows] = await db.query(
       `
@@ -2028,8 +2027,6 @@ exports.exportResultsExcel = async (req, res) => {
 
     // =====================================================
     // 7. LẤY ĐIỂM CỦA HỌC SINH TRONG LỚP
-    // EXISTS tránh nhân bản kết quả nếu class_students
-    // có dữ liệu trùng.
     // =====================================================
     const [resultRows] = await db.query(
       `
@@ -2082,25 +2079,29 @@ exports.exportResultsExcel = async (req, res) => {
     });
 
     // =====================================================
-    // 9. HÀM TIỆN ÍCH
+    // 9. CÁC HÀM TIỆN ÍCH
     // =====================================================
+
     const toValidNumber = (value) => {
       if (value === null || value === undefined || value === "") {
         return null;
       }
 
       const number = Number(value);
+
       return Number.isFinite(number) ? number : null;
     };
 
     const roundScore = (value) => {
       if (!Number.isFinite(Number(value))) return null;
+
       return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
     };
 
     const formatGender = (gender) => {
       if (gender === "male") return "Nam";
       if (gender === "female") return "Nữ";
+
       return gender || "";
     };
 
@@ -2108,13 +2109,77 @@ exports.exportResultsExcel = async (req, res) => {
       if (!date) return "";
 
       const parsed = new Date(date);
+
       if (Number.isNaN(parsed.getTime())) return "";
 
       return parsed.toLocaleDateString("vi-VN");
     };
 
     // =====================================================
-    // 10. GỘP NHIỀU LẦN KIỂM TRA CỦA MỘT ĐẦU ĐIỂM
+    // 10. CHUẨN HÓA TÊN HỌC KỲ
+    //
+    // Nhận diện các dạng:
+    // - Học kỳ 1
+    // - Học kỳ 2
+    // - HK1
+    // - HK 1
+    // - HK2
+    // - HK 2
+    //
+    // Dữ liệu được lấy từ results.note.
+    // =====================================================
+    const normalizeSemester = (note) => {
+      const originalValue = String(note || "").trim();
+
+      if (!originalValue) {
+        return "Chưa xác định học kỳ";
+      }
+
+      const normalizedValue = originalValue
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      const isSemester1 =
+        /\bhk\s*1\b/.test(normalizedValue) ||
+        /\bhoc ky\s*1\b/.test(normalizedValue);
+
+      const isSemester2 =
+        /\bhk\s*2\b/.test(normalizedValue) ||
+        /\bhoc ky\s*2\b/.test(normalizedValue);
+
+      if (isSemester1) return "Học kỳ 1";
+      if (isSemester2) return "Học kỳ 2";
+
+      // Nếu note chứa nội dung khác thì giữ nguyên nội dung đó.
+      return originalValue;
+    };
+
+    // =====================================================
+    // 11. SẮP XẾP CÁC LẦN KIỂM TRA
+    // =====================================================
+    const sortResultsByDate = (results) => {
+      return [...results].sort((a, b) => {
+        const dateA = a.exam_date ? new Date(a.exam_date).getTime() : 0;
+
+        const dateB = b.exam_date ? new Date(b.exam_date).getTime() : 0;
+
+        if (dateA !== dateB) {
+          return dateA - dateB;
+        }
+
+        return Number(a.id) - Number(b.id);
+      });
+    };
+
+    // =====================================================
+    // 12. GỘP NHIỀU LẦN KIỂM TRA ĐỂ TÍNH ĐIỂM TRUNG BÌNH
+    //
+    // Lưu ý:
+    // Hàm này chỉ phục vụ tính điểm trung bình.
+    // Không sử dụng hàm này để hiển thị điểm từng lần.
     // =====================================================
     const aggregateItemScore = (item, itemResults) => {
       const validResults = itemResults
@@ -2133,9 +2198,13 @@ exports.exportResultsExcel = async (req, res) => {
       if (method === "latest") {
         const latest = [...validResults].sort((a, b) => {
           const dateA = a.exam_date ? new Date(a.exam_date).getTime() : 0;
+
           const dateB = b.exam_date ? new Date(b.exam_date).getTime() : 0;
 
-          if (dateA !== dateB) return dateB - dateA;
+          if (dateA !== dateB) {
+            return dateB - dateA;
+          }
+
           return Number(b.id) - Number(a.id);
         })[0];
 
@@ -2150,7 +2219,6 @@ exports.exportResultsExcel = async (req, res) => {
         return Math.min(...validResults.map((item) => item.numericScore));
       }
 
-      // Mặc định: tính trung bình các lần kiểm tra
       const total = validResults.reduce(
         (sum, item) => sum + item.numericScore,
         0,
@@ -2160,12 +2228,15 @@ exports.exportResultsExcel = async (req, res) => {
     };
 
     // =====================================================
-    // 11. TÍNH ĐIỂM TRUNG BÌNH THEO TRỌNG SỐ QUY TẮC
+    // 13. TÍNH ĐIỂM TRUNG BÌNH THEO TRỌNG SỐ
     //
-    // - Mỗi đầu điểm lấy aggregation_method để gộp nhiều lần.
-    // - Quy đổi điểm theo max_score về thang 10.
-    // - Tính trung bình có trọng số theo weight.
-    // - Chỉ tính những đầu điểm học sinh đã có điểm.
+    // Giữ nguyên cách tính hiện tại:
+    // - Áp dụng aggregation_method.
+    // - Quy đổi về thang điểm 10.
+    // - Tính trung bình theo trọng số.
+    //
+    // Điểm trung bình hiện tại vẫn tính trên toàn bộ
+    // kết quả của học sinh, không tách riêng học kỳ.
     // =====================================================
     const calculateWeightedAverage = (studentResults) => {
       if (!gradingItems.length) return null;
@@ -2207,31 +2278,124 @@ exports.exportResultsExcel = async (req, res) => {
     };
 
     // =====================================================
-    // 12. HIỂN THỊ ĐIỂM TỪNG ĐẦU ĐIỂM
-    // Ví dụ: Kiểm tra miệng -> 8 / 9 / 10
+    // 14. HIỂN THỊ TẤT CẢ ĐIỂM CỦA TỪNG ĐẦU ĐIỂM
+    //
+    // Ví dụ:
+    //
+    // 8.00
+    // Học kỳ 1
+    //
+    // 7.00
+    // Học kỳ 1
+    //
+    // 9.00
+    // Học kỳ 2
+    //
+    // Không lấy .find()
+    // Không gộp điểm
+    // Không lấy điểm trung bình để hiển thị.
     // =====================================================
     const getItemDisplayScore = (studentResults, item) => {
-      const itemResults = studentResults
-        .filter(
+      const itemResults = sortResultsByDate(
+        studentResults.filter(
           (result) => Number(result.grading_rule_item_id) === Number(item.id),
-        )
-        .sort((a, b) => {
-          const dateA = a.exam_date ? new Date(a.exam_date).getTime() : 0;
-          const dateB = b.exam_date ? new Date(b.exam_date).getTime() : 0;
+        ),
+      );
 
-          if (dateA !== dateB) return dateA - dateB;
-          return Number(a.id) - Number(b.id);
-        });
+      const displayResults = itemResults
+        .map((result) => {
+          const score = toValidNumber(result.score);
 
-      const scores = itemResults
-        .map((result) => toValidNumber(result.score))
-        .filter((score) => score !== null);
+          if (score === null) return null;
 
-      return scores.length ? scores.join(" / ") : "";
+          const semester = normalizeSemester(result.note);
+
+          return {
+            score,
+            semester,
+          };
+        })
+        .filter(Boolean);
+
+      if (!displayResults.length) return "";
+
+      return displayResults
+        .map((result) => {
+          return `${result.score.toFixed(2)}\n${result.semester}`;
+        })
+        .join("\n\n");
     };
 
     // =====================================================
-    // 13. TẠO WORKBOOK
+    // 15. LẤY GHI CHÚ / HỌC KỲ CỦA HỌC SINH
+    // =====================================================
+    const getStudentSemesterNotes = (studentResults) => {
+      const notes = [
+        ...new Set(
+          studentResults
+            .map((result) => normalizeSemester(result.note))
+            .filter(Boolean),
+        ),
+      ];
+
+      return notes.join("\n");
+    };
+
+    // =====================================================
+    // 16. TÍNH CHIỀU CAO DÒNG THEO NỘI DUNG
+    //
+    // Mỗi điểm có 2 dòng:
+    // - Dòng điểm số
+    // - Dòng học kỳ
+    //
+    // Nếu học sinh có nhiều lần kiểm tra, Excel tự tăng
+    // chiều cao dòng để hiển thị đầy đủ.
+    // =====================================================
+    const calculateRowHeight = (row, minimumHeight = 28) => {
+      let maxLines = 1;
+
+      row.eachCell((cell) => {
+        if (cell.value === null || cell.value === undefined) {
+          return;
+        }
+
+        let text = "";
+
+        if (typeof cell.value === "object" && cell.value.richText) {
+          text = cell.value.richText.map((item) => item.text || "").join("");
+        } else {
+          text = String(cell.value);
+        }
+
+        const explicitLines = text.split(/\r?\n/);
+
+        const columnWidth = Number(cell.col?.width) || 15;
+
+        let estimatedLines = 0;
+
+        explicitLines.forEach((line) => {
+          const lineLength = Math.max(1, line.length);
+
+          // Ước tính số dòng khi Excel tự xuống dòng.
+          const wrappedLines = Math.ceil(
+            lineLength / Math.max(8, columnWidth * 1.15),
+          );
+
+          estimatedLines += Math.max(1, wrappedLines);
+        });
+
+        maxLines = Math.max(maxLines, estimatedLines);
+      });
+
+      // Mỗi dòng khoảng 15 điểm chiều cao.
+      const calculatedHeight = maxLines * 15 + 8;
+
+      // Excel giới hạn chiều cao dòng.
+      return Math.min(400, Math.max(minimumHeight, calculatedHeight));
+    };
+
+    // =====================================================
+    // 17. TẠO WORKBOOK
     // =====================================================
     const workbook = new ExcelJS.Workbook();
 
@@ -2241,28 +2405,55 @@ exports.exportResultsExcel = async (req, res) => {
     workbook.created = new Date();
 
     const worksheet = workbook.addWorksheet("Bang diem", {
-      views: [{ state: "frozen", xSplit: 4, ySplit: 4 }],
+      views: [
+        {
+          state: "frozen",
+          xSplit: 4,
+          ySplit: 4,
+        },
+      ],
     });
 
     const detailWorksheet = workbook.addWorksheet("Chi tiet diem", {
-      views: [{ state: "frozen", xSplit: 4, ySplit: 1 }],
+      views: [
+        {
+          state: "frozen",
+          xSplit: 4,
+          ySplit: 1,
+        },
+      ],
     });
 
     // =====================================================
-    // 14. TẠO CỘT CHO HAI SHEET
-    // Tên cột lấy theo tên đầu điểm trong quy tắc.
+    // 18. TẠO CỘT CHO HAI SHEET
     // =====================================================
     const studentInfoColumns = [
-      { header: "STT", key: "stt", width: 8 },
-      { header: "Mã học sinh", key: "code", width: 18 },
-      { header: "Họ và tên", key: "name", width: 30 },
-      { header: "Giới tính", key: "gender", width: 14 },
+      {
+        header: "STT",
+        key: "stt",
+        width: 8,
+      },
+      {
+        header: "Mã học sinh",
+        key: "code",
+        width: 18,
+      },
+      {
+        header: "Họ và tên",
+        key: "name",
+        width: 30,
+      },
+      {
+        header: "Giới tính",
+        key: "gender",
+        width: 14,
+      },
     ];
 
     const itemColumns = gradingItems.map((item) => ({
       header: item.name || item.code || `Đầu điểm ${item.id}`,
       key: `item_${item.id}`,
-      width: 22,
+      width: 24,
     }));
 
     const averageColumn = {
@@ -2299,7 +2490,7 @@ exports.exportResultsExcel = async (req, res) => {
     detailWorksheet.columns = detailColumns;
 
     // =====================================================
-    // 15. HÀM STYLE HEADER VÀ BORDER
+    // 19. STYLE HEADER
     // =====================================================
     const applyHeaderStyle = (row, averageIndex) => {
       row.height = 40;
@@ -2307,14 +2498,18 @@ exports.exportResultsExcel = async (req, res) => {
       row.eachCell((cell) => {
         cell.font = {
           bold: true,
-          color: { argb: "FFFFFFFF" },
+          color: {
+            argb: "FFFFFFFF",
+          },
           size: 10,
         };
 
         cell.fill = {
           type: "pattern",
           pattern: "solid",
-          fgColor: { argb: "FF173B5E" },
+          fgColor: {
+            argb: "FF173B5E",
+          },
         };
 
         cell.alignment = {
@@ -2324,10 +2519,22 @@ exports.exportResultsExcel = async (req, res) => {
         };
 
         cell.border = {
-          top: { style: "thin", color: { argb: "FFD9A441" } },
-          bottom: { style: "thin", color: { argb: "FFD9A441" } },
-          left: { style: "thin", color: { argb: "FFE2E8F0" } },
-          right: { style: "thin", color: { argb: "FFE2E8F0" } },
+          top: {
+            style: "thin",
+            color: { argb: "FFD9A441" },
+          },
+          bottom: {
+            style: "thin",
+            color: { argb: "FFD9A441" },
+          },
+          left: {
+            style: "thin",
+            color: { argb: "FFE2E8F0" },
+          },
+          right: {
+            style: "thin",
+            color: { argb: "FFE2E8F0" },
+          },
         };
       });
 
@@ -2336,18 +2543,25 @@ exports.exportResultsExcel = async (req, res) => {
       averageCell.fill = {
         type: "pattern",
         pattern: "solid",
-        fgColor: { argb: "FFD9A441" },
+        fgColor: {
+          argb: "FFD9A441",
+        },
       };
 
       averageCell.font = {
         bold: true,
-        color: { argb: "FF173B5E" },
+        color: {
+          argb: "FF173B5E",
+        },
         size: 10,
       };
     };
 
+    // =====================================================
+    // 20. STYLE DÒNG DỮ LIỆU
+    // =====================================================
     const applyDataRowStyle = (row, averageIndex, nameColumnIndex = 3) => {
-      row.height = 28;
+      row.height = calculateRowHeight(row, 28);
 
       row.eachCell((cell) => {
         cell.alignment = {
@@ -2357,30 +2571,73 @@ exports.exportResultsExcel = async (req, res) => {
         };
 
         cell.border = {
-          top: { style: "thin", color: { argb: "FFE2E8F0" } },
-          bottom: { style: "thin", color: { argb: "FFE2E8F0" } },
-          left: { style: "thin", color: { argb: "FFE2E8F0" } },
-          right: { style: "thin", color: { argb: "FFE2E8F0" } },
+          top: {
+            style: "thin",
+            color: { argb: "FFE2E8F0" },
+          },
+          bottom: {
+            style: "thin",
+            color: { argb: "FFE2E8F0" },
+          },
+          left: {
+            style: "thin",
+            color: { argb: "FFE2E8F0" },
+          },
+          right: {
+            style: "thin",
+            color: { argb: "FFE2E8F0" },
+          },
         };
       });
 
+      // Cột họ tên căn trái.
       row.getCell(nameColumnIndex).alignment = {
         horizontal: "left",
         vertical: "middle",
         wrapText: true,
       };
 
+      // Các cột điểm có nhiều lần kiểm tra.
+      // Căn giữa và hiển thị đầy đủ từng học kỳ.
+      for (let i = 5; i < averageIndex; i++) {
+        const scoreCell = row.getCell(i);
+
+        scoreCell.alignment = {
+          horizontal: "center",
+          vertical: "middle",
+          wrapText: true,
+        };
+
+        scoreCell.font = {
+          size: 10,
+          color: {
+            argb: "FF243447",
+          },
+        };
+      }
+
+      // Cột điểm trung bình.
       const averageCell = row.getCell(averageIndex);
 
       averageCell.font = {
         bold: true,
-        color: { argb: "FF173B5E" },
+        color: {
+          argb: "FF173B5E",
+        },
       };
 
       averageCell.fill = {
         type: "pattern",
         pattern: "solid",
-        fgColor: { argb: "FFFFF5D6" },
+        fgColor: {
+          argb: "FFFFF5D6",
+        },
+      };
+
+      averageCell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+        wrapText: true,
       };
 
       if (typeof averageCell.value === "number") {
@@ -2389,42 +2646,58 @@ exports.exportResultsExcel = async (req, res) => {
     };
 
     // =====================================================
-    // 16. TIÊU ĐỀ SHEET BẢNG ĐIỂM
+    // 21. TIÊU ĐỀ SHEET BẢNG ĐIỂM
     // =====================================================
     const summaryLastColumn = summaryColumns.length;
 
     worksheet.mergeCells(1, 1, 1, summaryLastColumn);
+
     worksheet.getCell(1, 1).value = String(church.name || "").toUpperCase();
+
     worksheet.getCell(1, 1).font = {
       bold: true,
       size: 14,
-      color: { argb: "FF173B5E" },
+      color: {
+        argb: "FF173B5E",
+      },
     };
+
     worksheet.getCell(1, 1).alignment = {
       horizontal: "center",
       vertical: "middle",
     };
 
     worksheet.mergeCells(2, 1, 2, summaryLastColumn);
-    worksheet.getCell(2, 1).value =
-      `BẢNG ĐIỂM GIÁO LÝ - ${String(classInfo.name || "").toUpperCase()}`;
+
+    worksheet.getCell(2, 1).value = `BẢNG ĐIỂM GIÁO LÝ - ${String(
+      classInfo.name || "",
+    ).toUpperCase()}`;
+
     worksheet.getCell(2, 1).font = {
       bold: true,
       size: 16,
-      color: { argb: "FF173B5E" },
+      color: {
+        argb: "FF173B5E",
+      },
     };
+
     worksheet.getCell(2, 1).alignment = {
       horizontal: "center",
       vertical: "middle",
     };
 
     worksheet.mergeCells(3, 1, 3, summaryLastColumn);
+
     worksheet.getCell(3, 1).value =
       `Ngày xuất: ${new Date().toLocaleDateString("vi-VN")}`;
+
     worksheet.getCell(3, 1).font = {
       italic: true,
-      color: { argb: "FF64748B" },
+      color: {
+        argb: "FF64748B",
+      },
     };
+
     worksheet.getCell(3, 1).alignment = {
       horizontal: "center",
       vertical: "middle",
@@ -2435,16 +2708,18 @@ exports.exportResultsExcel = async (req, res) => {
     worksheet.getRow(3).height = 22;
 
     // =====================================================
-    // 17. HEADER SHEET BẢNG ĐIỂM
+    // 22. HEADER SHEET BẢNG ĐIỂM
     // =====================================================
     const summaryHeader = worksheet.getRow(4);
+
     summaryHeader.values = summaryColumns.map((column) => column.header);
 
     const summaryAverageIndex = 5 + gradingItems.length;
+
     applyHeaderStyle(summaryHeader, summaryAverageIndex);
 
     // =====================================================
-    // 18. ĐỔ DỮ LIỆU SHEET BẢNG ĐIỂM
+    // 23. ĐỔ DỮ LIỆU SHEET BẢNG ĐIỂM
     // =====================================================
     studentRows.forEach((student, index) => {
       const studentResults = resultsByStudent.get(Number(student.id)) || [];
@@ -2468,14 +2743,18 @@ exports.exportResultsExcel = async (req, res) => {
     });
 
     // =====================================================
-    // 19. SHEET CHI TIẾT ĐIỂM
-    // Mỗi học sinh đúng một dòng.
-    // Mỗi đầu điểm là một cột riêng.
+    // 24. SHEET CHI TIẾT ĐIỂM
+    //
+    // Mỗi học sinh một dòng.
+    // Mỗi đầu điểm một cột.
+    // Từng lần nhập điểm có nhãn học kỳ riêng.
     // =====================================================
     const detailHeader = detailWorksheet.getRow(1);
+
     detailHeader.values = detailColumns.map((column) => column.header);
 
     const detailAverageIndex = 5 + gradingItems.length;
+
     applyHeaderStyle(detailHeader, detailAverageIndex);
 
     studentRows.forEach((student, index) => {
@@ -2487,17 +2766,7 @@ exports.exportResultsExcel = async (req, res) => {
         name: student.name || "",
         gender: formatGender(student.gender),
         averageScore: calculateWeightedAverage(studentResults),
-
-        // Hiện tại schema đã xác nhận có results.note,
-        // chưa xác nhận có cột semester riêng.
-        // Vì vậy cột này hiển thị nội dung note để không tự đoán tên cột.
-        semesterNote: [
-          ...new Set(
-            studentResults
-              .map((result) => String(result.note || "").trim())
-              .filter(Boolean),
-          ),
-        ].join(" | "),
+        semesterNote: getStudentSemesterNotes(studentResults),
       };
 
       gradingItems.forEach((item) => {
@@ -2510,29 +2779,25 @@ exports.exportResultsExcel = async (req, res) => {
     });
 
     // =====================================================
-    // 20. KẺ BORDER VÀ CĂN CHỈNH TOÀN BỘ BẢNG
+    // 25. KẺ BORDER VÀ CĂN CHỈNH TOÀN BỘ BẢNG
     // =====================================================
     [worksheet, detailWorksheet].forEach((sheet) => {
       sheet.eachRow((row) => {
         row.eachCell((cell) => {
-          if (!cell.border) {
-            cell.border = {};
-          }
-
           cell.border = {
-            top: cell.border.top || {
+            top: cell.border?.top || {
               style: "thin",
               color: { argb: "FFE2E8F0" },
             },
-            bottom: cell.border.bottom || {
+            bottom: cell.border?.bottom || {
               style: "thin",
               color: { argb: "FFE2E8F0" },
             },
-            left: cell.border.left || {
+            left: cell.border?.left || {
               style: "thin",
               color: { argb: "FFE2E8F0" },
             },
-            right: cell.border.right || {
+            right: cell.border?.right || {
               style: "thin",
               color: { argb: "FFE2E8F0" },
             },
@@ -2541,6 +2806,7 @@ exports.exportResultsExcel = async (req, res) => {
       });
 
       sheet.properties.defaultRowHeight = 25;
+
       sheet.autoFilter = {
         from: {
           row: sheet === worksheet ? 4 : 1,
@@ -2570,7 +2836,7 @@ exports.exportResultsExcel = async (req, res) => {
     });
 
     // =====================================================
-    // 21. THIẾT LẬP FOOTER
+    // 26. FOOTER
     // =====================================================
     worksheet.headerFooter.oddFooter =
       "&LFaithEdu&CTrang &P / &N&RBảng điểm giáo lý";
@@ -2579,7 +2845,7 @@ exports.exportResultsExcel = async (req, res) => {
       "&LFaithEdu&CTrang &P / &N&RChi tiết điểm";
 
     // =====================================================
-    // 22. XUẤT FILE
+    // 27. TẠO TÊN FILE
     // =====================================================
     const safeClassName = String(classInfo.name || "lop")
       .normalize("NFD")
@@ -2588,6 +2854,9 @@ exports.exportResultsExcel = async (req, res) => {
 
     const fileName = `Bang_diem_${safeClassName}_${Date.now()}.xlsx`;
 
+    // =====================================================
+    // 28. XUẤT FILE
+    // =====================================================
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2601,6 +2870,7 @@ exports.exportResultsExcel = async (req, res) => {
     console.log(`${LOG} Đang ghi file: ${fileName}`);
 
     await workbook.xlsx.write(res);
+
     res.end();
 
     console.log(`${LOG} Xuất thành công`, {

@@ -217,7 +217,7 @@ exports.createGradingRule = async (req, res) => {
         divisor === null || divisor === "" ? null : normalizeNumber(divisor, 1),
         Number(rounding_digits),
         normalizeNumber(pass_score, 5),
-        status === "inactive" ? "inactive" : "active",
+        status === "active",
       ],
     );
 
@@ -411,18 +411,9 @@ exports.updateGradingRule = async (req, res) => {
       fields.push("pass_score = ?");
       values.push(normalizeNumber(pass_score, 5));
     }
-
-    if (status !== undefined) {
-      if (!["active", "inactive"].includes(status)) {
-        return res.status(400).json({
-          success: false,
-          message: "Trạng thái quy tắc không hợp lệ",
-        });
-      }
-
-      fields.push("status = ?");
-      values.push(status);
-    }
+    // Luôn duy trì trạng thái hoạt động
+    fields.push("status = ?");
+    values.push("active");
 
     if (!fields.length) {
       return res.json({

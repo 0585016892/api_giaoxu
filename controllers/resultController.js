@@ -1875,15 +1875,14 @@ exports.getClassLeaderboard = async (req, res) => {
 // EXPORT BẢNG ĐIỂM EXCEL - FAITHEDU
 // GET /api/results/export-excel/:classId
 // =====================================================
+
 exports.exportResultsExcel = async (req, res) => {
   const LOG = "[EXPORT_RESULTS_EXCEL]";
 
   try {
-    console.log(`${LOG} Bắt đầu xuất Excel`);
-
-    // =====================================================
-    // 1. KIỂM TRA QUYỀN VÀ THAM SỐ
-    // =====================================================
+    // ==================================================
+    // 1. KIỂM TRA THAM SỐ
+    // ==================================================
     const churchId = getChurchId(req);
     const classId = Number(req.params.classId);
 
@@ -1901,18 +1900,909 @@ exports.exportResultsExcel = async (req, res) => {
       });
     }
 
-    console.log(`${LOG} churchId=${churchId}, classId=${classId}`);
+    // ==================================================
+    // 2. LẤY GIÁO XỨ VÀ LỚP
+    // ==================================================
+    const [[churchRows], [classRows]] = await Promise.all([
+      db.query(
+        `SELECT id, name FROM churches
+         WHERE id = ? LIMIT 1`,
+        [churchId],
+      ),
+      db.query(
+        `SELECT id, name FROM classes
+         WHERE id = ? AND church_id = ?
+         LIMIT 1`,
+        [classId, churchId],
+      ),
+    ]);
+
+    if (!churchRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy giáo xứ.",
+      });
+    }
+
+    if (!classRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy lớp học.",
+      });
+    }
+
+    const church = churchRows[0];
+    const classInfo = classRows[0];
+
+    // ==================================================
+    // 3. LẤY QUY TẮC VÀ TẤT CẢ ĐẦU ĐIỂM
+    // ==================================================
+    const [ruleRows] = await db.query(
+      `SELECT id, status
+       FROM grading_rules
+       WHERE church_id = ?
+       ORDER BY
+         CASE WHEN status = 'active' THEN 0 ELSE 1 END,
+         id DESC
+       LIMIT 1`,
+      [churchId],
+    );
+
+    const gradingRule = ruleRows[0] || null;
+    let gradingItems = [];
+
+    if (gradingRule) {
+      const [items] = await db.query(
+        `SELECT
+           id, code, name, weight, max_score,
+           sort_order, allow_multiple,
+           aggregation_method
+         FROM grading_rule_items
+         WHERE grading_rule_id = ?
+         ORDER BY sort_order ASC, id ASC`,
+        [gradingRule.id],
+      );
+
+      gradingItems = items;
+    }
+
+    // ==================================================
+    // 4. LẤY HỌC SINH
+    // ==================================================
+    const [studentRows] = await db.query(
+      `SELECT DISTINCT
+         s.id, s.code, s.name, s.gender
+       FROM class_students cs
+       INNER JOIN students s
+         ON s.id = cs.student_id
+        AND s.church_id = ?
+       WHERE cs.class_id = ?
+       ORDER BY s.name ASC, s.id ASC`,
+      [churchId, classId],
+    );
+
+    // ==================================================
+    // 5. LẤY TẤT CẢ KẾT QUẢ
+    // ==================================================
+    const [resultRows] = await db.query(
+      `SELECT
+         r.id,
+         r.student_id,
+         r.grading_rule_id,
+         r.grading_rule_item_id,
+         r.score,
+         r.exam_type,
+         r.exam_date,
+         r.note,
+         gri.name AS item_name,
+         gri.code AS item_code
+       FROM results r
+       INNER JOIN students s
+         ON s.id = r.student_id
+        AND s.church_id = ?
+       LEFT JOIN grading_rule_items gri
+         ON gri.id = r.grading_rule_item_id
+       WHERE EXISTS (
+         SELECT 1
+         FROM class_students cs
+         WHERE cs.student_id = r.student_id
+           AND cs.class_id = ?
+       )
+       ORDER BY
+         r.student_id ASC,
+         r.exam_date ASC,
+         r.id ASC`,
+      [churchId, classId],
+    );
+
+    // ==================================================
+    // 6. GOM KẾT QUẢ THEO HỌC SINH
+    // ==================================================
+    const resultsByStudent = new Map();
+
+    for (const result of resultRows) {
+      const studentId = Number(result.student_id);
+
+      if (!resultsByStudent.has(studentId)) {
+        resultsByStudent.set(studentId, []);
+      }
+
+      resultsByStudent.get(studentId).push(result);
+    }
+
+    // ==================================================
+    // 7. HÀM TIỆN ÍCH
+    // ==================================================
+    const toNumber = (value) => {
+      if (value === null || value === undefined || value === "") {
+        return null;
+      }
+
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    };
+
+    const roundScore = (value) => {
+      if (!Number.isFinite(value)) return null;
+
+      return Math.round((value + Number.EPSILON) * 100) / 100;
+    };
+
+    const normalizeText = (value) =>
+      String(value ?? "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/đ/g, "d")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const formatGender = (gender) => {
+      if (gender === "male") return "Nam";
+      if (gender === "female") return "Nữ";
+      return gender || "";
+    };
+
+    const formatDate = (value) => {
+      if (!value) return "";
+
+      const date = new Date(value);
+
+      return Number.isNaN(date.getTime())
+        ? ""
+        : date.toLocaleDateString("vi-VN");
+    };
+
+    // ==================================================
+    // 8. XÁC ĐỊNH HỌC KỲ TỪ NOTE
+    // ==================================================
+    const getSemester = (note) => {
+      const text = normalizeText(note);
+
+      if (/\bhk\s*1\b/.test(text) || /\bhoc\s*ky\s*1\b/.test(text)) {
+        return 1;
+      }
+
+      if (/\bhk\s*2\b/.test(text) || /\bhoc\s*ky\s*2\b/.test(text)) {
+        return 2;
+      }
+
+      return null;
+    };
+
+    const sortResults = (results) => {
+      return [...results].sort((a, b) => {
+        const aTime = a.exam_date ? new Date(a.exam_date).getTime() : 0;
+
+        const bTime = b.exam_date ? new Date(b.exam_date).getTime() : 0;
+
+        const dateA = Number.isFinite(aTime) ? aTime : 0;
+        const dateB = Number.isFinite(bTime) ? bTime : 0;
+
+        if (dateA !== dateB) {
+          return dateA - dateB;
+        }
+
+        return Number(a.id) - Number(b.id);
+      });
+    };
+
+    const getSemesterResults = (results, semester) =>
+      results.filter((result) => getSemester(result.note) === semester);
+
+    const getItemResults = (results, itemId) =>
+      sortResults(
+        results.filter(
+          (result) => Number(result.grading_rule_item_id) === Number(itemId),
+        ),
+      );
+
+    // ==================================================
+    // 9. HIỂN THỊ TẤT CẢ ĐIỂM TRONG MỘT Ô
+    // ==================================================
+    const getDisplayScores = (results) => {
+      const scores = sortResults(results)
+        .map((result) => toNumber(result.score))
+        .filter((score) => score !== null);
+
+      if (!scores.length) return "";
+
+      return scores.map((score) => score.toFixed(2)).join("\n");
+    };
+
+    // ==================================================
+    // 10. GỘP ĐIỂM THEO AGGREGATION_METHOD
+    // ==================================================
+    const aggregateItemScore = (item, results) => {
+      const valid = results
+        .map((result) => ({
+          ...result,
+          numericScore: toNumber(result.score),
+        }))
+        .filter((result) => result.numericScore !== null);
+
+      if (!valid.length) return null;
+
+      const method = normalizeText(item.aggregation_method || "average");
+
+      const scores = valid.map((result) => result.numericScore);
+
+      if (method === "latest") {
+        return sortResults(valid).at(-1).numericScore;
+      }
+
+      if (["highest", "max"].includes(method)) {
+        return Math.max(...scores);
+      }
+
+      if (["lowest", "min"].includes(method)) {
+        return Math.min(...scores);
+      }
+
+      return scores.reduce((sum, score) => sum + score, 0) / scores.length;
+    };
+
+    // ==================================================
+    // 11. TÍNH TRUNG BÌNH TỪNG HỌC KỲ
+    // ==================================================
+    const calculateSemesterAverage = (studentResults, semester) => {
+      const semesterResults = getSemesterResults(studentResults, semester);
+
+      let weightedTotal = 0;
+      let totalWeight = 0;
+
+      for (const item of gradingItems) {
+        const itemResults = getItemResults(semesterResults, item.id);
+
+        const score = aggregateItemScore(item, itemResults);
+
+        if (score === null) continue;
+
+        const configuredMax = toNumber(item.max_score);
+        const configuredWeight = toNumber(item.weight);
+
+        const maxScore =
+          configuredMax !== null && configuredMax > 0 ? configuredMax : 10;
+
+        const weight =
+          configuredWeight !== null && configuredWeight > 0
+            ? configuredWeight
+            : 1;
+
+        const normalizedScore = (score / maxScore) * 10;
+
+        weightedTotal += normalizedScore * weight;
+        totalWeight += weight;
+      }
+
+      if (totalWeight === 0) return null;
+
+      return roundScore(weightedTotal / totalWeight);
+    };
+
+    // ==================================================
+    // 12. TẠO WORKBOOK
+    // ==================================================
+    const workbook = new ExcelJS.Workbook();
+
+    workbook.creator = "FaithEdu";
+    workbook.subject = "Bảng điểm giáo lý";
+    workbook.title = `Bảng điểm ${classInfo.name}`;
+    workbook.created = new Date();
+
+    const worksheet = workbook.addWorksheet("Bang diem", {
+      views: [
+        {
+          state: "frozen",
+          xSplit: 4,
+          ySplit: 5,
+        },
+      ],
+    });
+
+    const detailWorksheet = workbook.addWorksheet("Chi tiet diem", {
+      views: [
+        {
+          state: "frozen",
+          xSplit: 4,
+          ySplit: 1,
+        },
+      ],
+    });
+
+    // ==================================================
+    // 13. MÀU SẮC
+    // ==================================================
+    const COLORS = {
+      navy: "FF173B5E",
+      gold: "FFD9A441",
+      goldLight: "FFFFF3D2",
+      white: "FFFFFFFF",
+      text: "FF243447",
+      muted: "FF64748B",
+      border: "FFD7DEE8",
+      stripe: "FFF7FAFD",
+    };
+
+    const thinBorder = {
+      top: {
+        style: "thin",
+        color: { argb: COLORS.border },
+      },
+      bottom: {
+        style: "thin",
+        color: { argb: COLORS.border },
+      },
+      left: {
+        style: "thin",
+        color: { argb: COLORS.border },
+      },
+      right: {
+        style: "thin",
+        color: { argb: COLORS.border },
+      },
+    };
+
+    const setFill = (cell, color) => {
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: color },
+      };
+    };
+
+    const styleHeader = (cell, gold = false) => {
+      setFill(cell, gold ? COLORS.gold : COLORS.navy);
+
+      cell.font = {
+        name: "Arial",
+        bold: true,
+        size: 10,
+        color: {
+          argb: gold ? COLORS.navy : COLORS.white,
+        },
+      };
+
+      cell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+        wrapText: true,
+      };
+
+      cell.border = thinBorder;
+    };
+
+    // ==================================================
+    // 14. TẠO CỘT ĐỘNG THEO GRADING_ITEMS
+    // ==================================================
+    // Cột A-D: thông tin học sinh
+    // HK1: mỗi đầu điểm 1 cột + trung bình
+    // HK2: mỗi đầu điểm 1 cột + trung bình
+    // Cột cuối: số lần kiểm tra
+
+    const itemCount = gradingItems.length;
+
+    const studentInfoCount = 4;
+
+    const hk1Start = studentInfoCount + 1;
+    const hk1Average = hk1Start + itemCount;
+
+    const hk2Start = hk1Average + 1;
+    const hk2Average = hk2Start + itemCount;
+
+    const totalAttemptsCol = hk2Average + 1;
+    const lastCol = totalAttemptsCol;
+
+    // Cho Excel hiển thị chữ cái cột tương ứng.
+    const getColumnLetter = (number) => {
+      let result = "";
+      let n = number;
+
+      while (n > 0) {
+        const remainder = (n - 1) % 26;
+
+        result = String.fromCharCode(65 + remainder) + result;
+
+        n = Math.floor((n - 1) / 26);
+      }
+
+      return result;
+    };
+
+    const lastLetter = getColumnLetter(lastCol);
+
+    // Thiết lập độ rộng các cột.
+    worksheet.getColumn(1).width = 9;
+    worksheet.getColumn(2).width = 18;
+    worksheet.getColumn(3).width = 32;
+    worksheet.getColumn(4).width = 14;
+
+    for (let i = 0; i < itemCount; i++) {
+      worksheet.getColumn(hk1Start + i).width = 19;
+      worksheet.getColumn(hk2Start + i).width = 19;
+    }
+
+    worksheet.getColumn(hk1Average).width = 19;
+    worksheet.getColumn(hk2Average).width = 19;
+    worksheet.getColumn(totalAttemptsCol).width = 19;
+
+    // ==================================================
+    // 15. TIÊU ĐỀ CHUNG
+    // ==================================================
+    worksheet.mergeCells(1, 1, 1, lastCol);
+    worksheet.mergeCells(2, 1, 2, lastCol);
+    worksheet.mergeCells(3, 1, 3, lastCol);
+
+    const title1 = worksheet.getCell(1, 1);
+    const title2 = worksheet.getCell(2, 1);
+    const title3 = worksheet.getCell(3, 1);
+
+    title1.value = String(church.name || "").toUpperCase();
+
+    title2.value = `BẢNG ĐIỂM GIÁO LÝ - ${String(
+      classInfo.name || "",
+    ).toUpperCase()}`;
+
+    title3.value = `Ngày xuất: ${new Date().toLocaleDateString("vi-VN")}`;
+
+    title1.font = {
+      name: "Arial",
+      size: 15,
+      bold: true,
+      color: { argb: COLORS.navy },
+    };
+
+    title2.font = {
+      name: "Arial",
+      size: 17,
+      bold: true,
+      color: { argb: COLORS.navy },
+    };
+
+    title3.font = {
+      name: "Arial",
+      size: 11,
+      italic: true,
+      color: { argb: COLORS.muted },
+    };
+
+    for (const cell of [title1, title2, title3]) {
+      cell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+      };
+    }
+
+    worksheet.getRow(1).height = 27;
+    worksheet.getRow(2).height = 35;
+    worksheet.getRow(3).height = 24;
+
+    // ==================================================
+    // 16. HEADER 2 TẦNG GIỐNG ẢNH
+    // ==================================================
+    // Hàng 4: Học kỳ
+    // Hàng 5: Tên từng đầu điểm
+
+    const staticHeaders = ["STT", "Mã học sinh", "Họ và tên", "Giới tính"];
+
+    for (let col = 1; col <= 4; col++) {
+      worksheet.mergeCells(4, col, 5, col);
+
+      worksheet.getCell(4, col).value = staticHeaders[col - 1];
+    }
+
+    // Gộp nhóm học kỳ 1.
+    worksheet.mergeCells(4, hk1Start, 4, hk1Average);
+
+    worksheet.getCell(4, hk1Start).value = "HỌC KỲ 1";
+
+    // Gộp nhóm học kỳ 2.
+    worksheet.mergeCells(4, hk2Start, 4, hk2Average);
+
+    worksheet.getCell(4, hk2Start).value = "HỌC KỲ 2";
+
+    // Cột cuối gộp hai hàng.
+    worksheet.mergeCells(4, totalAttemptsCol, 5, totalAttemptsCol);
+
+    worksheet.getCell(4, totalAttemptsCol).value = "Số lần kiểm tra";
+
+    // ==================================================
+    // 17. TÊN ĐẦU ĐIỂM TỰ ĐỘNG
+    // ==================================================
+    gradingItems.forEach((item, index) => {
+      const itemName = item.name || item.code || `Đầu điểm ${index + 1}`;
+
+      // Tên đầu điểm học kỳ 1.
+      worksheet.getCell(5, hk1Start + index).value = itemName;
+
+      // Tên đầu điểm học kỳ 2.
+      worksheet.getCell(5, hk2Start + index).value = itemName;
+    });
+
+    worksheet.getCell(5, hk1Average).value = "Điểm trung bình";
+
+    worksheet.getCell(5, hk2Average).value = "Điểm trung bình";
+
+    // Style header.
+    for (let row = 4; row <= 5; row++) {
+      for (let col = 1; col <= lastCol; col++) {
+        const cell = worksheet.getRow(row).getCell(col);
+
+        const isGold = row === 5 && (col === hk1Average || col === hk2Average);
+
+        styleHeader(cell, isGold);
+      }
+    }
+
+    worksheet.getRow(4).height = 38;
+    worksheet.getRow(5).height = 58;
+
+    // ==================================================
+    // 18. GHI DỮ LIỆU HỌC SINH
+    // ==================================================
+    studentRows.forEach((student, index) => {
+      const studentResults = resultsByStudent.get(Number(student.id)) || [];
+
+      const hk1Results = getSemesterResults(studentResults, 1);
+
+      const hk2Results = getSemesterResults(studentResults, 2);
+
+      const rowNumber = index + 6;
+      const row = worksheet.getRow(rowNumber);
+
+      row.getCell(1).value = index + 1;
+      row.getCell(2).value = student.code || "";
+      row.getCell(3).value = student.name || "";
+      row.getCell(4).value = formatGender(student.gender);
+
+      // ================================================
+      // HỌC KỲ 1 - TẤT CẢ ĐẦU ĐIỂM
+      // ================================================
+      gradingItems.forEach((item, itemIndex) => {
+        const itemResults = getItemResults(hk1Results, item.id);
+
+        const cell = row.getCell(hk1Start + itemIndex);
+
+        // Tất cả điểm trong cùng một ô.
+        cell.value = getDisplayScores(itemResults);
+      });
+
+      row.getCell(hk1Average).value = calculateSemesterAverage(
+        studentResults,
+        1,
+      );
+
+      // ================================================
+      // HỌC KỲ 2 - TẤT CẢ ĐẦU ĐIỂM
+      // ================================================
+      gradingItems.forEach((item, itemIndex) => {
+        const itemResults = getItemResults(hk2Results, item.id);
+
+        const cell = row.getCell(hk2Start + itemIndex);
+
+        // Tất cả điểm trong cùng một ô.
+        cell.value = getDisplayScores(itemResults);
+      });
+
+      row.getCell(hk2Average).value = calculateSemesterAverage(
+        studentResults,
+        2,
+      );
+
+      // Tổng số lần kiểm tra của học sinh.
+      row.getCell(totalAttemptsCol).value = studentResults.length;
+
+      // ==================================================
+      // 19. TỰ ĐỘNG TÍNH CHIỀU CAO DÒNG
+      // ==================================================
+      let maxLines = 1;
+
+      for (let col = 5; col <= lastCol; col++) {
+        const value = row.getCell(col).value;
+
+        if (typeof value === "string" && value) {
+          const count = value.split("\n").length;
+
+          maxLines = Math.max(maxLines, count);
+        }
+      }
+
+      const nameLines = Math.max(
+        1,
+        Math.ceil(String(student.name || "").length / 27),
+      );
+
+      maxLines = Math.max(maxLines, nameLines);
+
+      row.height = Math.min(400, Math.max(35, maxLines * 20 + 12));
+
+      // ==================================================
+      // 20. STYLE DỮ LIỆU
+      // ==================================================
+      for (let col = 1; col <= lastCol; col++) {
+        const cell = row.getCell(col);
+
+        cell.font = {
+          name: "Arial",
+          size: 11,
+          color: { argb: COLORS.text },
+        };
+
+        cell.alignment = {
+          horizontal: col === 3 ? "left" : "center",
+          vertical: "middle",
+          wrapText: true,
+        };
+
+        cell.border = thinBorder;
+
+        if (index % 2 !== 0) {
+          setFill(cell, COLORS.stripe);
+        }
+      }
+
+      // Điểm trung bình nền vàng nhạt.
+      for (const col of [hk1Average, hk2Average]) {
+        const cell = row.getCell(col);
+
+        setFill(cell, COLORS.goldLight);
+
+        cell.font = {
+          name: "Arial",
+          bold: true,
+          size: 11,
+          color: { argb: COLORS.navy },
+        };
+
+        cell.numFmt = "0.00";
+      }
+
+      // Tổng số lần kiểm tra in đậm.
+      row.getCell(totalAttemptsCol).font = {
+        name: "Arial",
+        size: 11,
+        bold: true,
+        color: { argb: COLORS.navy },
+      };
+    });
+
+    // ==================================================
+    // 21. SHEET CHI TIẾT ĐIỂM
+    // ==================================================
+    // Mỗi lần kiểm tra là một dòng riêng,
+    // giúp xem được cả điểm chưa xác định học kỳ.
+    detailWorksheet.columns = [
+      { header: "STT", key: "stt", width: 9 },
+      { header: "Mã học sinh", key: "code", width: 18 },
+      { header: "Họ và tên", key: "name", width: 32 },
+      { header: "Giới tính", key: "gender", width: 14 },
+      { header: "Học kỳ", key: "semester", width: 16 },
+      { header: "Đầu điểm", key: "item", width: 30 },
+      { header: "Điểm", key: "score", width: 14 },
+      { header: "Ngày kiểm tra", key: "date", width: 20 },
+      { header: "Ghi chú", key: "note", width: 35 },
+    ];
+
+    const detailHeader = detailWorksheet.getRow(1);
+    detailHeader.height = 42;
+
+    for (let col = 1; col <= 9; col++) {
+      styleHeader(detailHeader.getCell(col));
+    }
+
+    const itemById = new Map(
+      gradingItems.map((item) => [Number(item.id), item]),
+    );
+
+    let detailIndex = 0;
+
+    for (const student of studentRows) {
+      const studentResults = resultsByStudent.get(Number(student.id)) || [];
+
+      for (const result of sortResults(studentResults)) {
+        detailIndex++;
+
+        const item = itemById.get(Number(result.grading_rule_item_id));
+
+        const semester = getSemester(result.note);
+
+        const row = detailWorksheet.addRow({
+          stt: detailIndex,
+          code: student.code || "",
+          name: student.name || "",
+          gender: formatGender(student.gender),
+          semester: semester ? `Học kỳ ${semester}` : "Chưa xác định",
+          item:
+            item?.name ||
+            result.item_name ||
+            result.item_code ||
+            result.exam_type ||
+            "Chưa xác định",
+          score: toNumber(result.score),
+          date: formatDate(result.exam_date),
+          note: result.note || "",
+        });
+
+        row.height = 34;
+
+        for (let col = 1; col <= 9; col++) {
+          const cell = row.getCell(col);
+
+          cell.font = {
+            name: "Arial",
+            size: 10,
+            color: { argb: COLORS.text },
+          };
+
+          cell.alignment = {
+            horizontal: col === 3 || col === 9 ? "left" : "center",
+            vertical: "middle",
+            wrapText: true,
+          };
+
+          cell.border = thinBorder;
+
+          if (detailIndex % 2 === 0) {
+            setFill(cell, COLORS.stripe);
+          }
+        }
+
+        row.getCell(7).numFmt = "0.00";
+      }
+    }
+
+    // ==================================================
+    // 22. CẤU HÌNH IN EXCEL
+    // ==================================================
+    const configurePage = (sheet) => {
+      sheet.properties.defaultRowHeight = 25;
+
+      sheet.pageSetup = {
+        orientation: "landscape",
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 0,
+        paperSize: 9,
+        margins: {
+          left: 0.25,
+          right: 0.25,
+          top: 0.5,
+          bottom: 0.5,
+          header: 0.2,
+          footer: 0.2,
+        },
+      };
+    };
+
+    configurePage(worksheet);
+    configurePage(detailWorksheet);
+
+    worksheet.pageSetup.printTitlesRow = "1:5";
+
+    worksheet.headerFooter.oddFooter =
+      "&LFaithEdu&CTrang &P / &N&RBảng điểm giáo lý";
+
+    detailWorksheet.headerFooter.oddFooter =
+      "&LFaithEdu&CTrang &P / &N&RChi tiết điểm";
+
+    // AutoFilter chỉ áp dụng cho sheet chi tiết
+    // vì sheet chính có header gộp hai tầng.
+    if (detailWorksheet.rowCount > 1) {
+      detailWorksheet.autoFilter = {
+        from: "A1",
+        to: `I${detailWorksheet.rowCount}`,
+      };
+    }
+
+    // ==================================================
+    // 23. XUẤT FILE
+    // ==================================================
+    const safeClassName = String(classInfo.name || "lop")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/đ/gi, "d")
+      .replace(/[^a-zA-Z0-9-_]/g, "_");
+
+    const fileName = `Bang_diem_${safeClassName}_${Date.now()}.xlsx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+
+    console.log(`${LOG} Xuất thành công`, {
+      churchId,
+      classId,
+      studentCount: studentRows.length,
+      gradingItemCount: gradingItems.length,
+      resultCount: resultRows.length,
+      totalColumns: lastCol,
+      lastColumn: lastLetter,
+    });
+  } catch (error) {
+    console.error(`${LOG} Lỗi:`, error);
+
+    if (res.headersSent) {
+      return res.end();
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể xuất bảng điểm Excel.",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+// =====================================================
+// EXPORT EXCEL ĐIỂM RIÊNG TỪNG HỌC SINH
+// GET /api/results/export-student-excel/:classId/:studentId
+// =====================================================
+exports.exportStudentResultExcel = async (req, res) => {
+  const LOG = "[EXPORT_STUDENT_RESULT_EXCEL]";
+
+  try {
+    const churchId = getChurchId(req);
+    const classId = Number(req.params.classId);
+    const studentId = Number(req.params.studentId);
+
+    console.log(`${LOG} Bắt đầu xuất Excel`, {
+      churchId,
+      classId,
+      studentId,
+    });
+
+    if (!churchId) {
+      return res.status(400).json({
+        success: false,
+        message: "Không xác định được giáo xứ.",
+      });
+    }
+
+    if (
+      !Number.isInteger(classId) ||
+      classId <= 0 ||
+      !Number.isInteger(studentId) ||
+      studentId <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Thông tin lớp hoặc học sinh không hợp lệ.",
+      });
+    }
 
     // =====================================================
-    // 2. LẤY GIÁO XỨ
+    // 1. LẤY THÔNG TIN GIÁO XỨ
     // =====================================================
     const [churchRows] = await db.query(
-      `
-      SELECT id, name
-      FROM churches
-      WHERE id = ?
-      LIMIT 1
-      `,
+      `SELECT id, name FROM churches WHERE id = ? LIMIT 1`,
       [churchId],
     );
 
@@ -1923,14 +2813,12 @@ exports.exportResultsExcel = async (req, res) => {
       });
     }
 
-    const church = churchRows[0];
-
     // =====================================================
-    // 3. LẤY LỚP
+    // 2. LẤY THÔNG TIN LỚP
     // =====================================================
     const [classRows] = await db.query(
       `
-      SELECT id, name
+      SELECT id, name, church_id
       FROM classes
       WHERE id = ?
         AND church_id = ?
@@ -1949,66 +2837,11 @@ exports.exportResultsExcel = async (req, res) => {
     const classInfo = classRows[0];
 
     // =====================================================
-    // 4. LẤY QUY TẮC TÍNH ĐIỂM
-    // =====================================================
-    const [ruleRows] = await db.query(
-      `
-      SELECT id, status
-      FROM grading_rules
-      WHERE church_id = ?
-      ORDER BY
-        CASE WHEN status = 'active' THEN 0 ELSE 1 END,
-        id DESC
-      LIMIT 1
-      `,
-      [churchId],
-    );
-
-    const gradingRule = ruleRows[0] || null;
-
-    console.log(
-      `${LOG} Quy tắc:`,
-      gradingRule
-        ? `ID=${gradingRule.id}, status=${gradingRule.status}`
-        : "Chưa có quy tắc",
-    );
-
-    // =====================================================
-    // 5. LẤY CÁC ĐẦU ĐIỂM
-    // =====================================================
-    let gradingItems = [];
-
-    if (gradingRule) {
-      const [itemRows] = await db.query(
-        `
-        SELECT
-          id,
-          grading_rule_id,
-          code,
-          name,
-          weight,
-          max_score,
-          sort_order,
-          allow_multiple,
-          aggregation_method
-        FROM grading_rule_items
-        WHERE grading_rule_id = ?
-        ORDER BY sort_order ASC, id ASC
-        `,
-        [gradingRule.id],
-      );
-
-      gradingItems = itemRows || [];
-    }
-
-    console.log(`${LOG} Số đầu điểm: ${gradingItems.length}`);
-
-    // =====================================================
-    // 6. LẤY HỌC SINH CỦA LỚP
+    // 3. KIỂM TRA HỌC SINH CÓ THUỘC LỚP KHÔNG
     // =====================================================
     const [studentRows] = await db.query(
       `
-      SELECT DISTINCT
+      SELECT
         s.id,
         s.code,
         s.name,
@@ -2016,17 +2849,78 @@ exports.exportResultsExcel = async (req, res) => {
       FROM class_students cs
       INNER JOIN students s
         ON s.id = cs.student_id
-       AND s.church_id = ?
+        AND s.church_id = ?
       WHERE cs.class_id = ?
-      ORDER BY s.name ASC, s.id ASC
+        AND cs.student_id = ?
+      LIMIT 1
       `,
-      [churchId, classId],
+      [churchId, classId, studentId],
     );
 
-    console.log(`${LOG} Số học sinh: ${studentRows.length}`);
+    if (!studentRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy học sinh trong lớp này.",
+      });
+    }
+
+    const student = studentRows[0];
 
     // =====================================================
-    // 7. LẤY ĐIỂM CỦA HỌC SINH TRONG LỚP
+    // 4. LẤY QUY ĐỊNH CHẤM ĐIỂM
+    // =====================================================
+    const [ruleRows] = await db.query(
+      `
+      SELECT *
+      FROM grading_rules
+      WHERE church_id = ?
+        AND status = 'active'
+      ORDER BY id DESC
+      LIMIT 1
+      `,
+      [churchId],
+    );
+
+    if (!ruleRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Giáo xứ chưa có quy định chấm điểm.",
+      });
+    }
+
+    const gradingRule = ruleRows[0];
+
+    // =====================================================
+    // 5. LẤY CÁC ĐẦU ĐIỂM
+    // =====================================================
+    const [gradingItems] = await db.query(
+      `
+      SELECT
+        id,
+        grading_rule_id,
+        name,
+        code,
+        weight,
+        max_score,
+        sort_order,
+        allow_multiple,
+        aggregation_method
+      FROM grading_rule_items
+      WHERE grading_rule_id = ?
+      ORDER BY sort_order ASC, id ASC
+      `,
+      [gradingRule.id],
+    );
+
+    if (!gradingItems.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Quy định chấm điểm chưa có đầu điểm.",
+      });
+    }
+
+    // =====================================================
+    // 6. LẤY KẾT QUẢ RIÊNG HỌC SINH
     // =====================================================
     const [resultRows] = await db.query(
       `
@@ -2040,823 +2934,644 @@ exports.exportResultsExcel = async (req, res) => {
         r.exam_date,
         r.note,
         gri.name AS item_name,
-        gri.code AS item_code
+        gri.code AS item_code,
+        gri.weight AS item_weight,
+        gri.max_score AS item_max_score,
+        gri.sort_order,
+        gri.allow_multiple,
+        gri.aggregation_method
       FROM results r
       INNER JOIN students s
         ON s.id = r.student_id
-       AND s.church_id = ?
+        AND s.church_id = ?
       LEFT JOIN grading_rule_items gri
         ON gri.id = r.grading_rule_item_id
-      WHERE EXISTS (
-        SELECT 1
-        FROM class_students cs
-        WHERE cs.student_id = r.student_id
-          AND cs.class_id = ?
-      )
+      WHERE r.church_id = ?
+        AND r.student_id = ?
+        AND EXISTS (
+          SELECT 1
+          FROM class_students cs
+          WHERE cs.student_id = r.student_id
+            AND cs.class_id = ?
+        )
       ORDER BY
-        r.student_id ASC,
         r.exam_date ASC,
         r.id ASC
       `,
-      [churchId, classId],
+      [churchId, churchId, studentId, classId],
     );
 
-    console.log(`${LOG} Số kết quả điểm: ${resultRows.length}`);
-
-    // =====================================================
-    // 8. GOM KẾT QUẢ THEO HỌC SINH
-    // =====================================================
-    const resultsByStudent = new Map();
-
-    resultRows.forEach((result) => {
-      const studentId = Number(result.student_id);
-
-      if (!resultsByStudent.has(studentId)) {
-        resultsByStudent.set(studentId, []);
-      }
-
-      resultsByStudent.get(studentId).push(result);
+    console.log(`${LOG} Đã lấy dữ liệu`, {
+      student: student.name,
+      gradingItemCount: gradingItems.length,
+      resultCount: resultRows.length,
     });
 
     // =====================================================
-    // 9. CÁC HÀM TIỆN ÍCH
+    // 7. HÀM HỖ TRỢ
     // =====================================================
-
-    const toValidNumber = (value) => {
-      if (value === null || value === undefined || value === "") {
-        return null;
-      }
-
+    const toNumber = (value, fallback = 0) => {
       const number = Number(value);
-
-      return Number.isFinite(number) ? number : null;
+      return Number.isFinite(number) ? number : fallback;
     };
 
-    const roundScore = (value) => {
-      if (!Number.isFinite(Number(value))) return null;
-
-      return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+    const round = (value, digits = 2) => {
+      const factor = 10 ** digits;
+      return Math.round((toNumber(value) + Number.EPSILON) * factor) / factor;
     };
 
-    const formatGender = (gender) => {
-      if (gender === "male") return "Nam";
-      if (gender === "female") return "Nữ";
-
-      return gender || "";
-    };
-
-    const formatDate = (date) => {
-      if (!date) return "";
-
-      const parsed = new Date(date);
-
-      if (Number.isNaN(parsed.getTime())) return "";
-
-      return parsed.toLocaleDateString("vi-VN");
-    };
-
-    // =====================================================
-    // 10. CHUẨN HÓA TÊN HỌC KỲ
-    //
-    // Nhận diện các dạng:
-    // - Học kỳ 1
-    // - Học kỳ 2
-    // - HK1
-    // - HK 1
-    // - HK2
-    // - HK 2
-    //
-    // Dữ liệu được lấy từ results.note.
-    // =====================================================
-    const normalizeSemester = (note) => {
-      const originalValue = String(note || "").trim();
-
-      if (!originalValue) {
-        return "Chưa xác định học kỳ";
-      }
-
-      const normalizedValue = originalValue
+    const normalizeText = (value) =>
+      String(value || "")
+        .trim()
         .toLowerCase()
         .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
+        .replace(/[\u0300-\u036f]/g, "");
 
-      const isSemester1 =
-        /\bhk\s*1\b/.test(normalizedValue) ||
-        /\bhoc ky\s*1\b/.test(normalizedValue);
+    const formatDate = (value) => {
+      if (!value) return "";
 
-      const isSemester2 =
-        /\bhk\s*2\b/.test(normalizedValue) ||
-        /\bhoc ky\s*2\b/.test(normalizedValue);
+      const date = new Date(value);
 
-      if (isSemester1) return "Học kỳ 1";
-      if (isSemester2) return "Học kỳ 2";
+      if (Number.isNaN(date.getTime())) {
+        return String(value);
+      }
 
-      // Nếu note chứa nội dung khác thì giữ nguyên nội dung đó.
-      return originalValue;
+      return date.toLocaleDateString("vi-VN");
+    };
+
+    const getSemester = (note) => {
+      const text = normalizeText(note).replace(/\s+/g, "");
+
+      if (
+        text.includes("hk1") ||
+        text.includes("hocky1") ||
+        text.includes("hocki1")
+      ) {
+        return "HK1";
+      }
+
+      if (
+        text.includes("hk2") ||
+        text.includes("hocky2") ||
+        text.includes("hocki2")
+      ) {
+        return "HK2";
+      }
+
+      return "Chưa xác định";
+    };
+
+    const getAggregationMethod = (item) => {
+      const method = normalizeText(item.aggregation_method);
+
+      if (
+        method.includes("highest") ||
+        method.includes("max") ||
+        method.includes("cao")
+      ) {
+        return "highest";
+      }
+
+      if (
+        method.includes("lowest") ||
+        method.includes("min") ||
+        method.includes("thap")
+      ) {
+        return "lowest";
+      }
+
+      if (
+        method.includes("average") ||
+        method.includes("avg") ||
+        method.includes("trung")
+      ) {
+        return "average";
+      }
+
+      return "latest";
     };
 
     // =====================================================
-    // 11. SẮP XẾP CÁC LẦN KIỂM TRA
+    // 8. NHÓM KẾT QUẢ THEO ĐẦU ĐIỂM
     // =====================================================
-    const sortResultsByDate = (results) => {
-      return [...results].sort((a, b) => {
-        const dateA = a.exam_date ? new Date(a.exam_date).getTime() : 0;
+    const resultsByItem = {};
 
-        const dateB = b.exam_date ? new Date(b.exam_date).getTime() : 0;
+    gradingItems.forEach((item) => {
+      resultsByItem[item.id] = {
+        HK1: [],
+        HK2: [],
+        "Chưa xác định": [],
+      };
+    });
 
-        if (dateA !== dateB) {
-          return dateA - dateB;
-        }
+    resultRows.forEach((result) => {
+      const itemId = result.grading_rule_item_id;
 
-        return Number(a.id) - Number(b.id);
+      if (!resultsByItem[itemId]) {
+        resultsByItem[itemId] = {
+          HK1: [],
+          HK2: [],
+          "Chưa xác định": [],
+        };
+      }
+
+      const semester = getSemester(result.note);
+
+      resultsByItem[itemId][semester].push({
+        ...result,
+        score: toNumber(result.score),
       });
+    });
+
+    // =====================================================
+    // 9. TÍNH ĐIỂM THEO PHƯƠNG PHÁP TỔNG HỢP
+    // =====================================================
+    const getAggregatedScore = (scores, item) => {
+      if (!scores || !scores.length) return null;
+
+      const sorted = [...scores].sort((a, b) => {
+        const dateA = new Date(a.exam_date || 0).getTime();
+        const dateB = new Date(b.exam_date || 0).getTime();
+
+        if (dateA !== dateB) return dateA - dateB;
+
+        return toNumber(a.id) - toNumber(b.id);
+      });
+
+      const method = getAggregationMethod(item);
+
+      if (method === "highest") {
+        return Math.max(...sorted.map((x) => x.score));
+      }
+
+      if (method === "lowest") {
+        return Math.min(...sorted.map((x) => x.score));
+      }
+
+      if (method === "average") {
+        return sorted.reduce((sum, x) => sum + x.score, 0) / sorted.length;
+      }
+
+      return sorted[sorted.length - 1].score;
     };
 
     // =====================================================
-    // 12. GỘP NHIỀU LẦN KIỂM TRA ĐỂ TÍNH ĐIỂM TRUNG BÌNH
-    //
-    // Lưu ý:
-    // Hàm này chỉ phục vụ tính điểm trung bình.
-    // Không sử dụng hàm này để hiển thị điểm từng lần.
+    // 10. TÍNH ĐIỂM TRUNG BÌNH HỌC KỲ
     // =====================================================
-    const aggregateItemScore = (item, itemResults) => {
-      const validResults = itemResults
-        .map((result) => ({
-          ...result,
-          numericScore: toValidNumber(result.score),
-        }))
-        .filter((result) => result.numericScore !== null);
-
-      if (!validResults.length) return null;
-
-      const method = String(item?.aggregation_method || "average")
-        .trim()
-        .toLowerCase();
-
-      if (method === "latest") {
-        const latest = [...validResults].sort((a, b) => {
-          const dateA = a.exam_date ? new Date(a.exam_date).getTime() : 0;
-
-          const dateB = b.exam_date ? new Date(b.exam_date).getTime() : 0;
-
-          if (dateA !== dateB) {
-            return dateB - dateA;
-          }
-
-          return Number(b.id) - Number(a.id);
-        })[0];
-
-        return latest.numericScore;
-      }
-
-      if (["highest", "max"].includes(method)) {
-        return Math.max(...validResults.map((item) => item.numericScore));
-      }
-
-      if (["lowest", "min"].includes(method)) {
-        return Math.min(...validResults.map((item) => item.numericScore));
-      }
-
-      const total = validResults.reduce(
-        (sum, item) => sum + item.numericScore,
-        0,
-      );
-
-      return total / validResults.length;
-    };
-
-    // =====================================================
-    // 13. TÍNH ĐIỂM TRUNG BÌNH THEO TRỌNG SỐ
-    //
-    // Giữ nguyên cách tính hiện tại:
-    // - Áp dụng aggregation_method.
-    // - Quy đổi về thang điểm 10.
-    // - Tính trung bình theo trọng số.
-    //
-    // Điểm trung bình hiện tại vẫn tính trên toàn bộ
-    // kết quả của học sinh, không tách riêng học kỳ.
-    // =====================================================
-    const calculateWeightedAverage = (studentResults) => {
-      if (!gradingItems.length) return null;
-
-      let weightedTotal = 0;
+    const calculateSemesterAverage = (semester) => {
+      let totalWeightedScore = 0;
       let totalWeight = 0;
 
       gradingItems.forEach((item) => {
-        const itemResults = studentResults.filter(
-          (result) => Number(result.grading_rule_item_id) === Number(item.id),
-        );
+        const itemResults = resultsByItem[item.id]?.[semester] || [];
 
-        const score = aggregateItemScore(item, itemResults);
+        const score = getAggregatedScore(itemResults, item);
 
         if (score === null) return;
 
-        const configuredMaxScore = toValidNumber(item.max_score);
-        const configuredWeight = toValidNumber(item.weight);
+        const maxScore = toNumber(item.max_score, 10);
+        const weight = toNumber(item.weight, 1);
 
-        const maxScore =
-          configuredMaxScore !== null && configuredMaxScore > 0
-            ? configuredMaxScore
-            : 10;
-
-        const weight =
-          configuredWeight !== null && configuredWeight > 0
-            ? configuredWeight
-            : 1;
+        if (maxScore <= 0 || weight <= 0) return;
 
         const normalizedScore = (score / maxScore) * 10;
 
-        weightedTotal += normalizedScore * weight;
+        totalWeightedScore += normalizedScore * weight;
         totalWeight += weight;
       });
 
-      if (totalWeight <= 0) return null;
+      if (!totalWeight) return null;
 
-      return roundScore(weightedTotal / totalWeight);
+      return round(totalWeightedScore / totalWeight, 2);
     };
 
-    // =====================================================
-    // 14. HIỂN THỊ TẤT CẢ ĐIỂM CỦA TỪNG ĐẦU ĐIỂM
-    //
-    // Ví dụ:
-    //
-    // 8.00
-    // Học kỳ 1
-    //
-    // 7.00
-    // Học kỳ 1
-    //
-    // 9.00
-    // Học kỳ 2
-    //
-    // Không lấy .find()
-    // Không gộp điểm
-    // Không lấy điểm trung bình để hiển thị.
-    // =====================================================
-    const getItemDisplayScore = (studentResults, item) => {
-      const itemResults = sortResultsByDate(
-        studentResults.filter(
-          (result) => Number(result.grading_rule_item_id) === Number(item.id),
-        ),
-      );
+    const averageHK1 = calculateSemesterAverage("HK1");
+    const averageHK2 = calculateSemesterAverage("HK2");
 
-      const displayResults = itemResults
-        .map((result) => {
-          const score = toValidNumber(result.score);
+    const averages = [averageHK1, averageHK2].filter((value) => value !== null);
 
-          if (score === null) return null;
-
-          const semester = normalizeSemester(result.note);
-
-          return {
-            score,
-            semester,
-          };
-        })
-        .filter(Boolean);
-
-      if (!displayResults.length) return "";
-
-      return displayResults
-        .map((result) => {
-          return `${result.score.toFixed(2)}\n${result.semester}`;
-        })
-        .join("\n\n");
-    };
+    const overallAverage = averages.length
+      ? round(
+          averages.reduce((sum, value) => sum + value, 0) / averages.length,
+          2,
+        )
+      : null;
 
     // =====================================================
-    // 15. LẤY GHI CHÚ / HỌC KỲ CỦA HỌC SINH
+    // 11. TẠO EXCEL
     // =====================================================
-    const getStudentSemesterNotes = (studentResults) => {
-      const notes = [
-        ...new Set(
-          studentResults
-            .map((result) => normalizeSemester(result.note))
-            .filter(Boolean),
-        ),
-      ];
+    const ExcelJS = require("exceljs");
 
-      return notes.join("\n");
-    };
-
-    // =====================================================
-    // 16. TÍNH CHIỀU CAO DÒNG THEO NỘI DUNG
-    //
-    // Mỗi điểm có 2 dòng:
-    // - Dòng điểm số
-    // - Dòng học kỳ
-    //
-    // Nếu học sinh có nhiều lần kiểm tra, Excel tự tăng
-    // chiều cao dòng để hiển thị đầy đủ.
-    // =====================================================
-    const calculateRowHeight = (row, minimumHeight = 28) => {
-      let maxLines = 1;
-
-      row.eachCell((cell) => {
-        if (cell.value === null || cell.value === undefined) {
-          return;
-        }
-
-        let text = "";
-
-        if (typeof cell.value === "object" && cell.value.richText) {
-          text = cell.value.richText.map((item) => item.text || "").join("");
-        } else {
-          text = String(cell.value);
-        }
-
-        const explicitLines = text.split(/\r?\n/);
-
-        const columnWidth = Number(cell.col?.width) || 15;
-
-        let estimatedLines = 0;
-
-        explicitLines.forEach((line) => {
-          const lineLength = Math.max(1, line.length);
-
-          // Ước tính số dòng khi Excel tự xuống dòng.
-          const wrappedLines = Math.ceil(
-            lineLength / Math.max(8, columnWidth * 1.15),
-          );
-
-          estimatedLines += Math.max(1, wrappedLines);
-        });
-
-        maxLines = Math.max(maxLines, estimatedLines);
-      });
-
-      // Mỗi dòng khoảng 15 điểm chiều cao.
-      const calculatedHeight = maxLines * 15 + 8;
-
-      // Excel giới hạn chiều cao dòng.
-      return Math.min(400, Math.max(minimumHeight, calculatedHeight));
-    };
-
-    // =====================================================
-    // 17. TẠO WORKBOOK
-    // =====================================================
     const workbook = new ExcelJS.Workbook();
 
     workbook.creator = "FaithEdu";
-    workbook.subject = "Bảng điểm giáo lý";
-    workbook.title = `Bảng điểm ${classInfo.name}`;
     workbook.created = new Date();
+    workbook.modified = new Date();
+    workbook.title = `Bảng điểm ${student.name} - ${classInfo.name}`;
 
-    const worksheet = workbook.addWorksheet("Bang diem", {
-      views: [
-        {
-          state: "frozen",
-          xSplit: 4,
-          ySplit: 4,
-        },
-      ],
+    const navy = "173B5E";
+    const gold = "D9A441";
+    const white = "FFFFFF";
+    const lightBlue = "EEF3F7";
+    const borderColor = "D9E2EC";
+    const green = "E8F5EE";
+    const yellow = "FFF7E0";
+
+    // =====================================================
+    // 12. SHEET 1 - BẢNG ĐIỂM
+    // =====================================================
+    const ws = workbook.addWorksheet("Bang diem", {
+      views: [{ state: "frozen", ySplit: 5 }],
+      pageSetup: {
+        paperSize: 9,
+        orientation: "landscape",
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 0,
+      },
     });
 
-    const detailWorksheet = workbook.addWorksheet("Chi tiet diem", {
-      views: [
-        {
-          state: "frozen",
-          xSplit: 4,
-          ySplit: 1,
-        },
-      ],
-    });
-
-    // =====================================================
-    // 18. TẠO CỘT CHO HAI SHEET
-    // =====================================================
-    const studentInfoColumns = [
-      {
-        header: "STT",
-        key: "stt",
-        width: 8,
-      },
-      {
-        header: "Mã học sinh",
-        key: "code",
-        width: 18,
-      },
-      {
-        header: "Họ và tên",
-        key: "name",
-        width: 30,
-      },
-      {
-        header: "Giới tính",
-        key: "gender",
-        width: 14,
-      },
+    ws.columns = [
+      { width: 7 },
+      { width: 28 },
+      { width: 15 },
+      { width: 15 },
+      { width: 15 },
+      { width: 15 },
+      { width: 18 },
+      { width: 18 },
+      { width: 18 },
     ];
 
-    const itemColumns = gradingItems.map((item) => ({
-      header: item.name || item.code || `Đầu điểm ${item.id}`,
-      key: `item_${item.id}`,
-      width: 24,
-    }));
-
-    const averageColumn = {
-      header: "Điểm trung bình",
-      key: "averageScore",
-      width: 20,
+    ws.mergeCells("A1:I1");
+    ws.getCell("A1").value = "BẢNG ĐIỂM GIÁO LÝ";
+    ws.getCell("A1").font = {
+      name: "Arial",
+      size: 18,
+      bold: true,
+      color: { argb: navy },
     };
-
-    const totalAttemptsColumn = {
-      header: "Số lần kiểm tra",
-      key: "totalAttempts",
-      width: 18,
+    ws.getCell("A1").alignment = {
+      horizontal: "center",
+      vertical: "middle",
     };
+    ws.getRow(1).height = 35;
 
-    const summaryColumns = [
-      ...studentInfoColumns,
-      ...itemColumns,
-      averageColumn,
-      totalAttemptsColumn,
+    ws.mergeCells("A2:I2");
+    ws.getCell("A2").value = String(student.name || "").toUpperCase();
+    ws.getCell("A2").font = {
+      name: "Arial",
+      size: 15,
+      bold: true,
+      color: { argb: gold },
+    };
+    ws.getCell("A2").alignment = { horizontal: "center" };
+    ws.getRow(2).height = 28;
+
+    ws.mergeCells("A3:I3");
+    ws.getCell("A3").value =
+      `Lớp: ${classInfo.name} | Mã học sinh: ${student.code || student.id}`;
+
+    ws.getCell("A3").font = {
+      name: "Arial",
+      size: 11,
+      color: { argb: "555555" },
+    };
+    ws.getCell("A3").alignment = { horizontal: "center" };
+
+    ws.mergeCells("A4:I4");
+    ws.getCell("A4").value =
+      `Ngày xuất: ${new Date().toLocaleDateString("vi-VN")}`;
+
+    ws.getCell("A4").font = {
+      name: "Arial",
+      size: 10,
+      italic: true,
+      color: { argb: "777777" },
+    };
+    ws.getCell("A4").alignment = { horizontal: "center" };
+
+    const headers = [
+      "STT",
+      "Nội dung đánh giá",
+      "Hệ số",
+      "Điểm tối đa",
+      "Điểm HK1",
+      "Điểm HK2",
+      "Số lần HK1",
+      "Số lần HK2",
+      "Phương pháp tính",
     ];
 
-    const detailColumns = [
-      ...studentInfoColumns,
-      ...itemColumns,
-      averageColumn,
-      {
-        header: "Học kỳ / ghi chú",
-        key: "semesterNote",
-        width: 32,
-      },
-    ];
+    const headerRow = ws.getRow(5);
 
-    worksheet.columns = summaryColumns;
-    detailWorksheet.columns = detailColumns;
+    headers.forEach((header, index) => {
+      const cell = headerRow.getCell(index + 1);
 
-    // =====================================================
-    // 19. STYLE HEADER
-    // =====================================================
-    const applyHeaderStyle = (row, averageIndex) => {
-      row.height = 40;
-
-      row.eachCell((cell) => {
-        cell.font = {
-          bold: true,
-          color: {
-            argb: "FFFFFFFF",
-          },
-          size: 10,
-        };
-
-        cell.fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: {
-            argb: "FF173B5E",
-          },
-        };
-
-        cell.alignment = {
-          horizontal: "center",
-          vertical: "middle",
-          wrapText: true,
-        };
-
-        cell.border = {
-          top: {
-            style: "thin",
-            color: { argb: "FFD9A441" },
-          },
-          bottom: {
-            style: "thin",
-            color: { argb: "FFD9A441" },
-          },
-          left: {
-            style: "thin",
-            color: { argb: "FFE2E8F0" },
-          },
-          right: {
-            style: "thin",
-            color: { argb: "FFE2E8F0" },
-          },
-        };
-      });
-
-      const averageCell = row.getCell(averageIndex);
-
-      averageCell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: {
-          argb: "FFD9A441",
-        },
-      };
-
-      averageCell.font = {
+      cell.value = header;
+      cell.font = {
+        name: "Arial",
         bold: true,
-        color: {
-          argb: "FF173B5E",
-        },
+        color: { argb: white },
         size: 10,
       };
-    };
-
-    // =====================================================
-    // 20. STYLE DÒNG DỮ LIỆU
-    // =====================================================
-    const applyDataRowStyle = (row, averageIndex, nameColumnIndex = 3) => {
-      row.height = calculateRowHeight(row, 28);
-
-      row.eachCell((cell) => {
-        cell.alignment = {
-          horizontal: "center",
-          vertical: "middle",
-          wrapText: true,
-        };
-
-        cell.border = {
-          top: {
-            style: "thin",
-            color: { argb: "FFE2E8F0" },
-          },
-          bottom: {
-            style: "thin",
-            color: { argb: "FFE2E8F0" },
-          },
-          left: {
-            style: "thin",
-            color: { argb: "FFE2E8F0" },
-          },
-          right: {
-            style: "thin",
-            color: { argb: "FFE2E8F0" },
-          },
-        };
-      });
-
-      // Cột họ tên căn trái.
-      row.getCell(nameColumnIndex).alignment = {
-        horizontal: "left",
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: navy },
+      };
+      cell.alignment = {
+        horizontal: "center",
         vertical: "middle",
         wrapText: true,
       };
+      cell.border = {
+        top: { style: "thin", color: { argb: borderColor } },
+        bottom: { style: "thin", color: { argb: borderColor } },
+        left: { style: "thin", color: { argb: borderColor } },
+        right: { style: "thin", color: { argb: borderColor } },
+      };
+    });
 
-      // Các cột điểm có nhiều lần kiểm tra.
-      // Căn giữa và hiển thị đầy đủ từng học kỳ.
-      for (let i = 5; i < averageIndex; i++) {
-        const scoreCell = row.getCell(i);
+    headerRow.height = 35;
 
-        scoreCell.alignment = {
-          horizontal: "center",
+    // =====================================================
+    // 13. ĐỔ DỮ LIỆU ĐẦU ĐIỂM
+    // =====================================================
+    gradingItems.forEach((item, index) => {
+      const hk1Results = resultsByItem[item.id]?.HK1 || [];
+      const hk2Results = resultsByItem[item.id]?.HK2 || [];
+
+      const hk1Score = getAggregatedScore(hk1Results, item);
+      const hk2Score = getAggregatedScore(hk2Results, item);
+
+      const row = ws.addRow([
+        index + 1,
+        item.name,
+        toNumber(item.weight, 1),
+        toNumber(item.max_score, 10),
+        hk1Score,
+        hk2Score,
+        hk1Results.length,
+        hk2Results.length,
+        getAggregationMethod(item),
+      ]);
+
+      row.eachCell((cell, colNumber) => {
+        cell.font = {
+          name: "Arial",
+          size: 10,
+          color: { argb: "243447" },
+        };
+
+        cell.alignment = {
           vertical: "middle",
+          horizontal: colNumber === 2 ? "left" : "center",
           wrapText: true,
         };
 
-        scoreCell.font = {
-          size: 10,
-          color: {
-            argb: "FF243447",
-          },
+        cell.border = {
+          top: { style: "thin", color: { argb: borderColor } },
+          bottom: { style: "thin", color: { argb: borderColor } },
+          left: { style: "thin", color: { argb: borderColor } },
+          right: { style: "thin", color: { argb: borderColor } },
         };
-      }
 
-      // Cột điểm trung bình.
-      const averageCell = row.getCell(averageIndex);
+        if (index % 2 === 1) {
+          cell.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: lightBlue },
+          };
+        }
+      });
 
-      averageCell.font = {
+      row.height = 24;
+
+      [5, 6].forEach((col) => {
+        const cell = row.getCell(col);
+
+        if (cell.value !== null && cell.value !== undefined) {
+          cell.numFmt = "0.00";
+          cell.font = {
+            name: "Arial",
+            size: 10,
+            bold: true,
+            color: { argb: navy },
+          };
+        }
+      });
+    });
+
+    // =====================================================
+    // 14. TỔNG KẾT ĐIỂM
+    // =====================================================
+    const summaryStartRow = ws.rowCount + 2;
+
+    const summaryRows = [
+      ["ĐIỂM TRUNG BÌNH HỌC KỲ 1", averageHK1],
+      ["ĐIỂM TRUNG BÌNH HỌC KỲ 2", averageHK2],
+      ["ĐIỂM TRUNG BÌNH CHUNG", overallAverage],
+    ];
+
+    summaryRows.forEach(([label, value], index) => {
+      const rowNumber = summaryStartRow + index;
+
+      ws.mergeCells(`A${rowNumber}:D${rowNumber}`);
+
+      const labelCell = ws.getCell(`A${rowNumber}`);
+      labelCell.value = label;
+      labelCell.font = {
+        name: "Arial",
         bold: true,
-        color: {
-          argb: "FF173B5E",
-        },
+        size: 11,
+        color: { argb: navy },
       };
 
-      averageCell.fill = {
+      labelCell.alignment = {
+        horizontal: "left",
+        vertical: "middle",
+      };
+
+      ws.mergeCells(`E${rowNumber}:F${rowNumber}`);
+
+      const valueCell = ws.getCell(`E${rowNumber}`);
+      valueCell.value = value;
+      valueCell.numFmt = "0.00";
+      valueCell.font = {
+        name: "Arial",
+        bold: true,
+        size: 12,
+        color: { argb: index === 2 ? "2E7D5B" : navy },
+      };
+
+      valueCell.fill = {
         type: "pattern",
         pattern: "solid",
-        fgColor: {
-          argb: "FFFFF5D6",
-        },
+        fgColor: { argb: index === 2 ? green : yellow },
       };
 
-      averageCell.alignment = {
+      valueCell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+      };
+
+      rowNumber && (ws.getRow(rowNumber).height = 26);
+    });
+
+    // =====================================================
+    // 15. SHEET 2 - CHI TIẾT ĐIỂM
+    // =====================================================
+    const detailWs = workbook.addWorksheet("Chi tiet diem", {
+      views: [{ state: "frozen", ySplit: 1 }],
+      pageSetup: {
+        paperSize: 9,
+        orientation: "landscape",
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 0,
+      },
+    });
+
+    detailWs.columns = [
+      { width: 8 },
+      { width: 16 },
+      { width: 28 },
+      { width: 18 },
+      { width: 16 },
+      { width: 15 },
+      { width: 16 },
+      { width: 35 },
+    ];
+
+    const detailHeaders = [
+      "STT",
+      "Ngày kiểm tra",
+      "Nội dung đánh giá",
+      "Học kỳ",
+      "Loại kiểm tra",
+      "Điểm",
+      "Điểm tối đa",
+      "Ghi chú",
+    ];
+
+    const detailHeader = detailWs.addRow(detailHeaders);
+
+    detailHeader.eachCell((cell) => {
+      cell.font = {
+        name: "Arial",
+        bold: true,
+        color: { argb: white },
+      };
+
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: navy },
+      };
+
+      cell.alignment = {
         horizontal: "center",
         vertical: "middle",
         wrapText: true,
       };
 
-      if (typeof averageCell.value === "number") {
-        averageCell.numFmt = "0.00";
-      }
-    };
-
-    // =====================================================
-    // 21. TIÊU ĐỀ SHEET BẢNG ĐIỂM
-    // =====================================================
-    const summaryLastColumn = summaryColumns.length;
-
-    worksheet.mergeCells(1, 1, 1, summaryLastColumn);
-
-    worksheet.getCell(1, 1).value = String(church.name || "").toUpperCase();
-
-    worksheet.getCell(1, 1).font = {
-      bold: true,
-      size: 14,
-      color: {
-        argb: "FF173B5E",
-      },
-    };
-
-    worksheet.getCell(1, 1).alignment = {
-      horizontal: "center",
-      vertical: "middle",
-    };
-
-    worksheet.mergeCells(2, 1, 2, summaryLastColumn);
-
-    worksheet.getCell(2, 1).value = `BẢNG ĐIỂM GIÁO LÝ - ${String(
-      classInfo.name || "",
-    ).toUpperCase()}`;
-
-    worksheet.getCell(2, 1).font = {
-      bold: true,
-      size: 16,
-      color: {
-        argb: "FF173B5E",
-      },
-    };
-
-    worksheet.getCell(2, 1).alignment = {
-      horizontal: "center",
-      vertical: "middle",
-    };
-
-    worksheet.mergeCells(3, 1, 3, summaryLastColumn);
-
-    worksheet.getCell(3, 1).value =
-      `Ngày xuất: ${new Date().toLocaleDateString("vi-VN")}`;
-
-    worksheet.getCell(3, 1).font = {
-      italic: true,
-      color: {
-        argb: "FF64748B",
-      },
-    };
-
-    worksheet.getCell(3, 1).alignment = {
-      horizontal: "center",
-      vertical: "middle",
-    };
-
-    worksheet.getRow(1).height = 24;
-    worksheet.getRow(2).height = 30;
-    worksheet.getRow(3).height = 22;
-
-    // =====================================================
-    // 22. HEADER SHEET BẢNG ĐIỂM
-    // =====================================================
-    const summaryHeader = worksheet.getRow(4);
-
-    summaryHeader.values = summaryColumns.map((column) => column.header);
-
-    const summaryAverageIndex = 5 + gradingItems.length;
-
-    applyHeaderStyle(summaryHeader, summaryAverageIndex);
-
-    // =====================================================
-    // 23. ĐỔ DỮ LIỆU SHEET BẢNG ĐIỂM
-    // =====================================================
-    studentRows.forEach((student, index) => {
-      const studentResults = resultsByStudent.get(Number(student.id)) || [];
-
-      const rowData = {
-        stt: index + 1,
-        code: student.code || "",
-        name: student.name || "",
-        gender: formatGender(student.gender),
-        averageScore: calculateWeightedAverage(studentResults),
-        totalAttempts: studentResults.length,
+      cell.border = {
+        top: { style: "thin", color: { argb: borderColor } },
+        bottom: { style: "thin", color: { argb: borderColor } },
+        left: { style: "thin", color: { argb: borderColor } },
+        right: { style: "thin", color: { argb: borderColor } },
       };
-
-      gradingItems.forEach((item) => {
-        rowData[`item_${item.id}`] = getItemDisplayScore(studentResults, item);
-      });
-
-      const row = worksheet.addRow(rowData);
-
-      applyDataRowStyle(row, summaryAverageIndex);
     });
 
-    // =====================================================
-    // 24. SHEET CHI TIẾT ĐIỂM
-    //
-    // Mỗi học sinh một dòng.
-    // Mỗi đầu điểm một cột.
-    // Từng lần nhập điểm có nhãn học kỳ riêng.
-    // =====================================================
-    const detailHeader = detailWorksheet.getRow(1);
-
-    detailHeader.values = detailColumns.map((column) => column.header);
-
-    const detailAverageIndex = 5 + gradingItems.length;
-
-    applyHeaderStyle(detailHeader, detailAverageIndex);
-
-    studentRows.forEach((student, index) => {
-      const studentResults = resultsByStudent.get(Number(student.id)) || [];
-
-      const rowData = {
-        stt: index + 1,
-        code: student.code || "",
-        name: student.name || "",
-        gender: formatGender(student.gender),
-        averageScore: calculateWeightedAverage(studentResults),
-        semesterNote: getStudentSemesterNotes(studentResults),
-      };
-
-      gradingItems.forEach((item) => {
-        rowData[`item_${item.id}`] = getItemDisplayScore(studentResults, item);
-      });
-
-      const row = detailWorksheet.addRow(rowData);
-
-      applyDataRowStyle(row, detailAverageIndex);
-    });
+    detailHeader.height = 30;
 
     // =====================================================
-    // 25. KẺ BORDER VÀ CĂN CHỈNH TOÀN BỘ BẢNG
+    // 16. ĐỔ CHI TIẾT TỪNG LẦN KIỂM TRA
     // =====================================================
-    [worksheet, detailWorksheet].forEach((sheet) => {
-      sheet.eachRow((row) => {
-        row.eachCell((cell) => {
-          cell.border = {
-            top: cell.border?.top || {
-              style: "thin",
-              color: { argb: "FFE2E8F0" },
-            },
-            bottom: cell.border?.bottom || {
-              style: "thin",
-              color: { argb: "FFE2E8F0" },
-            },
-            left: cell.border?.left || {
-              style: "thin",
-              color: { argb: "FFE2E8F0" },
-            },
-            right: cell.border?.right || {
-              style: "thin",
-              color: { argb: "FFE2E8F0" },
-            },
+    resultRows.forEach((result, index) => {
+      const item = gradingItems.find(
+        (x) => Number(x.id) === Number(result.grading_rule_item_id),
+      );
+
+      const row = detailWs.addRow([
+        index + 1,
+        formatDate(result.exam_date),
+        result.item_name || item?.name || "",
+        getSemester(result.note),
+        result.exam_type || "",
+        toNumber(result.score),
+        toNumber(result.item_max_score || item?.max_score, 10),
+        result.note || "",
+      ]);
+
+      row.eachCell((cell, colNumber) => {
+        cell.font = {
+          name: "Arial",
+          size: 10,
+          color: { argb: "243447" },
+        };
+
+        cell.alignment = {
+          vertical: "middle",
+          horizontal: [3, 8].includes(colNumber) ? "left" : "center",
+          wrapText: true,
+        };
+
+        cell.border = {
+          top: { style: "thin", color: { argb: borderColor } },
+          bottom: { style: "thin", color: { argb: borderColor } },
+          left: { style: "thin", color: { argb: borderColor } },
+          right: { style: "thin", color: { argb: borderColor } },
+        };
+
+        if (index % 2 === 1) {
+          cell.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: lightBlue },
           };
-        });
+        }
       });
 
-      sheet.properties.defaultRowHeight = 25;
+      row.height = 24;
 
-      sheet.autoFilter = {
-        from: {
-          row: sheet === worksheet ? 4 : 1,
-          column: 1,
-        },
-        to: {
-          row: sheet.rowCount,
-          column: sheet.columnCount,
-        },
-      };
-
-      sheet.pageSetup = {
-        orientation: "landscape",
-        fitToPage: true,
-        fitToWidth: 1,
-        fitToHeight: 0,
-        paperSize: 9,
-        margins: {
-          left: 0.25,
-          right: 0.25,
-          top: 0.5,
-          bottom: 0.5,
-          header: 0.2,
-          footer: 0.2,
-        },
-      };
+      row.getCell(6).numFmt = "0.00";
+      row.getCell(7).numFmt = "0.00";
     });
 
     // =====================================================
-    // 26. FOOTER
+    // 17. BẢO VỆ VÀ ĐỊNH DẠNG TRANG IN
     // =====================================================
-    worksheet.headerFooter.oddFooter =
-      "&LFaithEdu&CTrang &P / &N&RBảng điểm giáo lý";
+    ws.autoFilter = {
+      from: "A5",
+      to: `I${Math.max(5, ws.rowCount)}`,
+    };
 
-    detailWorksheet.headerFooter.oddFooter =
-      "&LFaithEdu&CTrang &P / &N&RChi tiết điểm";
+    detailWs.autoFilter = {
+      from: "A1",
+      to: `H${Math.max(1, detailWs.rowCount)}`,
+    };
 
-    // =====================================================
-    // 27. TẠO TÊN FILE
-    // =====================================================
-    const safeClassName = String(classInfo.name || "lop")
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-zA-Z0-9-_]/g, "_");
-
-    const fileName = `Bang_diem_${safeClassName}_${Date.now()}.xlsx`;
+    ws.pageSetup.printArea = `A1:I${ws.rowCount}`;
+    detailWs.pageSetup.printArea = `A1:H${detailWs.rowCount}`;
 
     // =====================================================
-    // 28. XUẤT FILE
+    // 18. TRẢ FILE
     // =====================================================
+    const normalizeFileName = (value) =>
+      String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/đ/gi, "d")
+        .replace(/[^a-zA-Z0-9-_]/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_|_$/g, "");
+
+    const fileName =
+      `Bang_diem_${normalizeFileName(classInfo.name)}_` +
+      `${normalizeFileName(student.name)}_${Date.now()}.xlsx`;
+
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2867,34 +3582,27 @@ exports.exportResultsExcel = async (req, res) => {
       `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
     );
 
-    console.log(`${LOG} Đang ghi file: ${fileName}`);
-
     await workbook.xlsx.write(res);
-
     res.end();
 
     console.log(`${LOG} Xuất thành công`, {
       churchId,
       classId,
-      className: classInfo.name,
-      studentCount: studentRows.length,
-      gradingItemCount: gradingItems.length,
+      studentId,
+      studentName: student.name,
       resultCount: resultRows.length,
     });
   } catch (error) {
-    console.error(`${LOG} Lỗi xuất Excel:`, error);
-    console.error(`${LOG} SQL code:`, error.code);
-    console.error(`${LOG} SQL message:`, error.sqlMessage);
-    console.error(`${LOG} Stack:`, error.stack);
+    console.error(`${LOG} Lỗi:`, error);
 
-    if (res.headersSent) {
-      return res.end();
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: "Không thể xuất bảng điểm học sinh.",
+        error: error.message,
+      });
     }
 
-    return res.status(500).json({
-      success: false,
-      message: "Không thể xuất bảng điểm Excel.",
-      error: process.env.NODE_ENV === "development" ? error.message : undefined,
-    });
+    res.end();
   }
 };

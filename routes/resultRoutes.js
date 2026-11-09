@@ -17,11 +17,13 @@ router.use(verifyToken);
 // ============================================================
 
 router.get("/leaderboard", resultController.getLeaderboard);
-router.get("/export-excel/:classId", resultController.exportResultsExcel);
 router.get(
   "/export-student-excel/:classId/:studentId",
   resultController.exportStudentResultExcel,
 );
+
+router.get("/export-excel/:classId", resultController.exportResultsExcel);
+
 router.get("/class/:classId/leaderboard", resultController.getClassLeaderboard);
 
 // ============================================================
